@@ -309,36 +309,41 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`От ${from}: ${userText}`);
 
-    // Загружаем предоплаты параллельно — Томи сам решит что показать
-    const [openPrepays, closedPrepays] = await Promise.all([
-      getOpenPrepays(),
-      getClosedPrepays()
-    ]);
+    // Умная загрузка предоплат — только когда нужно
+    const textLower = userText.toLowerCase();
+    const needsPrepays = textLower.includes('предоплат') || textLower.includes('клиент') || 
+      textLower.includes('забрал') || textLower.includes('выдал') || textLower.includes('список') ||
+      textLower.includes('долг') || textLower.includes('задат') || textLower.includes('закрыт') ||
+      textLower.includes('выдача') || textLower.includes('prep-');
 
-    const openList = openPrepays.length > 0
-      ? openPrepays.map(p =>
-          `ID:${p.id}|${p.client}|тел:${p.phone||'нет'}|${p.item}|дата:${p.date}|внесено:${p.amount}тг|долг:${p.balance}тг|${p.channel}|${p.notes||'-'}`
-        ).join('\n')
-      : 'нет';
+    let contextMessage = userText;
 
-    const closedList = closedPrepays.length > 0
-      ? closedPrepays.map(p =>
-          `ID:${p.id}|${p.client}|тел:${p.phone||'нет'}|${p.item}|дата:${p.date}|внесено:${p.amount}тг|${p.channel}|выдано:${p.closeDate||'-'}|${p.notes||'-'}`
-        ).join('\n')
-      : 'нет';
+    if (needsPrepays) {
+      const [openPrepays, closedPrepays] = await Promise.all([
+        getOpenPrepays(),
+        getClosedPrepays()
+      ]);
 
-    const contextMessage = userText + `
+      const openList = openPrepays.length > 0
+        ? openPrepays.map(p =>
+            `ID:${p.id}|${p.client}|тел:${p.phone||'нет'}|${p.item}|дата:${p.date}|внесено:${p.amount}тг|долг:${p.balance}тг|${p.channel}|${p.notes||'-'}`
+          ).join('\n')
+        : 'нет';
 
-[ДАННЫЕ СИСТЕМЫ — используй если нужно для ответа:
-ОТКРЫТЫЕ ПРЕДОПЛАТЫ (товар не выдан, ${openPrepays.length} шт):
-${openList}
+      const closedList = closedPrepays.length > 0
+        ? closedPrepays.map(p =>
+            `ID:${p.id}|${p.client}|тел:${p.phone||'нет'}|${p.item}|дата:${p.date}|внесено:${p.amount}тг|${p.channel}|выдано:${p.closeDate||'-'}|${p.notes||'-'}`
+          ).join('\n')
+        : 'нет';
 
-ЗАКРЫТЫЕ ПРЕДОПЛАТЫ (товар выдан, ${closedPrepays.length} шт):
-${closedList}
+      contextMessage = userText + `
 
-При показе предоплат используй формат карточек:
-Открытые: 📦 №X. ИМЯ / 🆔 ID / 📞 Тел / 🛍 Товар / 📅 Дата / 💰 Внесено / ⚠️ Долг (0=ждёт выдачи) / 💳 Канал / 💬 Комментарий / ---
-Закрытые: ✅ №X. ИМЯ / 🆔 ID / 📞 Тел / 🛍 Товар / 📅 Куплено / 💰 Внесено / 💳 Канал / 📦 Выдано / 💬 Комментарий / ---]`;
+[ДАННЫЕ СИСТЕМЫ:
+ОТКРЫТЫЕ ПРЕДОПЛАТЫ (не выдан, ${openPrepays.length} шт): ${openList}
+ЗАКРЫТЫЕ ПРЕДОПЛАТЫ (выдан, ${closedPrepays.length} шт): ${closedList}
+Формат карточек открытых: 📦 №X. ИМЯ / 🆔 ID / 📞 Тел / 🛍 Товар / 📅 Дата / 💰 Внесено / ⚠️ Долг / 💳 Канал / 💬 Комментарий / ---
+Формат карточек закрытых: ✅ №X. ИМЯ / 🆔 ID / 📞 Тел / 🛍 Товар / 📅 Куплено / 💰 Внесено / 💳 Канал / 📦 Выдано / 💬 Комментарий / ---]`;
+    }
 
     const reply = await askTomi(from, contextMessage);
     await sendWhatsAppMessage(from, reply);
