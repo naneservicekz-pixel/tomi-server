@@ -9,7 +9,53 @@ const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'Tomi2022';
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const OWNER_PHONE = process.env.OWNER_PHONE; // номер Ермека без +
 
+const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyVAR8R8b-LOi7gFpa4bk8VXZFWfrbOv-TdIbZnNmrLSCzrl0HTH4X8LpJjU8sCYrVK/exec';
+
 const conversations = {};
+
+// Функции работы с Google Sheets через Apps Script
+async function getOpenPrepays() {
+  try {
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'getPrepays' })
+    });
+    const data = await res.json();
+    return data.prepays || [];
+  } catch (e) {
+    console.error('Ошибка загрузки предоплат:', e);
+    return [];
+  }
+}
+
+async function savePrepayToSheets(prepayData) {
+  try {
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'savePrepay', ...prepayData })
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('Ошибка сохранения предоплаты:', e);
+    return { status: 'error' };
+  }
+}
+
+async function closePrepayInSheets(prepayId) {
+  try {
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'closePrepay', prepayId })
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('Ошибка закрытия предоплаты:', e);
+    return { status: 'error' };
+  }
+}
 
 const TOMI_SYSTEM = `Ты — Томи, ИИ-управляющий сети магазинов NANÉ PARIS.
 
@@ -176,7 +222,22 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`От ${from}: ${userText}`);
 
-    const reply = await askTomi(from, userText);
+    // Если запрос связан с предоплатами или закрытием смены — загружаем из таблицы
+    let contextMessage = userText;
+    const textLower = userText.toLowerCase();
+    if (textLower.includes('предоплат') || textLower.includes('закрыт') || textLower.includes('открытые')) {
+      const prepays = await getOpenPrepays();
+      if (prepays.length > 0) {
+        const prepayList = prepays.map(p => 
+          `- ${p.client} | ${p.item} | задаток: ${p.prepay}₸ | остаток: ${p.remaining}₸ | канал: ${p.channel}`
+        ).join('\n');
+        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты в таблице:\n${prepayList}]`;
+      } else {
+        contextMessage = userText + '\n\n[СИСТЕМА: Открытых предоплат в таблице нет]';
+      }
+    }
+
+    const reply = await askTomi(from, contextMessage);
     await sendWhatsAppMessage(from, reply);
 
     // Уведомление Ермеку
