@@ -2,134 +2,152 @@ const express = require('express');
 const app = express();
 app.use(express.json());
 
-// Все ключи берутся из переменных окружения Railway - НЕ хранить в коде!
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'Tomi2022';
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-const OWNER_PHONE = process.env.OWNER_PHONE; // номер Ермека без +
-
+const OWNER_PHONE = process.env.OWNER_PHONE;
 const APPS_SCRIPT_URL = process.env.APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbyVAR8R8b-LOi7gFpa4bk8VXZFWfrbOv-TdIbZnNmrLSCzrl0HTH4X8LpJjU8sCYrVK/exec';
 
 const conversations = {};
 
-// Функции работы с Google Sheets через Apps Script
-async function getOpenPrepays() {
+async function sheetsRequest(body) {
   try {
     const res = await fetch(APPS_SCRIPT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'getPrepays' })
+      body: JSON.stringify(body)
     });
-    const data = await res.json();
-    return data.prepays || [];
+    return await res.json();
   } catch (e) {
-    console.error('Ошибка загрузки предоплат:', e);
-    return [];
+    console.error('Sheets error:', e);
+    return { status: 'error', message: e.message };
   }
+}
+
+async function getOpenPrepays() {
+  const data = await sheetsRequest({ action: 'getPrepays' });
+  return data.prepays || [];
 }
 
 async function getClosedPrepays() {
-  try {
-    const res = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'getClosedPrepays' })
-    });
-    const data = await res.json();
-    return data.prepays || [];
-  } catch (e) {
-    console.error('Ошибка загрузки закрытых предоплат:', e);
-    return [];
-  }
+  const data = await sheetsRequest({ action: 'getClosedPrepays' });
+  return data.prepays || [];
 }
 
-async function savePrepayToSheets(prepayData) {
-  try {
-    const res = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'savePrepay', ...prepayData })
-    });
-    return await res.json();
-  } catch (e) {
-    console.error('Ошибка сохранения предоплаты:', e);
-    return { status: 'error' };
-  }
-}
+const TOMI_SYSTEM = `Ты — Томи, ИИ-управляющий сети магазинов NANE PARIS.
 
-async function closePrepayInSheets(prepayId) {
-  try {
-    const res = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'closePrepay', prepayId })
-    });
-    return await res.json();
-  } catch (e) {
-    console.error('Ошибка закрытия предоплаты:', e);
-    return { status: 'error' };
-  }
-}
-
-const TOMI_SYSTEM = `Ты — Томи, ИИ-управляющий сети магазинов NANÉ PARIS.
-
-ТВОЯ ЛИЧНОСТЬ:
-- Имя: Томи
-- Ты профессиональный финансовый контролёр и управляющий
+ЛИЧНОСТЬ:
 - Строгий при ошибках, тёплый при успехе
-- Общаешься только на русском языке
-- Краткие чёткие сообщения, без лишних слов
+- Только русский язык
+- Короткие сообщения — продавец читает с телефона
+- Эмодзи умеренно: ✅ ⚠️ 🚨 💰 📋 📦
 
-МАГАЗИНЫ И ПРОДАВЦЫ:
+МАГАЗИН:
 - Продавцы: Зарина, Айнур, Луиза, Асель
-- Руководитель: Ермек (получает все уведомления)
-- Лимит наличных в кассе: 100 000 ₸ (выше — напоминать об инкассации)
-- Открытие магазина: 11:00 (продавцы должны прийти в 10:45)
+- Руководитель: Ермек
+- Открытие: 11:00 (прийти в 10:45)
+- Лимит кассы: 100 000 тенге (выше — напомнить об инкассации)
 
 КАНАЛЫ ОПЛАТЫ:
-- Kaspi QR и Онлайн Kaspi → один терминал Kaspi
-- Halyk QR и Онлайн Halyk → один терминал Halyk
-- Наличные → физическая касса
-- Личная карта → ROSTA отдельно
+- Kaspi QR + Онлайн Kaspi = один терминал Kaspi
+- Halyk QR + Онлайн Halyk = один терминал Halyk
+- Наличные = касса
+- Личная карта = отдельный канал
 
-МОДУЛИ РАБОТЫ:
+МОДУЛЬ 1: ОТКРЫТИЕ СМЕНЫ
+Триггер: "открытие", "открываю смену"
+1. Спроси имя и магазин
+2. Зафикси время (после 11:00 — предупреди об опоздании)
+3. Чек-лист: касса начало → терминалы → витрина
+4. Подтверди открытие
 
-1. ОТКРЫТИЕ СМЕНЫ (продавец пишет "открываю смену" или "открытие"):
-- Приветствие с именем и датой
-- Чек-лист: касса начало → терминалы → витрина
-- Фиксация времени (если после 11:00 — предупреждение об опоздании)
-- Уведомление Ермеку об открытии
+МОДУЛЬ 2: ПРЕДОПЛАТА
+Триггер: "предоплата", "задаток"
+Спрашивай по одному:
+1. ФИО клиента
+2. Телефон
+3. Товар (название + размер)
+4. Канал оплаты
+5. Полная стоимость
+6. Сумма задатка
+Рассчитай остаток. Подтверди сохранение.
 
-2. ПРЕДОПЛАТА (продавец пишет "предоплата"):
-- Запросить: ФИО клиента, телефон, товар, канал оплаты, полная сумма, задаток
-- Подтвердить и сохранить
-- Рассчитать остаток
+МОДУЛЬ 3: РАСХОД ИЗ КАССЫ
+Триггер: "расход", "трата"
+Спроси сумму и цель. Предупреди если касса превысит лимит.
 
-3. РАСХОД ИЗ КАССЫ (продавец пишет "расход"):
-- Запросить: сумму, цель расхода
-- Зафиксировать и предупредить если касса превысит 100 000 ₸
+МОДУЛЬ 4: ИНКАССАЦИЯ
+Триггер: "инкассация"
+Спроси сумму и кто забрал. Зафикси.
 
-4. ЗАКРЫТИЕ СМЕНЫ (продавец пишет "закрываю смену" или "закрытие"):
-- Физический чек-лист: витрина убрана → касса опечатана → терминалы выключены → сигнализация
-- Запросить фото Z-отчёта ROSTA, терминала Kaspi, терминала Halyk
-- Запросить кассу конец
-- Провести сверку и анализ расхождений
-- Дать заключение с причинами расхождений
-- Уведомить Ермека с итогом
+МОДУЛЬ 5: ЗАКРЫТИЕ СМЕНЫ
+Триггер: "закрытие", "закрываю смену"
 
-ПРАВИЛА АНАЛИЗА РАСХОЖДЕНИЙ:
-- Терминал больше ROSTA → скорее всего предоплата или возврат не в тот день
-- ROSTA больше терминала → скорее всего ошибка канала или лишняя проводка
-- Halyk больше/меньше → возможно перепутали канал Kaspi/Halyk
-- Бонусы → всегда создают расхождение, норма
-- Задавай точечные вопросы для выяснения причин
+ШАГ 1 — Физический чек-лист:
+- Витрина убрана?
+- Касса опечатана?
+- Терминалы выключены?
+- Сигнализация поставлена?
 
-СТИЛЬ ОБЩЕНИЯ:
-- При ошибках: чётко, строго, с объяснением как правильно
-- При успехе: тепло, с похвалой
-- Эмодзи умеренно: ✅ ⚠️ 🚨 💰 📋
-- Сообщения короткие — продавец читает с телефона`;
+ШАГ 2 — Z-отчёт ROSTA (спрашивай по одному):
+- Kaspi QR
+- Онлайн Kaspi
+- Halyk QR
+- Онлайн Halyk
+- Наличные
+- Личная карта (если были)
+- Бонусы (если были)
+- Возврат Kaspi (если был)
+- Возврат Halyk (если был)
+- Возврат наличными (если был)
+
+ШАГ 3 — Терминалы:
+- Итог терминала Kaspi
+- Итог терминала Halyk
+
+ШАГ 4 — Касса:
+- Касса начало (утром)
+- Касса конец (сейчас)
+- Выплаты из кассы (если были)
+- Инкассация (если была)
+
+ШАГ 5 — СВЕРКА (считай сам):
+ROSTA итого = Kaspi QR + Онлайн Kaspi + Halyk QR + Онлайн Halyk + Наличные + Личная карта + Бонусы - Возврат Kaspi - Возврат Halyk - Возврат нал
+
+Факт Kaspi = Терминал Kaspi - Возврат Kaspi
+Факт Halyk = Терминал Halyk - Возврат Halyk
+Факт нал = Касса конец - Касса начало + Выплаты + Инкассация + Возврат нал
+Факт итого = Факт Kaspi + Факт Halyk + Факт нал + Личная карта + Бонусы
+
+Расхождение = Факт итого - ROSTA итого
+
+ШАГ 6 — АНАЛИЗ:
+- Расхождение 0 → смена идеальная ✅
+- Терминал > ROSTA → вероятно предоплата или возврат не в тот день
+- ROSTA > терминал → ошибка канала или лишняя проводка
+- Бонусы → всегда расхождение, норма
+- Расхождение > 5000 тенге → обязательно уточни причину
+
+ШАГ 7 — ИТОГ продавцу:
+Покажи таблицу по каналам с расхождениями. Дай статус: ✅/⚠️/🚨
+
+ШАГ 8 — Скажи продавцу что смена сохранена. Пожелай хорошей ночи.
+
+МОДУЛЬ 6: ВЫДАЧА ТОВАРА
+Триггер: "выдала товар", "клиент забрал"
+Спроси ID (PREP-XXX) или имя. Закрой предоплату. Подтверди.
+
+МОДУЛЬ 7: ЗАПРОСЫ ЕРМЕКА:
+- "открытые предоплаты" → список кто не забрал
+- "закрытые предоплаты" → список выданных
+- "статус дня" → сводка
+
+ВАЖНО:
+- Kaspi QR и Онлайн Kaspi уже в терминале — не суммируй дважды
+- Возврат не в тот день — объясни в причине расхождения
+- При любом расхождении > 5000 тенге уточни причину
+- Когда пишешь "смена сохранена" — это сигнал для системы записать данные в таблицу`;
 
 async function sendWhatsAppMessage(to, message) {
   const url = `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`;
@@ -150,18 +168,12 @@ async function sendWhatsAppMessage(to, message) {
 }
 
 async function askTomi(userPhone, userMessage) {
-  if (!conversations[userPhone]) {
-    conversations[userPhone] = [];
-  }
-  
-  conversations[userPhone].push({
-    role: 'user',
-    content: userMessage
-  });
+  if (!conversations[userPhone]) conversations[userPhone] = [];
 
-  // Ограничиваем историю последними 20 сообщениями
-  if (conversations[userPhone].length > 20) {
-    conversations[userPhone] = conversations[userPhone].slice(-20);
+  conversations[userPhone].push({ role: 'user', content: userMessage });
+
+  if (conversations[userPhone].length > 30) {
+    conversations[userPhone] = conversations[userPhone].slice(-30);
   }
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -173,7 +185,7 @@ async function askTomi(userPhone, userMessage) {
     },
     body: JSON.stringify({
       model: 'claude-opus-4-5',
-      max_tokens: 1000,
+      max_tokens: 1500,
       system: TOMI_SYSTEM,
       messages: conversations[userPhone]
     })
@@ -181,48 +193,35 @@ async function askTomi(userPhone, userMessage) {
 
   const data = await response.json();
   if (!data.content || !data.content[0]) {
-    console.error('Ошибка Anthropic API:', JSON.stringify(data));
-    throw new Error('Пустой ответ от Anthropic');
+    console.error('Anthropic error:', JSON.stringify(data));
+    throw new Error('Empty response');
   }
   const reply = data.content[0].text;
-
-  conversations[userPhone].push({
-    role: 'assistant',
-    content: reply
-  });
-
+  conversations[userPhone].push({ role: 'assistant', content: reply });
   return reply;
 }
 
-// Webhook верификация
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-
   if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('Webhook verified!');
     res.status(200).send(challenge);
   } else {
     res.sendStatus(403);
   }
 });
 
-// Приём сообщений
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
-  
+
   try {
     const body = req.body;
     if (!body.object || !body.entry) return;
 
-    const entry = body.entry[0];
-    const changes = entry.changes[0];
-    const value = changes.value;
+    const message = body.entry[0]?.changes[0]?.value?.messages?.[0];
+    if (!message) return;
 
-    if (!value.messages) return;
-
-    const message = value.messages[0];
     const from = message.from;
     const msgType = message.type;
 
@@ -230,33 +229,33 @@ app.post('/webhook', async (req, res) => {
     if (msgType === 'text') {
       userText = message.text.body;
     } else if (msgType === 'image') {
-      userText = '[Продавец отправил фото]';
+      userText = '[Продавец отправил фото — попроси написать цифры вручную пока OCR не подключён]';
     } else {
       return;
     }
 
     console.log(`От ${from}: ${userText}`);
 
-    // Если запрос связан с предоплатами или закрытием смены — загружаем из таблицы
     let contextMessage = userText;
     const textLower = userText.toLowerCase();
-    if (textLower.includes('предоплат') || textLower.includes('открытые')) {
+
+    if (textLower.includes('открытые предоплат') || textLower.includes('кто не забрал') || textLower.includes('список клиент')) {
       const prepays = await getOpenPrepays();
       if (prepays.length > 0) {
-        const prepayList = prepays.map(p => 
-          `- Клиент: ${p.client} | Товар: ${p.item} | Дата покупки: ${p.date} | Предоплата внесена: ${p.amount}₸ | Остаток долга: ${p.balance}₸ | Канал оплаты: ${p.channel}`
+        const list = prepays.map(p =>
+          `ID: ${p.id} | Клиент: ${p.client} | Тел: ${p.phone || 'нет'} | Товар: ${p.item} | Дата: ${p.date} | Внесено: ${p.amount}тг | Остаток: ${p.balance}тг | Канал: ${p.channel} | Комментарий: ${p.notes || '-'}`
         ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты — товар НЕ выдан (${prepays.length} шт):\n${prepayList}\n\nПокажи ПОЛНЫЙ список всех клиентов. Для каждого клиента используй такой формат:\n\n📦 №X. ИМЯ КЛИЕНТА\n🛍 Товар: ...\n📅 Дата: ...\n💰 Внесено: ...₸\n💳 Канал: ...\n⚠️ Долг: ...₸ (если 0 — напиши "Оплачено полностью, ждёт выдачи")\n---\n\nПокажи ВСЕ записи без исключения.]`;
+        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты — товар НЕ выдан (${prepays.length} шт):\n${list}\n\nФормат для каждого:\n📦 №X. ИМЯ\n🆔 ID: ...\n📞 Телефон: ...\n🛍 Товар: ...\n📅 Дата: ...\n💰 Внесено: ...тг\n💳 Канал: ...\n⚠️ Долг: ...тг (0 = "Оплачено, ждёт выдачи")\n💬 Комментарий: ...\n---\nПокажи ВСЕ записи.]`;
       } else {
         contextMessage = userText + '\n\n[СИСТЕМА: Открытых предоплат нет]';
       }
-    } else if (textLower.includes('закрытые предоплат') || textLower.includes('закрытых предоплат') || textLower.includes('кому выдали') || textLower.includes('выданные')) {
+    } else if (textLower.includes('закрытые предоплат') || textLower.includes('кому выдали') || textLower.includes('выданные')) {
       const prepays = await getClosedPrepays();
       if (prepays.length > 0) {
-        const prepayList = prepays.map(p => 
-          `- Клиент: ${p.client} | Товар: ${p.item} | Дата покупки: ${p.date} | Предоплата: ${p.amount}₸ | Остаток: ${p.balance}₸ | Канал: ${p.channel} | Дата выдачи: ${p.closeDate || '-'}`
+        const list = prepays.map(p =>
+          `ID: ${p.id} | Клиент: ${p.client} | Тел: ${p.phone || 'нет'} | Товар: ${p.item} | Дата покупки: ${p.date} | Внесено: ${p.amount}тг | Канал: ${p.channel} | Выдано: ${p.closeDate || '-'} | Комментарий: ${p.notes || '-'}`
         ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Закрытые предоплаты — товар выдан (${prepays.length} шт):\n${prepayList}\n\nПокажи ПОЛНЫЙ список. Для каждого клиента используй формат:\n\n✅ №X. ИМЯ КЛИЕНТА\n🛍 Товар: ...\n📅 Куплено: ...\n💰 Внесено: ...₸\n💳 Канал: ...\n📦 Выдано: ...\n---\n\nПокажи ВСЕ записи.]`;
+        contextMessage = userText + `\n\n[СИСТЕМА: Закрытые предоплаты — товар выдан (${prepays.length} шт):\n${list}\n\nФормат для каждого:\n✅ №X. ИМЯ\n🆔 ID: ...\n📞 Телефон: ...\n🛍 Товар: ...\n📅 Куплено: ...\n💰 Внесено: ...тг\n💳 Канал: ...\n📦 Выдано: ...\n💬 Комментарий: ...\n---\nПокажи ВСЕ записи.]`;
       } else {
         contextMessage = userText + '\n\n[СИСТЕМА: Закрытых предоплат нет]';
       }
@@ -265,29 +264,32 @@ app.post('/webhook', async (req, res) => {
     const reply = await askTomi(from, contextMessage);
     await sendWhatsAppMessage(from, reply);
 
-    // Уведомление Ермеку
+    // Уведомления Ермеку
     if (OWNER_PHONE && from !== OWNER_PHONE) {
       const replyLower = reply.toLowerCase();
-      const isClosing = replyLower.includes('смена закрыта') || replyLower.includes('итог смены') || replyLower.includes('сверка сошл');
+      const isClosing = replyLower.includes('смена сохранена') || replyLower.includes('итог смены');
       const isOpening = replyLower.includes('смена открыта') || replyLower.includes('открытие зафиксировано');
-      const isAlert = replyLower.includes('опоздание') || replyLower.includes('расхождение');
-      
+      const isLate = replyLower.includes('опоздание');
+      const isBigAlert = replyLower.includes('🚨');
+
       if (isClosing) {
-        await sendWhatsAppMessage(OWNER_PHONE, '📋 NANÉ PARIS · Закрытие\nОт: +' + from + '\n\n' + reply.substring(0, 500));
+        await sendWhatsAppMessage(OWNER_PHONE, `📋 NANE PARIS · Закрытие\nОт: +${from}\n\n${reply.substring(0, 600)}`);
       } else if (isOpening) {
-        await sendWhatsAppMessage(OWNER_PHONE, '🌅 NANÉ PARIS · Открытие\nОт: +' + from + '\n\n' + reply.substring(0, 300));
-      } else if (isAlert) {
-        await sendWhatsAppMessage(OWNER_PHONE, '🚨 NANÉ PARIS · Внимание!\nОт: +' + from + '\n\n' + reply.substring(0, 300));
+        await sendWhatsAppMessage(OWNER_PHONE, `🌅 NANE PARIS · Открытие\nОт: +${from}\n\n${reply.substring(0, 300)}`);
+      } else if (isLate) {
+        await sendWhatsAppMessage(OWNER_PHONE, `🚨 NANE PARIS · Опоздание!\nОт: +${from}\n\n${reply.substring(0, 300)}`);
+      } else if (isBigAlert) {
+        await sendWhatsAppMessage(OWNER_PHONE, `⚠️ NANE PARIS · Внимание!\nОт: +${from}\n\n${reply.substring(0, 400)}`);
       }
     }
 
   } catch (error) {
-    console.error('Ошибка:', error);
+    console.error('Webhook error:', error);
   }
 });
 
 app.get('/', (req, res) => {
-  res.send('ТОМИ — ИИ-управляющий NANÉ PARIS работает ✅');
+  res.send('ТОМИ — ИИ-управляющий NANE PARIS ✅');
 });
 
 const PORT = process.env.PORT || 3000;
