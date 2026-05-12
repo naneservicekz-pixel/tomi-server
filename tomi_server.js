@@ -35,6 +35,79 @@ async function getClosedPrepays() {
   return data.prepays || [];
 }
 
+async function saveShiftToSheets(shiftData) {
+  return await sheetsRequest({ action: 'saveShift', ...shiftData });
+}
+
+async function extractAndSaveShift(userPhone, reply, conversations) {
+  try {
+    // Просим Claude извлечь данные смены из разговора
+    const history = conversations[userPhone] || [];
+    const extractResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-5',
+        max_tokens: 500,
+        system: 'Ты извлекаешь данные из разговора о закрытии смены. Верни ТОЛЬКО валидный JSON без комментариев.',
+        messages: [{
+          role: 'user',
+          content: `Из этого разговора о закрытии смены извлеки данные и верни JSON:
+${history.slice(-20).map(m => m.role + ': ' + m.content).join('
+')}
+
+Верни JSON с полями (0 если не упоминалось):
+{
+  "date": "YYYY-MM-DD",
+  "seller": "имя продавца",
+  "rKaspi": число,
+  "rOnline": число,
+  "rHalyk": число,
+  "rHalykOnline": число,
+  "rCash": число,
+  "rPersonal": число,
+  "rBonus": число,
+  "rRetKaspi": число,
+  "rRetHalyk": число,
+  "rRetCash": число,
+  "tKaspi": число,
+  "tHalyk": число,
+  "tPersonal": число,
+  "cashOpen": число,
+  "cashActual": число,
+  "cashPayouts": число,
+  "inkasso": число,
+  "shiftStatus": "ok или remarks или issues",
+  "notes": "причина расхождения если есть"
+}`
+        }]
+      })
+    });
+
+    const extractData = await extractResponse.json();
+    const jsonText = extractData.content[0].text.trim();
+    const shiftData = JSON.parse(jsonText);
+    
+    // Добавляем дату если не извлечена
+    if (!shiftData.date || shiftData.date === 'YYYY-MM-DD') {
+      const now = new Date();
+      const astana = new Date(now.getTime() + 5 * 60 * 60 * 1000);
+      shiftData.date = astana.toISOString().split('T')[0];
+    }
+
+    const result = await saveShiftToSheets(shiftData);
+    console.log('Смена сохранена:', result);
+    return result;
+  } catch (e) {
+    console.error('Ошибка сохранения смены:', e);
+    return { status: 'error' };
+  }
+}
+
 const TOMI_SYSTEM = `Ты — Томи, ИИ-управляющий сети магазинов NANE PARIS.
 
 ЛИЧНОСТЬ:
@@ -269,6 +342,12 @@ ${closedList}
 
     const reply = await askTomi(from, contextMessage);
     await sendWhatsAppMessage(from, reply);
+
+    // Автосохранение смены когда Томи говорит что смена сохранена
+    const replyLower2 = reply.toLowerCase();
+    if (replyLower2.includes('смена сохранена') || replyLower2.includes('смену сохранил')) {
+      extractAndSaveShift(from, reply, conversations).catch(e => console.error('Save shift error:', e));
+    }
 
     // Уведомления Ермеку
     if (OWNER_PHONE && from !== OWNER_PHONE) {
