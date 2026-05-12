@@ -1,0 +1,12 @@
+{
+  "name": "tomi-server",
+  "version": "1.0.0",
+  "description": "Томи — ИИ-управляющий NANÉ PARIS",
+  "main": "tomi_server.js",
+  "scripts": {
+    "start": "node tomi_server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
