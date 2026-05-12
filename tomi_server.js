@@ -29,6 +29,21 @@ async function getOpenPrepays() {
   }
 }
 
+async function getClosedPrepays() {
+  try {
+    const res = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'getClosedPrepays' })
+    });
+    const data = await res.json();
+    return data.prepays || [];
+  } catch (e) {
+    console.error('Ошибка загрузки закрытых предоплат:', e);
+    return [];
+  }
+}
+
 async function savePrepayToSheets(prepayData) {
   try {
     const res = await fetch(APPS_SCRIPT_URL, {
@@ -225,15 +240,25 @@ app.post('/webhook', async (req, res) => {
     // Если запрос связан с предоплатами или закрытием смены — загружаем из таблицы
     let contextMessage = userText;
     const textLower = userText.toLowerCase();
-    if (textLower.includes('предоплат') || textLower.includes('закрыт') || textLower.includes('открытые')) {
+    if (textLower.includes('предоплат') || textLower.includes('открытые')) {
       const prepays = await getOpenPrepays();
       if (prepays.length > 0) {
         const prepayList = prepays.map(p => 
-          `- ${p.client} | ${p.item} | задаток: ${p.prepay}₸ | остаток: ${p.remaining}₸ | канал: ${p.channel}`
+          `- ${p.client} | ${p.item} | задаток: ${p.amount}₸ | остаток: ${p.balance}₸ | канал: ${p.channel} | дата: ${p.date}`
         ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты в таблице:\n${prepayList}]`;
+        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты (${prepays.length} шт):\n${prepayList}]`;
       } else {
-        contextMessage = userText + '\n\n[СИСТЕМА: Открытых предоплат в таблице нет]';
+        contextMessage = userText + '\n\n[СИСТЕМА: Открытых предоплат нет]';
+      }
+    } else if (textLower.includes('закрытые предоплат') || textLower.includes('закрытых предоплат')) {
+      const prepays = await getClosedPrepays();
+      if (prepays.length > 0) {
+        const prepayList = prepays.map(p => 
+          `- ${p.client} | ${p.item} | сумма: ${p.amount}₸ | закрыта: ${p.closeDate || p.date}`
+        ).join('\n');
+        contextMessage = userText + `\n\n[СИСТЕМА: Закрытые предоплаты (${prepays.length} шт):\n${prepayList}]`;
+      } else {
+        contextMessage = userText + '\n\n[СИСТЕМА: Закрытых предоплат нет]';
       }
     }
 
