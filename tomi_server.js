@@ -246,7 +246,7 @@ app.post('/webhook', async (req, res) => {
         const prepayList = prepays.map(p => 
           `- Клиент: ${p.client} | Товар: ${p.item} | Дата покупки: ${p.date} | Предоплата внесена: ${p.amount}₸ | Остаток долга: ${p.balance}₸ | Канал оплаты: ${p.channel}`
         ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты — товар НЕ выдан (${prepays.length} шт):\n${prepayList}\n\nПокажи ПОЛНЫЙ список всех клиентов из этих данных с форматированием: номер, клиент, товар, дата, предоплата, остаток, канал.]`;
+        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты — товар НЕ выдан (${prepays.length} шт):\n${prepayList}\n\nПокажи ПОЛНЫЙ список всех клиентов. Для каждого клиента используй такой формат:\n\n📦 №X. ИМЯ КЛИЕНТА\n🛍 Товар: ...\n📅 Дата: ...\n💰 Внесено: ...₸\n💳 Канал: ...\n⚠️ Долг: ...₸ (если 0 — напиши "Оплачено полностью, ждёт выдачи")\n---\n\nПокажи ВСЕ записи без исключения.]`;
       } else {
         contextMessage = userText + '\n\n[СИСТЕМА: Открытых предоплат нет]';
       }
@@ -256,7 +256,7 @@ app.post('/webhook', async (req, res) => {
         const prepayList = prepays.map(p => 
           `- Клиент: ${p.client} | Товар: ${p.item} | Дата покупки: ${p.date} | Предоплата: ${p.amount}₸ | Остаток: ${p.balance}₸ | Канал: ${p.channel} | Дата выдачи: ${p.closeDate || '-'}`
         ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Закрытые предоплаты — товар выдан (${prepays.length} шт):\n${prepayList}]`;
+        contextMessage = userText + `\n\n[СИСТЕМА: Закрытые предоплаты — товар выдан (${prepays.length} шт):\n${prepayList}\n\nПокажи ПОЛНЫЙ список. Для каждого клиента используй формат:\n\n✅ №X. ИМЯ КЛИЕНТА\n🛍 Товар: ...\n📅 Куплено: ...\n💰 Внесено: ...₸\n💳 Канал: ...\n📦 Выдано: ...\n---\n\nПокажи ВСЕ записи.]`;
       } else {
         contextMessage = userText + '\n\n[СИСТЕМА: Закрытых предоплат нет]';
       }
