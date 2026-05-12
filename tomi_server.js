@@ -179,9 +179,20 @@ app.post('/webhook', async (req, res) => {
     const reply = await askTomi(from, userText);
     await sendWhatsAppMessage(from, reply);
 
-    // Уведомление Ермеку при закрытии смены
-    if (userText.toLowerCase().includes('закрыт') && OWNER_PHONE) {
-      await sendWhatsAppMessage(OWNER_PHONE, `📋 Смена закрыта\nПродавец: ${from}\n\n${reply}`);
+    // Уведомление Ермеку
+    if (OWNER_PHONE && from !== OWNER_PHONE) {
+      const replyLower = reply.toLowerCase();
+      const isClosing = replyLower.includes('смена закрыта') || replyLower.includes('итог смены') || replyLower.includes('сверка сошл');
+      const isOpening = replyLower.includes('смена открыта') || replyLower.includes('открытие зафиксировано');
+      const isAlert = replyLower.includes('опоздание') || replyLower.includes('расхождение');
+      
+      if (isClosing) {
+        await sendWhatsAppMessage(OWNER_PHONE, '📋 NANÉ PARIS · Закрытие\nОт: +' + from + '\n\n' + reply.substring(0, 500));
+      } else if (isOpening) {
+        await sendWhatsAppMessage(OWNER_PHONE, '🌅 NANÉ PARIS · Открытие\nОт: +' + from + '\n\n' + reply.substring(0, 300));
+      } else if (isAlert) {
+        await sendWhatsAppMessage(OWNER_PHONE, '🚨 NANÉ PARIS · Внимание!\nОт: +' + from + '\n\n' + reply.substring(0, 300));
+      }
     }
 
   } catch (error) {
