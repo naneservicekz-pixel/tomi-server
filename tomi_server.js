@@ -119,6 +119,10 @@ async function askTomi(userPhone, userMessage) {
   });
 
   const data = await response.json();
+  if (!data.content || !data.content[0]) {
+    console.error('Ошибка Anthropic API:', JSON.stringify(data));
+    throw new Error('Пустой ответ от Anthropic');
+  }
   const reply = data.content[0].text;
 
   conversations[userPhone].push({
