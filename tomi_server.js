@@ -311,10 +311,21 @@ app.post('/webhook', async (req, res) => {
 
     // Умная загрузка предоплат — только когда нужно
     const textLower = userText.toLowerCase();
-    const needsPrepays = textLower.includes('предоплат') || textLower.includes('клиент') || 
-      textLower.includes('забрал') || textLower.includes('выдал') || textLower.includes('список') ||
-      textLower.includes('долг') || textLower.includes('задат') || textLower.includes('закрыт') ||
-      textLower.includes('выдача') || textLower.includes('prep-');
+    // Если просто "предоплаты" без уточнения — спрашиваем какие
+    const isJustPrepay = (textLower === 'предоплаты' || textLower === 'предоплата' || textLower === 'предоплатф') && 
+      !textLower.includes('открыт') && !textLower.includes('закрыт') && 
+      !textLower.includes('кто не') && !textLower.includes('кому') && !textLower.includes('prep-');
+    
+    if (isJustPrepay) {
+      const clarifyMsg = 'Какие предоплаты показать?\n\n📦 *Открытые* — кто не забрал товар\n✅ *Закрытые* — кому уже выдали\n\nНапиши: «открытые» или «закрытые»';
+      await sendWhatsAppMessage(from, clarifyMsg);
+      return;
+    }
+
+    const needsPrepays = textLower.includes('предоплат') || 
+      textLower.includes('открытые') || textLower.includes('закрытые') ||
+      textLower.includes('кто не забрал') || textLower.includes('кому выдали') ||
+      textLower.includes('prep-');
 
     let contextMessage = userText;
 
