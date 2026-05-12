@@ -236,30 +236,36 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`От ${from}: ${userText}`);
 
-    let contextMessage = userText;
-    const textLower = userText.toLowerCase();
+    // Загружаем предоплаты параллельно — Томи сам решит что показать
+    const [openPrepays, closedPrepays] = await Promise.all([
+      getOpenPrepays(),
+      getClosedPrepays()
+    ]);
 
-    if (textLower.includes('открытые предоплат') || textLower.includes('кто не забрал') || textLower.includes('список клиент')) {
-      const prepays = await getOpenPrepays();
-      if (prepays.length > 0) {
-        const list = prepays.map(p =>
-          `ID: ${p.id} | Клиент: ${p.client} | Тел: ${p.phone || 'нет'} | Товар: ${p.item} | Дата: ${p.date} | Внесено: ${p.amount}тг | Остаток: ${p.balance}тг | Канал: ${p.channel} | Комментарий: ${p.notes || '-'}`
-        ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты — товар НЕ выдан (${prepays.length} шт):\n${list}\n\nФормат для каждого:\n📦 №X. ИМЯ\n🆔 ID: ...\n📞 Телефон: ...\n🛍 Товар: ...\n📅 Дата: ...\n💰 Внесено: ...тг\n💳 Канал: ...\n⚠️ Долг: ...тг (0 = "Оплачено, ждёт выдачи")\n💬 Комментарий: ...\n---\nПокажи ВСЕ записи.]`;
-      } else {
-        contextMessage = userText + '\n\n[СИСТЕМА: Открытых предоплат нет]';
-      }
-    } else if (textLower.includes('закрытые предоплат') || textLower.includes('кому выдали') || textLower.includes('выданные')) {
-      const prepays = await getClosedPrepays();
-      if (prepays.length > 0) {
-        const list = prepays.map(p =>
-          `ID: ${p.id} | Клиент: ${p.client} | Тел: ${p.phone || 'нет'} | Товар: ${p.item} | Дата покупки: ${p.date} | Внесено: ${p.amount}тг | Канал: ${p.channel} | Выдано: ${p.closeDate || '-'} | Комментарий: ${p.notes || '-'}`
-        ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Закрытые предоплаты — товар выдан (${prepays.length} шт):\n${list}\n\nФормат для каждого:\n✅ №X. ИМЯ\n🆔 ID: ...\n📞 Телефон: ...\n🛍 Товар: ...\n📅 Куплено: ...\n💰 Внесено: ...тг\n💳 Канал: ...\n📦 Выдано: ...\n💬 Комментарий: ...\n---\nПокажи ВСЕ записи.]`;
-      } else {
-        contextMessage = userText + '\n\n[СИСТЕМА: Закрытых предоплат нет]';
-      }
-    }
+    const openList = openPrepays.length > 0
+      ? openPrepays.map(p =>
+          `ID:${p.id}|${p.client}|тел:${p.phone||'нет'}|${p.item}|дата:${p.date}|внесено:${p.amount}тг|долг:${p.balance}тг|${p.channel}|${p.notes||'-'}`
+        ).join('\n')
+      : 'нет';
+
+    const closedList = closedPrepays.length > 0
+      ? closedPrepays.map(p =>
+          `ID:${p.id}|${p.client}|тел:${p.phone||'нет'}|${p.item}|дата:${p.date}|внесено:${p.amount}тг|${p.channel}|выдано:${p.closeDate||'-'}|${p.notes||'-'}`
+        ).join('\n')
+      : 'нет';
+
+    const contextMessage = userText + `
+
+[ДАННЫЕ СИСТЕМЫ — используй если нужно для ответа:
+ОТКРЫТЫЕ ПРЕДОПЛАТЫ (товар не выдан, ${openPrepays.length} шт):
+${openList}
+
+ЗАКРЫТЫЕ ПРЕДОПЛАТЫ (товар выдан, ${closedPrepays.length} шт):
+${closedList}
+
+При показе предоплат используй формат карточек:
+Открытые: 📦 №X. ИМЯ / 🆔 ID / 📞 Тел / 🛍 Товар / 📅 Дата / 💰 Внесено / ⚠️ Долг (0=ждёт выдачи) / 💳 Канал / 💬 Комментарий / ---
+Закрытые: ✅ №X. ИМЯ / 🆔 ID / 📞 Тел / 🛍 Товар / 📅 Куплено / 💰 Внесено / 💳 Канал / 📦 Выдано / 💬 Комментарий / ---]`;
 
     const reply = await askTomi(from, contextMessage);
     await sendWhatsAppMessage(from, reply);
