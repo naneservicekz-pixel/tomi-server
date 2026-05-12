@@ -244,19 +244,19 @@ app.post('/webhook', async (req, res) => {
       const prepays = await getOpenPrepays();
       if (prepays.length > 0) {
         const prepayList = prepays.map(p => 
-          `- ${p.client} | ${p.item} | задаток: ${p.amount}₸ | остаток: ${p.balance}₸ | канал: ${p.channel} | дата: ${p.date}`
+          `- Клиент: ${p.client} | Товар: ${p.item} | Дата покупки: ${p.date} | Предоплата внесена: ${p.amount}₸ | Остаток долга: ${p.balance}₸ | Канал оплаты: ${p.channel}`
         ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты (${prepays.length} шт):\n${prepayList}]`;
+        contextMessage = userText + `\n\n[СИСТЕМА: Открытые предоплаты — товар НЕ выдан (${prepays.length} шт):\n${prepayList}\n\nПокажи ПОЛНЫЙ список всех клиентов из этих данных с форматированием: номер, клиент, товар, дата, предоплата, остаток, канал.]`;
       } else {
         contextMessage = userText + '\n\n[СИСТЕМА: Открытых предоплат нет]';
       }
-    } else if (textLower.includes('закрытые предоплат') || textLower.includes('закрытых предоплат')) {
+    } else if (textLower.includes('закрытые предоплат') || textLower.includes('закрытых предоплат') || textLower.includes('кому выдали') || textLower.includes('выданные')) {
       const prepays = await getClosedPrepays();
       if (prepays.length > 0) {
         const prepayList = prepays.map(p => 
-          `- ${p.client} | ${p.item} | сумма: ${p.amount}₸ | закрыта: ${p.closeDate || p.date}`
+          `- Клиент: ${p.client} | Товар: ${p.item} | Дата покупки: ${p.date} | Предоплата: ${p.amount}₸ | Остаток: ${p.balance}₸ | Канал: ${p.channel} | Дата выдачи: ${p.closeDate || '-'}`
         ).join('\n');
-        contextMessage = userText + `\n\n[СИСТЕМА: Закрытые предоплаты (${prepays.length} шт):\n${prepayList}]`;
+        contextMessage = userText + `\n\n[СИСТЕМА: Закрытые предоплаты — товар выдан (${prepays.length} шт):\n${prepayList}]`;
       } else {
         contextMessage = userText + '\n\n[СИСТЕМА: Закрытых предоплат нет]';
       }
