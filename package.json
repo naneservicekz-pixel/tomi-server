@@ -1,12 +1,1 @@
-{
-  "name": "tomi-server",
-  "version": "1.0.0",
-  "description": "Томи — ИИ-управляющий NANÉ PARIS",
-  "main": "tomi_server.js",
-  "scripts": {
-    "start": "node tomi_server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2"
-  }
-}
+{"name":"tomi-server","version":"1.0.0","main":"tomi_telegram.js","scripts":{"start":"node tomi_telegram.js"},"dependencies":{"express":"^4.18.2","node-telegram-bot-api":"^0.64.0","@anthropic-ai/sdk":"^0.20.0","googleapis":"^140.0.0"}} 
