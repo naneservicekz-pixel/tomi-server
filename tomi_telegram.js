@@ -7,20 +7,16 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const OWNER_CHAT_ID = process.env.OWNER_CHAT_ID;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID || '1pHMBMpMpxEByKmVYJxoKAVynTPNSqSTWLrMhVnvZDLo';
+const CASH_ALERT_LIMIT = parseInt(process.env.CASH_ALERT_LIMIT || '100000');
 
-// Белый список — ID через запятую в переменной ALLOWED_USERS
-// Если переменная не задана — работает только для Ермека
 const getAllowedUsers = () => {
   const base = [String(OWNER_CHAT_ID)];
   if (process.env.ALLOWED_USERS) {
-    const extra = process.env.ALLOWED_USERS.split(',').map(s => s.trim()).filter(Boolean);
-    return [...base, ...extra];
+    return [...base, ...process.env.ALLOWED_USERS.split(',').map(s => s.trim()).filter(Boolean)];
   }
   return base;
 };
 
-// Магазины продавцов — ID через запятую в SHOP_MAP формата "chatId:магазин"
-// Пример: "8694507895:NANE PARIS Алматы,111222333:NANE PARIS Астана"
 const getShopMap = () => {
   const map = {};
   if (process.env.SHOP_MAP) {
@@ -34,10 +30,12 @@ const getShopMap = () => {
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-
 console.log('Томи запущена');
 
 const conversations = {};
+
+// Отслеживаем открытые смены { chatId: { seller, shop, openTime, cashOpen } }
+const openShifts = {};
 
 async function getSheetData(range) {
   try {
@@ -68,64 +66,216 @@ async function downloadFile(url) {
   return new Promise((resolve, reject) => {
     https.get(url, (res) => {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      res.on('data', c => chunks.push(c));
       res.on('end', () => resolve(Buffer.concat(chunks)));
       res.on('error', reject);
     }).on('error', reject);
   });
 }
 
-const SELLER_PROMPT = (shopName) => `Ты Томи — ИИ-управляющий магазина женской одежды ${shopName || 'NANÉ PARIS'} (Алматы).
-Ты совмещаешь роли: управляющий, бухгалтер, HR, коммерческий директор, операционный директор.
-Общаешься с продавцами дружелюбно но чётко — как наставник, не как робот.
+async function sendToOwner(text) {
+  if (!OWNER_CHAT_ID) return;
+  try { await bot.sendMessage(OWNER_CHAT_ID, text, { parse_mode: 'Markdown' }); } catch(e) {
+    console.error('Ошибка отправки владельцу:', e.message);
+  }
+}
 
-СТИЛЬ: тёплый, профессиональный, по делу. Хвалишь за хорошую работу. При проблемах — факты без обвинений. Используешь имя. Эмодзи умеренно. Короткие сообщения.
+// Проверка наличных — алерт если > лимита
+async function checkCashLimit(cashAmount, sellerName, shopName) {
+  if (cashAmount >= CASH_ALERT_LIMIT) {
+    await sendToOwner(
+      `💰 *АЛЕРТ: Много наличных в кассе!*\n\n` +
+      `🏪 ${shopName}\n` +
+      `👤 Продавец: ${sellerName}\n` +
+      `💵 В кассе: *${cashAmount.toLocaleString()} ₸*\n` +
+      `⚠️ Лимит: ${CASH_ALERT_LIMIT.toLocaleString()} ₸\n\n` +
+      `Рекомендуется провести инкассацию.`
+    );
+    console.log('Алерт наличных отправлен:', cashAmount);
+  }
+}
 
-ОТКРЫТИЕ СМЕНЫ:
-- Приветствуй по имени, фиксируй время
-- Если после 10:15 — отметь опоздание, сообщи руководителю
-- Если не выходит на связь до 10:30 — алерт руководителю
+// Проверка незакрытых предоплат на сегодня
+async function checkTodayPrepays() {
+  try {
+    const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty' });
+    const rows = await getSheetData('Предоплаты!A:J');
+    if (rows.length < 2) return;
+    const due = rows.slice(1).filter(r => {
+      const visitDate = r[6] || '';
+      const status = r[8] || '';
+      return visitDate.includes(today.split('.')[0]) && status !== 'выдан' && status !== 'отменён';
+    });
+    if (due.length > 0) {
+      let msg = `⏰ *Предоплаты на сегодня (${today}):*\n\n`;
+      due.forEach((r, i) => {
+        msg += `${i+1}. *${r[2]||'Клиент'}* · ${r[4]||''} · ${parseInt(r[5]||0).toLocaleString()} ₸\n`;
+        msg += `   Товар: ${r[3]||'—'} · Ждёт: ${r[7]||'—'}\n\n`;
+      });
+      msg += `Напомни продавцу проверить эти предоплаты!`;
+      await sendToOwner(msg);
+    }
+  } catch(e) { console.error('Ошибка проверки предоплат:', e.message); }
+}
 
-ЗАКРЫТИЕ СМЕНЫ — собери по шагам:
-1. Продажи: Kaspi QR, Halyk QR, наличные, личная карта продавца
-2. Расходы из кассы (каждый с описанием, если > 5000₸ — уточни обоснование)
-3. Инкассация (сколько изъято)
-4. Физический остаток в кассе
-Сверка: Kaspi + Halyk + Нал + Карта - Расходы - Инкассация = Остаток
-Расхождение > 0 — уточни причину, не закрывай пока не выяснено.
+// Ежедневная сводка для Ермека
+async function dailySummary() {
+  try {
+    const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty' });
+    const rows = await getSheetData('Смены!A:V');
+    if (rows.length < 2) {
+      await sendToOwner(`📊 *Сводка за ${today}*\n\nДанных по сменам за сегодня нет.`);
+      return;
+    }
+    const todayRows = rows.slice(1).filter(r => (r[0]||'').includes(today.split('.').reverse().join('.')));
+    
+    if (todayRows.length === 0) {
+      await sendToOwner(
+        `📊 *Сводка за ${today}*\n\n` +
+        `⚠️ Смены за сегодня не найдены.\n` +
+        `Возможно смена не была закрыта через Томи.`
+      );
+      return;
+    }
 
-ПРЕДОПЛАТЫ — при создании запроси:
-имя клиента, телефон, сумма, описание товара, дата визита
-Статусы: ожидает / готов к выдаче / выдан / отменён
+    let totalRosta = 0;
+    let msg = `📊 *Сводка за ${today}*\n\n`;
+    todayRows.forEach(r => {
+      const seller = r[1] || '—';
+      const rosta = parseInt(r[11]||0);
+      totalRosta += rosta;
+      const status = r[20] || 'ok';
+      const icon = {'ok':'✅','remarks':'⚠️','issues':'🚨'}[status] || '✅';
+      msg += `${icon} *${seller}*: ${rosta.toLocaleString()} ₸\n`;
+    });
+    msg += `\n💰 *Итого выручка: ${totalRosta.toLocaleString()} ₸*\n`;
 
-ОПЕРАЦИОННЫЙ КОНТРОЛЬ:
-- Следи за соблюдением стандартов
-- Если продавец пропускает шаги — мягко верни к процессу
-- Фиксируй все отклонения для отчёта руководителю
+    // Проверим открытые смены
+    const openCount = Object.keys(openShifts).length;
+    if (openCount > 0) {
+      msg += `\n⚠️ Есть незакрытые смены: ${openCount} шт.`;
+    }
+
+    await sendToOwner(msg);
+  } catch(e) { console.error('Ошибка сводки:', e.message); }
+}
+
+// Планировщик задач по времени (Астана UTC+5)
+function scheduleTask(hourUTC, minuteUTC, task) {
+  const now = new Date();
+  let next = new Date();
+  next.setUTCHours(hourUTC, minuteUTC, 0, 0);
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+  const delay = next - now;
+  setTimeout(() => {
+    task();
+    setInterval(task, 24 * 60 * 60 * 1000);
+  }, delay);
+}
+
+// 22:00 Астана = 17:00 UTC — ежедневная сводка
+scheduleTask(17, 0, dailySummary);
+
+// 06:15 Астана = 01:15 UTC — алерт если смена не открыта
+scheduleTask(1, 15, async () => {
+  if (Object.keys(openShifts).length === 0) {
+    await sendToOwner(
+      `⏰ *Алерт: Смена не открыта!*\n\n` +
+      `Уже 11:15 — ни один продавец не открыл смену через Томи.\n` +
+      `Проверь ситуацию в магазине.`
+    );
+  }
+});
+
+// 09:00 Астана = 04:00 UTC — напоминание о предоплатах
+scheduleTask(4, 0, checkTodayPrepays);
+
+console.log('Планировщик запущен: сводка в 22:00, алерт в 11:15, предоплаты в 09:00 (Астана)');
+
+const SELLER_PROMPT = (shopName) => `Ты Томи — ИИ-управляющий магазина NANÉ PARIS (${shopName || 'Алматы'}).
+Ты умнее обычного бота — анализируешь, находишь ошибки, объясняешь расхождения.
+Общаешься дружелюбно но чётко. Используешь имя продавца. Короткие сообщения.
+
+═══ ОТКРЫТИЕ СМЕНЫ ═══
+Запроси: имя продавца, остаток наличных в кассе на начало смены.
+Если после 10:15 — зафикисруй опоздание и сообщи руководителю.
+
+═══ В ТЕЧЕНИЕ ДНЯ ═══
+
+ПОПОЛНЕНИЕ КАССЫ — если продавец говорит "добавили деньги", "пополнили кассу", "привезли размен":
+Запроси: сумму, откуда (размен / от руководителя / частичная инкассация).
+Подтверди: "Записала: +X ₸ в кассу."
+
+РАСХОДЫ ИЗ КАССЫ:
+Запроси: сумму, на что. Если > 5000 ₸ — уточни обоснование.
+
+КОНТРОЛЬ НАЛИЧНЫХ В КАССЕ:
+Если продавец сообщает остаток наличных и он >= ${CASH_ALERT_LIMIT} ₸ — скажи:
+"⚠️ В кассе ${CASH_ALERT_LIMIT.toLocaleString()} ₸ и больше — нужна инкассация. Уведомила Ермека."
+И обязательно укажи в ответе: CASH_ALERT:[сумма]
+
+ПРЕДОПЛАТЫ — два типа:
+1. ВХОДЯЩАЯ: имя клиента, телефон, канал (Kaspi QR/Онлайн Kaspi/Halyk QR/Онлайн Halyk/Наличные/Личная карта), сумма аванса, товар, полная стоимость, дата визита.
+2. ВЫКУП: имя клиента, сумма доплаты, канал доплаты, товар выдан полностью?
+
+═══ ЗАКРЫТИЕ СМЕНЫ ═══
+
+ШАГ 1 — ROSTA (кассовая программа):
+Kaspi QR, Онлайн Kaspi, Halyk QR, Онлайн Halyk, Наличные, Личная карта, Бонусы, Возвраты (если были).
+
+ШАГ 2 — ТЕРМИНАЛЫ (реальные данные):
+Kaspi терминал итого, возвраты Kaspi (если были), Halyk терминал итого, возвраты Halyk (если были).
+
+ШАГ 3 — НАЛИЧНЫЕ:
+Остаток в кассе на конец (пересчитать физически), выплаты клиентам, инкассация.
+
+ШАГ 4 — СВЕРКА (считай автоматически):
+Kaspi расхождение = Kaspi терминал - (Kaspi QR + Онлайн Kaspi)
+Halyk расхождение = Halyk терминал - (Halyk QR + Онлайн Halyk)
+Наличные факт = Конец - Начало + Расходы + Инкассация + Выплаты - Пополнения
+Наличные расхождение = Наличные факт - Наличные ROSTA
+Допуск: до 500 ₸ = норма ✅, больше 500 ₸ = уточни причину ⚠️
+
+УМНАЯ ДИАГНОСТИКА расхождений — если терминал БОЛЬШЕ ROSTA:
+→ Предоплата получена через терминал, не пробита в ROSTA
+→ Возврат пробит в ROSTA сегодня, деньги выданы вчера
+→ Продажа через терминал, чек не пробит
+
+Если ROSTA БОЛЬШЕ терминала:
+→ Выкуп предоплаты (часть денег была раньше)
+→ Возврат наличными, в ROSTA отражён как терминал
+→ Оплата на личную карту, пробита как наличные
+→ Ошибка кассира в ROSTA
+
+СТАТУС: ✅ корректно / ⚠️ с замечаниями / 🚨 есть вопросы
 
 ПРАВИЛА:
-1. Не закрывай смену с необъяснённым расхождением
-2. Уведомляй руководителя при: опоздании, расхождении > 1000₸, нестандартных ситуациях
-3. Новому продавцу объясни как работать
-4. Фото — читай все данные и суммы
+1. Не закрывай с необъяснённым расхождением > 500 ₸
+2. Уведомляй Ермека: опоздание / расхождение > 1000 ₸ / статус "вопросы"
+3. Если наличные >= ${CASH_ALERT_LIMIT} ₸ в любой момент — пометь CASH_ALERT:[сумма]
+4. Фото — читай все цифры и суммы
 
-ЗАВЕРШЕНИЕ СМЕНЫ:
+ЗАВЕРШЕНИЕ — после подтверждения:
 SHIFT_COMPLETE:
-{"seller":"имя","shop":"${shopName || 'NANE PARIS'}","kaspi":0,"halyk":0,"cash":0,"card":0,"expenses":0,"inkassaciya":0,"total":0,"notes":""}`;
+{"seller":"","shop":"${shopName||'NANE PARIS'}","rosta_kaspi":0,"rosta_kaspi_online":0,"rosta_halyk":0,"rosta_halyk_online":0,"rosta_cash":0,"rosta_personal":0,"rosta_bonus":0,"rosta_returns":0,"terminal_kaspi":0,"terminal_halyk":0,"cash_open":0,"cash_close":0,"cash_add":0,"expenses":0,"payouts":0,"inkassaciya":0,"rosta_total":0,"diff":0,"status":"ok","notes":""}`;
 
 const OWNER_PROMPT = `Ты Томи — личный ИИ-советник Ермека, владельца NANÉ PARIS.
-Ты его правая рука: знаешь всё о магазине, анализируешь данные, даёшь чёткие рекомендации.
+Прямой, деловой стиль. Говоришь правду, даёшь конкретику без воды.
 
-СТИЛЬ: прямой, деловой, без лишних слов. Говоришь правду, даёшь конкретику.
-
-ЧТО УМЕЕШЬ ДЛЯ ЕРМЕКА:
+ЧТО УМЕЕШЬ:
 - Управляющий: сводка смен, опоздания, дисциплина, статус дня
-- Бухгалтер: итоги продаж за период, разбивка по каналам, расходы, аномалии
-- HR: KPI продавцов, кто стабилен кто проблемный, рекомендации
-- Коммерческий директор: динамика продаж, лучшие дни/продавцы, рекомендации роста
-- Операционный директор: соблюдение стандартов, узкие места, эффективность команды
+- Бухгалтер: продажи за период, каналы, расходы, аномалии
+- HR: KPI продавцов, нарушения, рекомендации
+- Коммерческий директор: динамика, лучшие дни, рост выручки
+- Операционный директор: стандарты, узкие места, эффективность
 
-Если данных нет — честно скажи и предложи что сделать. Не придумывай цифры.`;
+Алерты которые Томи шлёт автоматически:
+- 💰 Наличные в кассе > 100 000 ₸ — немедленно
+- ⏰ Смена не открыта в 11:15 — сразу
+- 📊 Ежедневная сводка в 22:00
+- ⏳ Предоплаты на сегодня — в 09:00
+
+Если данных нет — честно скажи. Не придумывай цифры.`;
 
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -135,11 +285,9 @@ bot.on('message', async (msg) => {
 
   if (!text && !photo) return;
 
-  // Проверка доступа
   const allowed = getAllowedUsers();
   if (!allowed.includes(chatIdStr)) {
     await bot.sendMessage(chatId, '🔒 Доступ закрыт. Обратитесь к руководителю магазина.');
-    console.log('Заблокирован:', chatId);
     return;
   }
 
@@ -147,7 +295,7 @@ bot.on('message', async (msg) => {
   const shopMap = getShopMap();
   const shopName = shopMap[chatIdStr] || 'NANÉ PARIS';
 
-  console.log('Сообщение от', chatId, isOwner ? '[ЕРМЕК]' : `[продавец, ${shopName}]`, photo ? '[фото]' : text);
+  console.log('От', chatId, isOwner ? '[ЕРМЕК]' : `[${shopName}]`, photo ? '[фото]' : text);
 
   try {
     if (!conversations[chatId]) conversations[chatId] = [];
@@ -160,31 +308,29 @@ bot.on('message', async (msg) => {
       const base64Image = imageBuffer.toString('base64');
       userContent = [
         { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Image } },
-        { type: 'text', text: isOwner ? 'Проанализируй этот документ и дай выводы.' : 'Прочитай все данные и суммы с этого документа.' },
+        { type: 'text', text: isOwner ? 'Проанализируй документ и дай выводы.' : 'Прочитай все данные и суммы. Озвучь что видишь.' },
       ];
     } else {
       userContent = text;
     }
 
     conversations[chatId].push({ role: 'user', content: userContent });
-    if (conversations[chatId].length > 30) conversations[chatId] = conversations[chatId].slice(-30);
+    if (conversations[chatId].length > 40) conversations[chatId] = conversations[chatId].slice(-40);
 
     bot.sendChatAction(chatId, 'typing');
 
-    // Для Ермека подгружаем данные из таблицы при аналитических запросах
     let contextData = '';
     if (isOwner && text) {
       const lower = text.toLowerCase();
       if (lower.includes('сводк') || lower.includes('продаж') || lower.includes('итог') ||
           lower.includes('анализ') || lower.includes('неделя') || lower.includes('день') ||
-          lower.includes('опозда') || lower.includes('kpi') || lower.includes('продавец')) {
-        const rows = await getSheetData('Смены!A:K');
+          lower.includes('опозда') || lower.includes('kpi') || lower.includes('продавец') ||
+          lower.includes('расход') || lower.includes('касс')) {
+        const rows = await getSheetData('Смены!A:V');
         if (rows.length > 1) {
-          const headers = rows[0];
-          const last20 = rows.slice(-20);
-          contextData = '\n\nДАННЫЕ ИЗ ТАБЛИЦЫ (последние смены):\nКолонки: ' +
-            headers.join(' | ') + '\n' +
-            last20.map(r => r.join(' | ')).join('\n');
+          contextData = '\n\nДАННЫЕ ИЗ ТАБЛИЦЫ:\nКолонки: ' +
+            (rows[0]||[]).join(' | ') + '\n' +
+            rows.slice(-30).map(r => r.join(' | ')).join('\n');
         }
       }
     }
@@ -201,40 +347,89 @@ bot.on('message', async (msg) => {
     const reply = response.content[0].text;
     conversations[chatId].push({ role: 'assistant', content: reply });
 
-    if (!isOwner && reply.includes('SHIFT_COMPLETE:')) {
-      const lines = reply.split('\n');
-      const jsonLine = lines.find(l => l.trim().startsWith('{'));
-      let shiftData = null;
-      if (jsonLine) { try { shiftData = JSON.parse(jsonLine); } catch(e) {} }
+    // Проверяем алерт наличных
+    const cashAlertMatch = reply.match(/CASH_ALERT:(\d+)/);
+    if (cashAlertMatch && !isOwner) {
+      const cashAmount = parseInt(cashAlertMatch[1]);
+      const sellerName = openShifts[chatId]?.seller || 'Продавец';
+      await checkCashLimit(cashAmount, sellerName, shopName);
+    }
 
-      if (OWNER_CHAT_ID && shiftData) {
+    // Обработка открытия смены
+    if (!isOwner && text && (text.toLowerCase().includes('открыв') || text.toLowerCase().includes('открыт') || text.toLowerCase().includes('начинаю смен'))) {
+      openShifts[chatId] = { shop: shopName, openTime: new Date() };
+    }
+
+    // Обработка закрытия смены
+    if (!isOwner && reply.includes('SHIFT_COMPLETE:')) {
+      const jsonLine = reply.split('\n').find(l => l.trim().startsWith('{'));
+      let d = null;
+      if (jsonLine) { try { d = JSON.parse(jsonLine); } catch(e) {} }
+
+      // Удаляем из открытых смен
+      delete openShifts[chatId];
+
+      if (OWNER_CHAT_ID && d) {
         const now = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
-        const total = (shiftData.kaspi||0)+(shiftData.halyk||0)+(shiftData.cash||0)+(shiftData.card||0);
-        const остаток = total-(shiftData.expenses||0)-(shiftData.inkassaciya||0);
+        const rostaTotal = d.rosta_total || (
+          (d.rosta_kaspi||0)+(d.rosta_kaspi_online||0)+
+          (d.rosta_halyk||0)+(d.rosta_halyk_online||0)+
+          (d.rosta_cash||0)+(d.rosta_personal||0)+
+          (d.rosta_bonus||0)-(d.rosta_returns||0)
+        );
+        const statusIcon = {'ok':'✅','remarks':'⚠️','issues':'🚨'}[d.status] || '✅';
+        const statusText = {'ok':'Корректно','remarks':'С замечаниями','issues':'Есть вопросы'}[d.status] || '';
+
         const report =
           `📊 *Отчёт закрытия смены*\n` +
-          `🏪 ${shiftData.shop || shopName}\n\n` +
-          `👤 Продавец: *${shiftData.seller||'—'}*\n` +
-          `📅 ${now}\n\n` +
-          `💳 Kaspi: ${(shiftData.kaspi||0).toLocaleString()} ₸\n` +
-          `🏦 Halyk: ${(shiftData.halyk||0).toLocaleString()} ₸\n` +
-          `💵 Наличные: ${(shiftData.cash||0).toLocaleString()} ₸\n` +
-          `💳 Личная карта: ${(shiftData.card||0).toLocaleString()} ₸\n\n` +
-          `📦 *Итого: ${total.toLocaleString()} ₸*\n` +
-          `➖ Расходы: ${(shiftData.expenses||0).toLocaleString()} ₸\n` +
-          `🏦 Инкассация: ${(shiftData.inkassaciya||0).toLocaleString()} ₸\n` +
-          `💰 Остаток: ${остаток.toLocaleString()} ₸` +
-          (shiftData.notes ? `\n\n📝 ${shiftData.notes}` : '');
+          `🏪 ${d.shop || shopName} · 📅 ${now}\n` +
+          `👤 *${d.seller||'—'}*\n\n` +
+          `📋 *ROSTA:*\n` +
+          `  Kaspi QR: ${(d.rosta_kaspi||0).toLocaleString()} ₸\n` +
+          ((d.rosta_kaspi_online||0)>0?`  Онлайн Kaspi: ${d.rosta_kaspi_online.toLocaleString()} ₸\n`:'') +
+          `  Halyk QR: ${(d.rosta_halyk||0).toLocaleString()} ₸\n` +
+          ((d.rosta_halyk_online||0)>0?`  Онлайн Halyk: ${d.rosta_halyk_online.toLocaleString()} ₸\n`:'') +
+          `  Наличные: ${(d.rosta_cash||0).toLocaleString()} ₸\n` +
+          ((d.rosta_personal||0)>0?`  Личная карта: ${d.rosta_personal.toLocaleString()} ₸\n`:'') +
+          ((d.rosta_returns||0)>0?`  Возвраты: −${d.rosta_returns.toLocaleString()} ₸\n`:'') +
+          `  *ИТОГО: ${rostaTotal.toLocaleString()} ₸*\n\n` +
+          `💵 *Касса:*\n` +
+          `  Начало: ${(d.cash_open||0).toLocaleString()} ₸\n` +
+          ((d.cash_add||0)>0?`  Пополнение: +${d.cash_add.toLocaleString()} ₸\n`:'') +
+          ((d.expenses||0)>0?`  Расходы: −${d.expenses.toLocaleString()} ₸\n`:'') +
+          ((d.inkassaciya||0)>0?`  Инкассация: −${d.inkassaciya.toLocaleString()} ₸\n`:'') +
+          `  Конец: ${(d.cash_close||0).toLocaleString()} ₸\n\n` +
+          `${statusIcon} *${statusText}* · Расхождение: ${d.diff||0} ₸` +
+          (d.notes?`\n📝 ${d.notes}`:'');
 
-        try { await bot.sendMessage(OWNER_CHAT_ID, report, { parse_mode: 'Markdown' }); } catch(e) {}
-        await saveShift([now, shiftData.seller||'', shopName, shiftData.kaspi||0, shiftData.halyk||0, shiftData.cash||0, shiftData.card||0, shiftData.expenses||0, shiftData.inkassaciya||0, total, остаток, shiftData.notes||'']);
+        try { await sendToOwner(report); } catch(e) {}
+
+        // Алерт если наличные на конец смены большие
+        if ((d.cash_close||0) >= CASH_ALERT_LIMIT) {
+          await checkCashLimit(d.cash_close, d.seller||'—', shopName);
+        }
+
+        await saveShift([
+          now, d.seller||'', shopName,
+          d.rosta_kaspi||0, d.rosta_kaspi_online||0,
+          d.rosta_halyk||0, d.rosta_halyk_online||0,
+          d.rosta_cash||0, d.rosta_personal||0,
+          d.rosta_bonus||0, d.rosta_returns||0,
+          rostaTotal,
+          d.terminal_kaspi||0, d.terminal_halyk||0,
+          d.cash_open||0, d.cash_add||0, d.cash_close||0,
+          d.expenses||0, d.inkassaciya||0,
+          d.diff||0, d.status||'ok', d.notes||''
+        ]);
       }
 
       const cleanReply = reply.replace(/SHIFT_COMPLETE:[\s\S]*$/, '').trim() ||
-        '✅ Смена закрыта! Отчёт отправлен руководителю. Хорошего отдыха! 👋';
+        '✅ Смена закрыта! Отчёт отправлен Ермеку. Хорошего отдыха! 👋';
       await bot.sendMessage(chatId, cleanReply);
     } else {
-      await bot.sendMessage(chatId, reply);
+      // Убираем технические метки из ответа
+      const cleanReply = reply.replace(/CASH_ALERT:\d+/g, '').trim();
+      await bot.sendMessage(chatId, cleanReply);
     }
 
   } catch (err) {
@@ -243,5 +438,5 @@ bot.on('message', async (msg) => {
   }
 });
 
-bot.on('polling_error', (err) => console.error('Polling error:', err.message));
-console.log('Бот слушает сообщения...');
+bot.on('polling_error', err => console.error('Polling error:', err.message));
+console.log('Бот слушает...');
