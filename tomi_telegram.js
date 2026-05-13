@@ -62,6 +62,36 @@ async function saveShift(data) {
   } catch (e) { console.error('Save shift error:', e.message); return false; }
 }
 
+async function savePrepay(data) {
+  try {
+    const keyData = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+    const auth = new google.auth.GoogleAuth({ credentials: keyData, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+    const sheets = google.sheets({ version: 'v4', auth });
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Предоплаты!A:K',
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [data] },
+    });
+    return true;
+  } catch (e) { console.error('Save prepay error:', e.message); return false; }
+}
+
+async function saveLog(chatId, shopName, sellerName, role, message, isPhoto) {
+  try {
+    const keyData = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+    const auth = new google.auth.GoogleAuth({ credentials: keyData, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const now = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID,
+      range: 'Логи!A:F',
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [[now, shopName, sellerName, role, isPhoto ? '[фото]' : message, String(chatId)]] },
+    });
+  } catch (e) { console.error('Save log error:', e.message); }
+}
+
 async function downloadFile(url) {
   return new Promise((resolve, reject) => {
     https.get(url, (res) => {
@@ -215,8 +245,15 @@ const SELLER_PROMPT = (shopName) => `Ты Томи — ИИ-управляющи
 И обязательно укажи в ответе: CASH_ALERT:[сумма]
 
 ПРЕДОПЛАТЫ — два типа:
-1. ВХОДЯЩАЯ: имя клиента, телефон, канал (Kaspi QR/Онлайн Kaspi/Halyk QR/Онлайн Halyk/Наличные/Личная карта), сумма аванса, товар, полная стоимость, дата визита.
-2. ВЫКУП: имя клиента, сумма доплаты, канал доплаты, товар выдан полностью?
+1. ВХОДЯЩАЯ: запроси имя клиента, телефон, канал (Kaspi QR/Онлайн Kaspi/Halyk QR/Онлайн Halyk/Наличные/Личная карта), сумма аванса, товар, полная стоимость, дата визита.
+   После подтверждения выведи точно так:
+   PREPAY_SAVE:
+   {"type":"incoming","client":"","phone":"","channel":"","amount":0,"item":"","full_price":0,"visit_date":"","seller":""}
+
+2. ВЫКУП: запроси имя клиента, сумма доплаты, канал доплаты, товар выдан полностью?
+   После подтверждения выведи точно так:
+   PREPAY_SAVE:
+   {"type":"redeemed","client":"","phone":"","channel":"","amount":0,"item":"","full_price":0,"visit_date":"","seller":""}
 
 ═══ ЗАКРЫТИЕ СМЕНЫ ═══
 
@@ -347,6 +384,12 @@ bot.on('message', async (msg) => {
     const reply = response.content[0].text;
     conversations[chatId].push({ role: 'assistant', content: reply });
 
+    // Логируем сообщение продавца
+    if (!isOwner) {
+      const sellerName = openShifts[chatId]?.seller || 'Продавец';
+      await saveLog(chatId, shopName, sellerName, 'продавец', photo ? '[фото]' : text, !!photo);
+    }
+
     // Проверяем алерт наличных
     const cashAlertMatch = reply.match(/CASH_ALERT:(\d+)/);
     if (cashAlertMatch && !isOwner) {
@@ -358,6 +401,27 @@ bot.on('message', async (msg) => {
     // Обработка открытия смены
     if (!isOwner && text && (text.toLowerCase().includes('открыв') || text.toLowerCase().includes('открыт') || text.toLowerCase().includes('начинаю смен'))) {
       openShifts[chatId] = { shop: shopName, openTime: new Date() };
+    }
+
+    // Сохранение предоплаты
+    if (!isOwner && reply.includes('PREPAY_SAVE:')) {
+      const jsonLine = reply.split('\n').find(l => l.trim().startsWith('{') && l.includes('client'));
+      if (jsonLine) {
+        try {
+          const p = JSON.parse(jsonLine);
+          const now = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
+          const seller = openShifts[chatId]?.seller || p.seller || 'Продавец';
+          await savePrepay([
+            now, shopName, seller,
+            p.type === 'incoming' ? 'Входящая' : 'Выкуп',
+            p.client || '', p.phone || '',
+            p.channel || '', p.amount || 0,
+            p.item || '', p.full_price || 0,
+            p.visit_date || '', 'открыта'
+          ]);
+          console.log('Предоплата сохранена:', p.client);
+        } catch(e) { console.error('Ошибка парсинга предоплаты:', e.message); }
+      }
     }
 
     // Обработка закрытия смены
@@ -428,7 +492,7 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, cleanReply);
     } else {
       // Убираем технические метки из ответа
-      const cleanReply = reply.replace(/CASH_ALERT:\d+/g, '').trim();
+      const cleanReply = reply.replace(/CASH_ALERT:\d+/g, '').replace(/PREPAY_SAVE:[\s\S]*?(\n\n|$)/g, '').trim();
       await bot.sendMessage(chatId, cleanReply);
     }
 
