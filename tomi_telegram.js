@@ -62,16 +62,28 @@ async function saveShift(data) {
   } catch (e) { console.error('Save shift error:', e.message); return false; }
 }
 
-async function savePrepay(data) {
+async function savePrepay(p, shopName, sellerName) {
+  // Структура: ID, Дата, Клиент, Телефон, Товар, Канал, Сумма, Остаток, Статус, Дата закрытия, Комментарий
   try {
     const keyData = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
     const auth = new google.auth.GoogleAuth({ credentials: keyData, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
     const sheets = google.sheets({ version: 'v4', auth });
+    const now = new Date().toISOString().split('T')[0];
+    const id = 'PREP-' + Date.now().toString().slice(-6);
+    const fullPrice = p.full_price || 0;
+    const amount = p.amount || 0;
+    const balance = fullPrice > amount ? fullPrice - amount : 0;
+    const row = [
+      id, now, p.client||'', p.phone||'',
+      p.item||'', p.channel||'',
+      amount, balance,
+      'Открыта', '', `${shopName} · ${sellerName}`
+    ];
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
       range: 'Предоплаты!A:K',
       valueInputOption: 'USER_ENTERED',
-      resource: { values: [data] },
+      resource: { values: [row] },
     });
     return true;
   } catch (e) { console.error('Save prepay error:', e.message); return false; }
@@ -82,6 +94,16 @@ async function saveLog(chatId, shopName, sellerName, role, message, isPhoto) {
     const keyData = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
     const auth = new google.auth.GoogleAuth({ credentials: keyData, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
     const sheets = google.sheets({ version: 'v4', auth });
+    // Добавляем заголовки если лист пустой
+    const check = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Логи!A1' });
+    if (!check.data.values) {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SPREADSHEET_ID,
+        range: 'Логи!A1:F1',
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: [['Дата/Время', 'Магазин', 'Продавец', 'Роль', 'Сообщение', 'Telegram ID']] },
+      });
+    }
     const now = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
     await sheets.spreadsheets.values.append({
       spreadsheetId: SPREADSHEET_ID,
@@ -127,22 +149,26 @@ async function checkCashLimit(cashAmount, sellerName, shopName) {
 
 // Проверка незакрытых предоплат на сегодня
 async function checkTodayPrepays() {
+  // Структура: A=ID, B=Дата, C=Клиент, D=Телефон, E=Товар, F=Канал, G=Сумма, H=Остаток, I=Статус, J=Дата закрытия
   try {
     const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty' });
-    const rows = await getSheetData('Предоплаты!A:J');
+    const rows = await getSheetData('Предоплаты!A:K');
     if (rows.length < 2) return;
-    const due = rows.slice(1).filter(r => {
-      const visitDate = r[6] || '';
-      const status = r[8] || '';
-      return visitDate.includes(today.split('.')[0]) && status !== 'выдан' && status !== 'отменён';
+    const open = rows.slice(1).filter(r => {
+      const status = String(r[8] || '').toLowerCase();
+      return status.includes('открыт') || status === '' || status.includes('open');
     });
-    if (due.length > 0) {
-      let msg = `⏰ *Предоплаты на сегодня (${today}):*\n\n`;
-      due.forEach((r, i) => {
-        msg += `${i+1}. *${r[2]||'Клиент'}* · ${r[4]||''} · ${parseInt(r[5]||0).toLocaleString()} ₸\n`;
-        msg += `   Товар: ${r[3]||'—'} · Ждёт: ${r[7]||'—'}\n\n`;
+    if (open.length > 0) {
+      let msg = `⏳ *Открытые предоплаты на ${today}:*\n\n`;
+      open.slice(0, 10).forEach((r, i) => {
+        const amount = parseInt(String(r[6]||'0').replace(/[^\d]/g,'')) || 0;
+        const balance = parseInt(String(r[7]||'0').replace(/[^\d]/g,'')) || 0;
+        msg += `${i+1}. *${r[2]||'—'}* · ${r[5]||'—'}\n`;
+        msg += `   Товар: ${r[4]||'—'}\n`;
+        msg += `   Аванс: ${amount.toLocaleString()} ₸ · Остаток: ${balance.toLocaleString()} ₸\n\n`;
       });
-      msg += `Напомни продавцу проверить эти предоплаты!`;
+      if (open.length > 10) msg += `...и ещё ${open.length - 10} предоплат\n`;
+      msg += `Напомни продавцу проверить список!`;
       await sendToOwner(msg);
     }
   } catch(e) { console.error('Ошибка проверки предоплат:', e.message); }
@@ -365,9 +391,19 @@ bot.on('message', async (msg) => {
           lower.includes('расход') || lower.includes('касс')) {
         const rows = await getSheetData('Смены!A:V');
         if (rows.length > 1) {
-          contextData = '\n\nДАННЫЕ ИЗ ТАБЛИЦЫ:\nКолонки: ' +
+          contextData = '\n\nДАННЫЕ СМЕН:\nКолонки: ' +
             (rows[0]||[]).join(' | ') + '\n' +
             rows.slice(-30).map(r => r.join(' | ')).join('\n');
+        }
+      }
+      if (lower.includes('предоплат') || lower.includes('клиент') || lower.includes('аванс')) {
+        const prepRows = await getSheetData('Предоплаты!A:K');
+        if (prepRows.length > 1) {
+          const openPreps = prepRows.slice(1).filter(r => String(r[8]||'').toLowerCase().includes('открыт') || r[8] === '');
+          contextData += '\n\nПРЕДОПЛАТЫ (открытые, ' + openPreps.length + ' шт):\n';
+          openPreps.slice(0, 20).forEach(r => {
+            contextData += `${r[0]||''} | ${r[1]||''} | ${r[2]||''} | ${r[4]||''} | ${r[5]||''} | Аванс:${r[6]||0} | Остаток:${r[7]||0}\n`;
+          });
         }
       }
     }
@@ -411,14 +447,7 @@ bot.on('message', async (msg) => {
           const p = JSON.parse(jsonLine);
           const now = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
           const seller = openShifts[chatId]?.seller || p.seller || 'Продавец';
-          await savePrepay([
-            now, shopName, seller,
-            p.type === 'incoming' ? 'Входящая' : 'Выкуп',
-            p.client || '', p.phone || '',
-            p.channel || '', p.amount || 0,
-            p.item || '', p.full_price || 0,
-            p.visit_date || '', 'открыта'
-          ]);
+          await savePrepay(p, shopName, seller);
           console.log('Предоплата сохранена:', p.client);
         } catch(e) { console.error('Ошибка парсинга предоплаты:', e.message); }
       }
