@@ -295,10 +295,15 @@ PREPAY_LIST:все
 ═══ ЗАКРЫТИЕ СМЕНЫ ═══
 
 ШАГ 1 — ROSTA (кассовая программа):
-Kaspi QR, Онлайн Kaspi, Halyk QR, Онлайн Halyk, Наличные, Личная карта, Бонусы, Возвраты (если были).
+Kaspi QR, Онлайн Kaspi, Halyk QR, Онлайн Halyk, Наличные, Личная карта, Возвраты (если были).
+Бонусы — если клиент платил бонусами Kaspi/Halyk. Это ВАЖНЫЙ канал:
+  Бонусы пробиваются в ROSTA как продажа, но в терминале денег НЕТ (клиент заплатил баллами).
+  Поэтому терминал будет меньше ROSTA на сумму бонусов — это нормально, не расхождение.
+  Спроси: "Были ли оплаты бонусами сегодня? Если да — на какую сумму?"
 
 ШАГ 2 — ТЕРМИНАЛЫ (реальные данные):
 Kaspi терминал итого, возвраты Kaspi (если были), Halyk терминал итого, возвраты Halyk (если были).
+Личная карта терминал — если были оплаты на личную карту продавца, запроси отдельно.
 
 ШАГ 3 — НАЛИЧНЫЕ:
 Остаток в кассе на конец (пересчитать физически), выплаты клиентам, инкассация.
@@ -308,8 +313,20 @@ Kaspi терминал итого, возвраты Kaspi (если были), H
 Базовая формула:
 Kaspi расхождение = Kaspi терминал - (Kaspi QR ROSTA + Онлайн Kaspi ROSTA)
 Halyk расхождение = Halyk терминал - (Halyk QR ROSTA + Онлайн Halyk ROSTA)
+Личная карта расхождение = Личная карта терминал - Личная карта ROSTA
 Наличные факт = Конец - Начало + Расходы + Инкассация + Выплаты - Пополнения
 Наличные расхождение = Наличные факт - Наличные ROSTA
+
+ВАЖНО по личной карте:
+Если клиент платил переводом на личную карту продавца — это отдельный канал.
+В ROSTA это может быть пробито как наличные (ошибка) или как личная карта (правильно).
+Если пробито как наличные — расхождение будет в наличных, не в личной карте. Уточни у продавца.
+
+ВАЖНО по бонусам:
+Бонусы Kaspi/Halyk = оплата баллами. В ROSTA пробиты как продажа, но в терминале денег нет.
+Формула: ROSTA итого включает бонусы, Факт терминалов — нет.
+Поэтому: Факт = Терминалы + Наличные + Бонусы (бонусы добавляем к факту для сверки)
+Если ROSTA больше терминалов на сумму бонусов — это норма ✅, не расхождение.
 
 КОРРЕКТИРОВКА НА ПРЕДОПЛАТЫ (применяй если есть расхождение > 500 ₸):
 
@@ -346,7 +363,7 @@ ROSTA больше терминала также может быть: возвр
 
 ЗАВЕРШЕНИЕ — после подтверждения:
 SHIFT_COMPLETE:
-{"seller":"","shop":"${shopName||'NANE PARIS'}","rosta_kaspi":0,"rosta_kaspi_online":0,"rosta_halyk":0,"rosta_halyk_online":0,"rosta_cash":0,"rosta_personal":0,"rosta_bonus":0,"rosta_returns":0,"terminal_kaspi":0,"terminal_halyk":0,"cash_open":0,"cash_close":0,"cash_add":0,"expenses":0,"payouts":0,"inkassaciya":0,"rosta_total":0,"diff":0,"status":"ok","notes":""}`;
+{"seller":"","shop":"${shopName||'NANE PARIS'}","rosta_kaspi":0,"rosta_kaspi_online":0,"rosta_halyk":0,"rosta_halyk_online":0,"rosta_cash":0,"rosta_personal":0,"rosta_bonus":0,"rosta_returns":0,"terminal_kaspi":0,"terminal_halyk":0,"terminal_personal":0,"cash_open":0,"cash_close":0,"cash_add":0,"expenses":0,"payouts":0,"inkassaciya":0,"rosta_total":0,"diff":0,"status":"ok","notes":""}`;
 
 const OWNER_PROMPT = `Ты Томи — личный ИИ-советник Ермека, владельца NANÉ PARIS.
 Прямой, деловой стиль. Говоришь правду, даёшь конкретику без воды.
@@ -564,8 +581,10 @@ bot.on('message', async (msg) => {
           ((d.rosta_halyk_online||0)>0?`  Онлайн Halyk: ${d.rosta_halyk_online.toLocaleString()} ₸\n`:'') +
           `  Наличные: ${(d.rosta_cash||0).toLocaleString()} ₸\n` +
           ((d.rosta_personal||0)>0?`  Личная карта: ${d.rosta_personal.toLocaleString()} ₸\n`:'') +
+          ((d.rosta_bonus||0)>0?`  Бонусы: ${d.rosta_bonus.toLocaleString()} ₸\n`:'') +
           ((d.rosta_returns||0)>0?`  Возвраты: −${d.rosta_returns.toLocaleString()} ₸\n`:'') +
           `  *ИТОГО: ${rostaTotal.toLocaleString()} ₸*\n\n` +
+          ((d.terminal_personal||0)>0?`  Личная карта (терминал): ${d.terminal_personal.toLocaleString()} ₸\n`:'') +
           `💵 *Касса:*\n` +
           `  Начало: ${(d.cash_open||0).toLocaleString()} ₸\n` +
           ((d.cash_add||0)>0?`  Пополнение: +${d.cash_add.toLocaleString()} ₸\n`:'') +
@@ -589,7 +608,7 @@ bot.on('message', async (msg) => {
           d.rosta_cash||0, d.rosta_personal||0,
           d.rosta_bonus||0, d.rosta_returns||0,
           rostaTotal,
-          d.terminal_kaspi||0, d.terminal_halyk||0,
+          d.terminal_kaspi||0, d.terminal_halyk||0, d.terminal_personal||0,
           d.cash_open||0, d.cash_add||0, d.cash_close||0,
           d.expenses||0, d.inkassaciya||0,
           d.diff||0, d.status||'ok', d.notes||''
