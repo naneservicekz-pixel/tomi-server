@@ -63,28 +63,52 @@ async function saveShift(data) {
 }
 
 async function savePrepay(p, shopName, sellerName) {
-  // Структура: ID, Дата, Клиент, Телефон, Товар, Канал, Сумма, Остаток, Статус, Дата закрытия, Комментарий
   try {
     const keyData = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
     const auth = new google.auth.GoogleAuth({ credentials: keyData, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
     const sheets = google.sheets({ version: 'v4', auth });
-    const now = new Date().toISOString().split('T')[0];
-    const id = 'PREP-' + Date.now().toString().slice(-6);
-    const fullPrice = p.full_price || 0;
-    const amount = p.amount || 0;
-    const balance = fullPrice > amount ? fullPrice - amount : 0;
-    const row = [
-      id, now, p.client||'', p.phone||'',
-      p.item||'', p.channel||'',
-      amount, balance,
-      'Открыта', '', `${shopName} · ${sellerName}`
-    ];
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range: 'Предоплаты!A:K',
-      valueInputOption: 'USER_ENTERED',
-      resource: { values: [row] },
-    });
+    const nowDate = new Date().toISOString().split('T')[0];
+    const nowStr = new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' });
+
+    if (p.type === 'incoming') {
+      // Новая предоплата — добавляем строку
+      const id = 'PREP-' + Date.now().toString().slice(-6);
+      const fullPrice = p.full_price || 0;
+      const amount = p.amount || 0;
+      const balance = fullPrice > amount ? fullPrice - amount : 0;
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID,
+        range: 'Предоплаты!A:K',
+        valueInputOption: 'USER_ENTERED',
+        resource: { values: [[id, nowDate, p.client||'', p.phone||'', p.item||'', p.channel||'', amount, balance, 'Открыта', '', `${shopName} · ${sellerName}`]] },
+      });
+      console.log('Предоплата создана:', p.client);
+    } else if (p.type === 'redeemed') {
+      // Выкуп — ищем строку по имени клиента и меняем статус
+      const rows = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Предоплаты!A:K' });
+      const data = rows.data.values || [];
+      let foundRow = -1;
+      for (let i = 1; i < data.length; i++) {
+        const clientName = String(data[i][2] || '').toLowerCase();
+        const status = String(data[i][8] || '').toLowerCase();
+        if (clientName.includes((p.client||'').toLowerCase()) && (status.includes('открыт') || status === '')) {
+          foundRow = i + 1; // 1-indexed для Sheets API
+          break;
+        }
+      }
+      if (foundRow > 0) {
+        // Обновляем статус и дату закрытия
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SPREADSHEET_ID,
+          range: `Предоплаты!I${foundRow}:J${foundRow}`,
+          valueInputOption: 'USER_ENTERED',
+          resource: { values: [['Закрыта', nowDate]] },
+        });
+        console.log('Предоплата закрыта:', p.client, 'строка', foundRow);
+      } else {
+        console.log('Предоплата не найдена для выкупа:', p.client);
+      }
+    }
     return true;
   } catch (e) { console.error('Save prepay error:', e.message); return false; }
 }
@@ -359,7 +383,13 @@ ROSTA больше терминала также может быть: возвр
 1. Не закрывай с необъяснённым расхождением > 500 ₸
 2. Уведомляй Ермека: опоздание / расхождение > 1000 ₸ / статус "вопросы"
 3. Если наличные >= ${CASH_ALERT_LIMIT} ₸ в любой момент — пометь CASH_ALERT:[сумма]
-4. Фото — читай все цифры и суммы
+4. Как только узнаёшь имя продавца — сразу выведи в ответе: SELLER_NAME:[имя]
+   Пример: "Привет, Зарина! Записала. SELLER_NAME:Зарина"
+5. ФОТО — три типа, скажи продавцу чётко:
+   "Отправь фото Z-отчёта" — когда нужны данные ROSTA
+   "Отправь фото Kaspi терминала" — когда нужны данные Kaspi
+   "Отправь фото Halyk терминала" — когда нужны данные Halyk
+   После получения фото — зачитай суммы и спроси подтвердить
 
 ЗАВЕРШЕНИЕ — после подтверждения:
 SHIFT_COMPLETE:
@@ -412,9 +442,25 @@ bot.on('message', async (msg) => {
       const fileUrl = await bot.getFileLink(fileId);
       const imageBuffer = await downloadFile(fileUrl);
       const base64Image = imageBuffer.toString('base64');
+
+      // Определяем тип фото по контексту последних сообщений
+      const lastMsgs = (conversations[chatId] || []).slice(-4).map(m => typeof m.content === 'string' ? m.content.toLowerCase() : '').join(' ');
+      let photoPrompt;
+      if (isOwner) {
+        photoPrompt = 'Проанализируй документ и дай выводы.';
+      } else if (lastMsgs.includes('z-отчёт') || lastMsgs.includes('z отчёт') || lastMsgs.includes('z-report') || lastMsgs.includes('zотчет') || lastMsgs.includes('зед') || lastMsgs.includes('итоговый отчёт')) {
+        photoPrompt = 'Это Z-отчёт кассовой системы ROSTA. Извлеки суммы по видам оплат: Kaspi QR, Онлайн Kaspi, Halyk QR, Онлайн Halyk, Наличные, Личная карта, Бонусы, Возвраты. Выведи каждую сумму отдельно. Формат: "Kaspi QR: X ₸, Halyk QR: X ₸" и т.д. Если строки нет — пиши 0.';
+      } else if (lastMsgs.includes('kaspi терминал') || lastMsgs.includes('каспи терминал') || lastMsgs.includes('терминал kaspi') || lastMsgs.includes('отчёт kaspi')) {
+        photoPrompt = 'Это отчёт с терминала Kaspi. Найди: сумму продаж (валовые), сумму возвратов (если есть), итого нетто. Выведи чётко: "Продажи Kaspi: X ₸, Возвраты: X ₸, Итого: X ₸"';
+      } else if (lastMsgs.includes('halyk терминал') || lastMsgs.includes('халык терминал') || lastMsgs.includes('терминал halyk') || lastMsgs.includes('отчёт halyk')) {
+        photoPrompt = 'Это отчёт с терминала Halyk. Найди: сумму поступлений за день, возвраты если есть. Выведи чётко: "Продажи Halyk: X ₸, Возвраты: X ₸, Итого: X ₸"';
+      } else {
+        photoPrompt = 'Прочитай все данные, суммы и цифры с документа. Озвучь что видишь — все числа и их значения.';
+      }
+
       userContent = [
         { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Image } },
-        { type: 'text', text: isOwner ? 'Проанализируй документ и дай выводы.' : 'Прочитай все данные и суммы. Озвучь что видишь.' },
+        { type: 'text', text: photoPrompt },
       ];
     } else {
       userContent = text;
@@ -477,9 +523,25 @@ bot.on('message', async (msg) => {
       await checkCashLimit(cashAmount, sellerName, shopName);
     }
 
-    // Обработка открытия смены
-    if (!isOwner && text && (text.toLowerCase().includes('открыв') || text.toLowerCase().includes('открыт') || text.toLowerCase().includes('начинаю смен'))) {
-      openShifts[chatId] = { shop: shopName, openTime: new Date() };
+    // Обработка открытия смены — расширенный список фраз
+    if (!isOwner && text) {
+      const tl = text.toLowerCase();
+      const isOpenPhrase = tl.includes('открыв') || tl.includes('открыт') || tl.includes('начинаю смен') ||
+        tl.includes('начала смен') || tl.includes('смена начал') || tl.includes('доброе утро') ||
+        tl.includes('начинаем') || tl.includes('на смене') || tl.includes('вышла на смен') ||
+        tl.includes('вышел на смен') || tl.includes('/start');
+      if (isOpenPhrase) {
+        openShifts[chatId] = { shop: shopName, openTime: new Date(), seller: 'Продавец' };
+      }
+    }
+
+    // Парсим имя продавца из ответа Томи если встречается SELLER_NAME:
+    const sellerMatch = reply.match(/SELLER_NAME:(.+)/);
+    if (sellerMatch && !isOwner) {
+      const name = sellerMatch[1].trim();
+      if (!openShifts[chatId]) openShifts[chatId] = { shop: shopName, openTime: new Date() };
+      openShifts[chatId].seller = name;
+      console.log('Имя продавца:', name);
     }
 
     // Показ списка предоплат продавцу
