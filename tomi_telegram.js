@@ -511,17 +511,12 @@ bot.on('message', async (msg) => {
               const icon = isOpen ? '🟡' : '✅';
               const amount = parseInt(String(r[6]||'0').replace(/[^\d]/g,'')) || 0;
               const balance = parseInt(String(r[7]||'0').replace(/[^\d]/g,'')) || 0;
-              msg += `${icon} *${r[2]||'—'}* · ${r[1]||''}
-`;
-              msg += `   ${r[4]||'—'} · ${r[5]||'—'}
-`;
+              msg += `${icon} *${r[2]||'—'}* · ${r[1]||''}\n`;
+              msg += `   ${r[4]||'—'} · ${r[5]||'—'}\n`;
               msg += `   Аванс: ${amount.toLocaleString()} ₸`;
               if (balance > 0) msg += ` · Остаток: ${balance.toLocaleString()} ₸`;
-              if (!isOpen && r[9]) msg += `
-   Выдан: ${r[9]}`;
-              msg += '
-
-';
+              if (!isOpen && r[9]) msg += `\nВыдан: ${r[9]}`;
+              msg += '\n\n';
             });
             if (list.length > 15) msg += `...и ещё ${list.length - 15} записей`;
             const cleanMsg = reply.replace(/PREPAY_LIST:\S+/g, '').trim();
