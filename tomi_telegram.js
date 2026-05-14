@@ -180,7 +180,8 @@ async function checkTodayPrepays() {
     if (rows.length < 2) return;
     const open = rows.slice(1).filter(r => {
       const status = String(r[8] || '').toLowerCase();
-      return status.includes('открыт') || status === '' || status.includes('open');
+      const hasClient = String(r[2] || '').trim() !== '';
+      return hasClient && (status.includes('открыт') || (status === '' && hasClient));
     });
     if (open.length > 0) {
       let msg = `⏳ *Открытые предоплаты на ${today}:*\n\n`;
@@ -494,17 +495,19 @@ bot.on('message', async (msg) => {
 
         if (prepRows.length > 1) {
           const allPreps = prepRows.slice(1);
+          // Фильтруем только реальные открытые — с именем клиента и статусом Открыта
           const openPreps = allPreps.filter(r => {
             const status = String(r[8]||'').toLowerCase();
-            return status.includes('открыт') || status === '';
+            const hasClient = String(r[2]||'').trim() !== '';
+            const isOpen = status.includes('открыт') || (status === '' && hasClient);
+            return isOpen && hasClient;
           });
           contextData += `\n\nПРЕДОПЛАТЫ — всего: ${allPreps.length}, открытых: ${openPreps.length}\n`;
-          contextData += 'Колонки: ID | Дата | Клиент | Телефон | Товар | Канал | Аванс | Остаток | Статус | Дата закрытия\n';
+          contextData += 'Колонки: ID | Дата | Клиент | Телефон | Товар | Канал | Аванс | Остаток | Статус\n';
           contextData += 'ОТКРЫТЫЕ:\n';
-          openPreps.slice(0, 30).forEach(r => {
+          openPreps.forEach(r => {
             contextData += `${r[0]||''} | ${r[1]||''} | ${r[2]||''} | ${r[3]||''} | ${r[4]||''} | ${r[5]||''} | ${r[6]||0} | ${r[7]||0} | Открыта\n`;
           });
-          if (openPreps.length > 30) contextData += `...ещё ${openPreps.length - 30} открытых\n`;
         }
       } catch(e) {
         console.error('Ошибка загрузки данных для Ермека:', e.message);
