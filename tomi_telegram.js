@@ -495,18 +495,19 @@ bot.on('message', async (msg) => {
 
         if (prepRows.length > 1) {
           const allPreps = prepRows.slice(1);
-          // Фильтруем только реальные открытые — с именем клиента и статусом Открыта
+          // Фильтруем открытые предоплаты
           const openPreps = allPreps.filter(r => {
-            const status = String(r[8]||'').toLowerCase();
+            const status = String(r[8]||'').trim();
             const hasClient = String(r[2]||'').trim() !== '';
-            const isOpen = status.includes('открыт') || (status === '' && hasClient);
-            return isOpen && hasClient;
+            // Считаем открытой если статус содержит "Открыт" или пустой но есть клиент
+            return hasClient && (status.includes('Открыт') || status.includes('открыт') || status === '');
           });
-          contextData += `\n\nПРЕДОПЛАТЫ — всего: ${allPreps.length}, открытых: ${openPreps.length}\n`;
-          contextData += 'Колонки: ID | Дата | Клиент | Телефон | Товар | Канал | Аванс | Остаток | Статус\n';
-          contextData += 'ОТКРЫТЫЕ:\n';
+          contextData += `\n\nПРЕДОПЛАТЫ NANE PARIS:\n`;
+          contextData += `Всего строк: ${allPreps.length}, Открытых: ${openPreps.length}\n`;
+          contextData += 'ID | Дата | Клиент | Телефон | Товар | Канал | Аванс | Остаток\n';
+          // Передаём ВСЕ открытые предоплаты
           openPreps.forEach(r => {
-            contextData += `${r[0]||''} | ${r[1]||''} | ${r[2]||''} | ${r[3]||''} | ${r[4]||''} | ${r[5]||''} | ${r[6]||0} | ${r[7]||0} | Открыта\n`;
+            contextData += `${r[0]||''} | ${r[1]||''} | ${r[2]||''} | ${r[3]||''} | ${r[4]||''} | ${r[5]||''} | ${r[6]||0} | ${r[7]||0}\n`;
           });
         }
       } catch(e) {
@@ -571,9 +572,10 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(chatId, '📋 Предоплат пока нет.');
         } else {
           const list = rows.slice(1).filter(r => {
-            const status = String(r[8] || '').toLowerCase();
-            if (listType === 'все') return true;
-            return status.includes('открыт') || status === '';
+            const status = String(r[8] || '').trim();
+            const hasClient = String(r[2] || '').trim() !== '';
+            if (listType === 'все') return hasClient;
+            return hasClient && (status.includes('Открыт') || status.includes('открыт') || status === '');
           });
           if (list.length === 0) {
             await bot.sendMessage(chatId, listType === 'все' ? '📋 Предоплат нет.' : '📋 Открытых предоплат нет.');
