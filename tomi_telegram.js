@@ -471,29 +471,39 @@ bot.on('message', async (msg) => {
 
     bot.sendChatAction(chatId, 'typing');
 
+    // Для Ермека — всегда подгружаем все данные, Томи сама разберётся что использовать
     let contextData = '';
-    if (isOwner && text) {
-      const lower = text.toLowerCase();
-      if (lower.includes('сводк') || lower.includes('продаж') || lower.includes('итог') ||
-          lower.includes('анализ') || lower.includes('неделя') || lower.includes('день') ||
-          lower.includes('опозда') || lower.includes('kpi') || lower.includes('продавец') ||
-          lower.includes('расход') || lower.includes('касс')) {
-        const rows = await getSheetData('Смены!A:V');
-        if (rows.length > 1) {
-          contextData = '\n\nДАННЫЕ СМЕН:\nКолонки: ' +
-            (rows[0]||[]).join(' | ') + '\n' +
-            rows.slice(-30).map(r => r.join(' | ')).join('\n');
-        }
-      }
-      if (lower.includes('предоплат') || lower.includes('клиент') || lower.includes('аванс')) {
-        const prepRows = await getSheetData('Предоплаты!A:K');
-        if (prepRows.length > 1) {
-          const openPreps = prepRows.slice(1).filter(r => String(r[8]||'').toLowerCase().includes('открыт') || r[8] === '');
-          contextData += '\n\nПРЕДОПЛАТЫ (открытые, ' + openPreps.length + ' шт):\n';
-          openPreps.slice(0, 20).forEach(r => {
-            contextData += `${r[0]||''} | ${r[1]||''} | ${r[2]||''} | ${r[4]||''} | ${r[5]||''} | Аванс:${r[6]||0} | Остаток:${r[7]||0}\n`;
+    if (isOwner) {
+      try {
+        const [shiftRows, prepRows] = await Promise.all([
+          getSheetData('Смены!A:V'),
+          getSheetData('Предоплаты!A:K')
+        ]);
+
+        if (shiftRows.length > 1) {
+          contextData += '\n\nПОСЛЕДНИЕ СМЕНЫ (последние 30):\n';
+          contextData += 'Колонки: ' + (shiftRows[0]||[]).join(' | ') + '\n';
+          shiftRows.slice(-30).forEach(r => {
+            contextData += r.join(' | ') + '\n';
           });
         }
+
+        if (prepRows.length > 1) {
+          const allPreps = prepRows.slice(1);
+          const openPreps = allPreps.filter(r => {
+            const status = String(r[8]||'').toLowerCase();
+            return status.includes('открыт') || status === '';
+          });
+          contextData += `\n\nПРЕДОПЛАТЫ — всего: ${allPreps.length}, открытых: ${openPreps.length}\n`;
+          contextData += 'Колонки: ID | Дата | Клиент | Телефон | Товар | Канал | Аванс | Остаток | Статус | Дата закрытия\n';
+          contextData += 'ОТКРЫТЫЕ:\n';
+          openPreps.slice(0, 30).forEach(r => {
+            contextData += `${r[0]||''} | ${r[1]||''} | ${r[2]||''} | ${r[3]||''} | ${r[4]||''} | ${r[5]||''} | ${r[6]||0} | ${r[7]||0} | Открыта\n`;
+          });
+          if (openPreps.length > 30) contextData += `...ещё ${openPreps.length - 30} открытых\n`;
+        }
+      } catch(e) {
+        console.error('Ошибка загрузки данных для Ермека:', e.message);
       }
     }
 
