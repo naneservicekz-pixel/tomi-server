@@ -179,9 +179,11 @@ async function checkTodayPrepays() {
     const rows = await getSheetData('Предоплаты!A:K');
     if (rows.length < 2) return;
     const open = rows.slice(1).filter(r => {
-      const status = String(r[8] || '').toLowerCase();
+      const status = String(r[8] || '').trim().toLowerCase();
       const hasClient = String(r[2] || '').trim() !== '';
-      return hasClient && (status.includes('открыт') || (status === '' && hasClient));
+      if (!hasClient) return false;
+      const isClosed = status.includes('закрыт') || status.includes('выдан') || status.includes('отменён') || status.includes('отменен');
+      return !isClosed;
     });
     if (open.length > 0) {
       let msg = `⏳ *Открытые предоплаты на ${today}:*\n\n`;
@@ -497,10 +499,12 @@ bot.on('message', async (msg) => {
           const allPreps = prepRows.slice(1);
           // Фильтруем открытые предоплаты
           const openPreps = allPreps.filter(r => {
-            const status = String(r[8]||'').trim();
+            const status = String(r[8]||'').trim().toLowerCase();
             const hasClient = String(r[2]||'').trim() !== '';
-            // Считаем открытой если статус содержит "Открыт" или пустой но есть клиент
-            return hasClient && (status.includes('Открыт') || status.includes('открыт') || status === '');
+            if (!hasClient) return false;
+            // Показываем всё кроме явно закрытых
+            const isClosed = status.includes('закрыт') || status.includes('выдан') || status.includes('отменён') || status.includes('отменен');
+            return !isClosed;
           });
           contextData += `\n\nПРЕДОПЛАТЫ NANE PARIS:\n`;
           contextData += `Всего строк: ${allPreps.length}, Открытых: ${openPreps.length}\n`;
@@ -572,10 +576,13 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(chatId, '📋 Предоплат пока нет.');
         } else {
           const list = rows.slice(1).filter(r => {
-            const status = String(r[8] || '').trim();
+            const status = String(r[8] || '').trim().toLowerCase();
             const hasClient = String(r[2] || '').trim() !== '';
-            if (listType === 'все') return hasClient;
-            return hasClient && (status.includes('Открыт') || status.includes('открыт') || status === '');
+            if (!hasClient) return false;
+            if (listType === 'все') return true;
+            // Показываем всё кроме явно закрытых
+            const isClosed = status.includes('закрыт') || status.includes('выдан') || status.includes('отменён') || status.includes('отменен');
+            return !isClosed;
           });
           if (list.length === 0) {
             await bot.sendMessage(chatId, listType === 'все' ? '📋 Предоплат нет.' : '📋 Открытых предоплат нет.');
