@@ -592,27 +592,40 @@ bot.on('message', async (msg) => {
           if (list.length === 0) {
             await bot.sendMessage(chatId, listType === 'все' ? '📋 Предоплат нет.' : '📋 Открытых предоплат нет.');
           } else {
-            let msg = listType === 'все' ? 
-              `📋 *Все предоплаты (${list.length} шт):*
-
-` : 
-              `📋 *Открытые предоплаты (${list.length} шт):*
-
-`;
-            list.slice(0, 15).forEach((r, i) => {
-              const status = String(r[8] || '').toLowerCase();
-              const isOpen = status.includes('открыт') || status === '';
-              const icon = isOpen ? '🟡' : '✅';
-              const amount = parseInt(String(r[6]||'0').replace(/[^\d]/g,'')) || 0;
-              const balance = parseInt(String(r[7]||'0').replace(/[^\d]/g,'')) || 0;
-              msg += `${icon} *${r[2]||'—'}* · ${r[1]||''}\n`;
-              msg += `   ${r[4]||'—'} · ${r[5]||'—'}\n`;
-              msg += `   Аванс: ${amount.toLocaleString()} ₸`;
-              if (balance > 0) msg += ` · Остаток: ${balance.toLocaleString()} ₸`;
-              if (!isOpen && r[9]) msg += `\nВыдан: ${r[9]}`;
-              msg += '\n\n';
+            // Только открытые — исключаем закрытые
+            const openOnly = listType === 'все' ? list : list.filter(r => {
+              const s = String(r[8]||'').toLowerCase();
+              return !s.includes('закрыт') && !s.includes('выдан');
             });
-            if (list.length > 15) msg += `...и ещё ${list.length - 15} записей`;
+
+            let msg = `📋 *Открытые предоплаты (${openOnly.length} шт):*\n\n`;
+
+            openOnly.slice(0, 15).forEach((r, i) => {
+              const amount = parseInt(String(r[6]||'0').replace(/[^0-9]/g,'')) || 0;
+              const balance = parseInt(String(r[7]||'0').replace(/[^0-9]/g,'')) || 0;
+              const phone = String(r[3]||'').replace(/[^0-9]/g,'');
+              const clientName = String(r[2]||'').trim();
+              const id = String(r[0]||'').trim();
+              const date = String(r[1]||'').trim();
+              const item = String(r[4]||'—').trim();
+              const channel = String(r[5]||'—').trim();
+
+              if (!clientName) return;
+
+              msg += `📦 *№${i+1}. ${clientName}*\n`;
+              if (id) msg += `🆔 ${id}\n`;
+              if (phone && phone.length > 5) msg += `📞 ${phone}\n`;
+              msg += `👗 ${item}\n`;
+              if (date) msg += `📅 ${date}\n`;
+              msg += `💰 Аванс: *${amount.toLocaleString()} тг*\n`;
+              if (balance > 0) {
+                msg += `⚠️ Долг: *${balance.toLocaleString()} тг*\n`;
+              } else {
+                msg += `✅ Оплачено полностью\n`;
+              }
+              msg += `💳 ${channel}\n\n`;
+            });
+            if (openOnly.length > 15) msg += `_...и ещё ${openOnly.length - 15} предоплат_`;
             const cleanMsg = reply.replace(/PREPAY_LIST:\S+/g, '').trim();
             if (cleanMsg) await bot.sendMessage(chatId, cleanMsg);
             await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
