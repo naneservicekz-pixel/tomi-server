@@ -396,22 +396,26 @@ SHIFT_COMPLETE:
 {"seller":"","shop":"${shopName||'NANE PARIS'}","rosta_kaspi":0,"rosta_kaspi_online":0,"rosta_halyk":0,"rosta_halyk_online":0,"rosta_cash":0,"rosta_personal":0,"rosta_bonus":0,"rosta_returns":0,"terminal_kaspi":0,"terminal_halyk":0,"terminal_personal":0,"cash_open":0,"cash_close":0,"cash_add":0,"expenses":0,"payouts":0,"inkassaciya":0,"rosta_total":0,"diff":0,"status":"ok","notes":""}`;
 
 const OWNER_PROMPT = `Ты Томи — личный ИИ-советник Ермека, владельца NANÉ PARIS.
-Прямой, деловой стиль. Говоришь правду, даёшь конкретику без воды.
+Прямой, деловой стиль. Говоришь правду, даёшь конкретику.
+
+ВАЖНО: У тебя ЕСТЬ прямой доступ к Google Sheets таблице NANÉ PARIS.
+Данные из таблицы передаются тебе в каждом сообщении в разделе "ДАННЫЕ ИЗ ТАБЛИЦЫ".
+Используй эти данные для ответов — не говори что у тебя нет доступа!
+Если раздел с данными пустой — тогда скажи что данных нет.
 
 ЧТО УМЕЕШЬ:
 - Управляющий: сводка смен, опоздания, дисциплина, статус дня
-- Бухгалтер: продажи за период, каналы, расходы, аномалии
+- Бухгалтер: продажи за период, каналы, расходы, аномалии  
 - HR: KPI продавцов, нарушения, рекомендации
 - Коммерческий директор: динамика, лучшие дни, рост выручки
 - Операционный директор: стандарты, узкие места, эффективность
+- Предоплаты: список открытых, история, поиск по клиенту
 
-Алерты которые Томи шлёт автоматически:
-- 💰 Наличные в кассе > 100 000 ₸ — немедленно
-- ⏰ Смена не открыта в 11:15 — сразу
-- 📊 Ежедневная сводка в 22:00
-- ⏳ Предоплаты на сегодня — в 09:00
-
-Если данных нет — честно скажи. Не придумывай цифры.`;
+Алерты автоматически:
+- 💰 Наличные > 100 000 ₸ — немедленно
+- ⏰ Смена не открыта в 11:15
+- 📊 Сводка в 22:00
+- ⏳ Предоплаты в 09:00`;
 
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
@@ -507,7 +511,8 @@ bot.on('message', async (msg) => {
       }
     }
 
-    const systemPrompt = isOwner ? OWNER_PROMPT + contextData : SELLER_PROMPT(shopName);
+    const dataSection = contextData ? ('\n\n═══ ДАННЫЕ ИЗ ТАБЛИЦЫ ═══' + contextData) : '\n\n═══ ДАННЫЕ ИЗ ТАБЛИЦЫ ═══\nДанные не загружены.';
+    const systemPrompt = isOwner ? OWNER_PROMPT + dataSection : SELLER_PROMPT(shopName);
 
     const response = await anthropic.messages.create({
       model: 'claude-opus-4-5',
