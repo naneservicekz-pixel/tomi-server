@@ -592,10 +592,16 @@ bot.on('message', async (msg) => {
           if (list.length === 0) {
             await bot.sendMessage(chatId, listType === 'все' ? '📋 Предоплат нет.' : '📋 Открытых предоплат нет.');
           } else {
-            // Только открытые — исключаем закрытые
-            const openOnly = listType === 'все' ? list : list.filter(r => {
+            // Только открытые — исключаем закрытые и строки без нормального имени
+            const openOnly = list.filter(r => {
               const s = String(r[8]||'').toLowerCase();
-              return !s.includes('закрыт') && !s.includes('выдан');
+              const clientName = String(r[2]||'').trim();
+              const phone = String(r[3]||'').trim();
+              // Исключаем закрытые
+              if (s.includes('закрыт') || s.includes('выдан')) return false;
+              // Исключаем строки где нет имени или телефон = 7
+              if (!clientName || clientName.length < 2) return false;
+              return true;
             });
 
             let msg = `📋 *Открытые предоплаты (${openOnly.length} шт):*\n\n`;
