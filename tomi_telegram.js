@@ -581,29 +581,37 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(chatId, '📋 Предоплат пока нет.');
         } else {
 
-          // Группируем строки по PREP ID — одна карточка на один заказ
+          // Группируем строки: PREP-xxx по PREP ID, CL-xxx по клиент+дата
           const prepMap = {};
           rows.slice(1).forEach(r => {
-            const prepId = String(r[0]||'').trim();
+            const rawId = String(r[0]||'').trim();
             const clientName = String(r[2]||'').trim();
             const status = String(r[8]||'').trim().toLowerCase();
             const amount = parseInt(String(r[6]||'0').replace(/[^0-9]/g,'')) || 0;
-            const phone = String(r[3]||'').replace(/[^0-9]/g,'').trim();
+            const rawPhone = String(r[3]||'').replace(/[^0-9]/g,'').trim();
+            const item = String(r[4]||'').trim();
+            const date = String(r[1]||'').trim();
 
-            // Пропускаем мусорные строки:
-            // - нет имени клиента
-            // - имя это длинный ID (CL-...) или просто цифра
-            // - имя меньше 2 символов
+            // Пропускаем строки без нормального имени клиента
             if (!clientName || clientName.length < 2) return;
             if (/^CL-\d+$/.test(clientName)) return;
             if (/^\d+$/.test(clientName)) return;
 
-            const item = String(r[4]||'').trim();
+            // Телефон: "7" не показываем
+            const phone = rawPhone.length > 4 ? rawPhone : '';
 
-            if (!prepMap[prepId]) {
-              prepMap[prepId] = {
-                id: prepId,
-                date: String(r[1]||'').trim(),
+            // Отображаемый ID только если PREP-
+            const displayId = /^PREP-/i.test(rawId) ? rawId : null;
+
+            // Ключ группировки
+            const groupKey = /^PREP-/i.test(rawId)
+              ? rawId
+              : (clientName.toLowerCase() + '|' + date);
+
+            if (!prepMap[groupKey]) {
+              prepMap[groupKey] = {
+                id: displayId,
+                date: date,
                 client: clientName,
                 phone: phone,
                 channel: String(r[5]||'—').trim(),
@@ -612,11 +620,17 @@ bot.on('message', async (msg) => {
                 status: status,
                 items: []
               };
+            } else {
+              if (!prepMap[groupKey].phone && phone) prepMap[groupKey].phone = phone;
+              prepMap[groupKey].amount += amount;
+              prepMap[groupKey].balance += parseInt(String(r[7]||'0').replace(/[^0-9]/g,'')) || 0;
+              if (!status.includes('закрыт') && !status.includes('выдан')) {
+                prepMap[groupKey].status = status;
+              }
             }
-            if (item) prepMap[prepId].items.push(item);
-
-            // Обновляем сумму и статус если есть данные
-            if (amount > prepMap[prepId].amount) prepMap[prepId].amount = amount;
+            if (item && !prepMap[groupKey].items.includes(item)) {
+              prepMap[groupKey].items.push(item);
+            }
           });
 
           let allPreps = Object.values(prepMap);
