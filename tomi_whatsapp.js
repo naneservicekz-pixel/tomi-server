@@ -12,9 +12,10 @@ const app = express();
 app.use(express.json());
 
 // ── Переменные окружения ──────────────────────────────────────────────
-const WHATSAPP_TOKEN    = process.env.WHATSAPP_TOKEN;
-const PHONE_NUMBER_ID   = process.env.PHONE_NUMBER_ID;
-const VERIFY_TOKEN      = process.env.VERIFY_TOKEN;
+// Green API настройки
+const GREEN_API_ID      = process.env.GREEN_API_ID || '7107620766';
+const GREEN_API_TOKEN   = process.env.GREEN_API_TOKEN;
+const GREEN_API_URL     = `https://7107.api.greenapi.com/waInstance${GREEN_API_ID}`;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SPREADSHEET_ID    = process.env.SPREADSHEET_ID;
 const CASH_ALERT_LIMIT  = parseInt(process.env.CASH_ALERT_LIMIT || '100000');
@@ -331,27 +332,28 @@ ${JSON.stringify(data.openPrepays.slice(0, 20), null, 2)}
 Прямо, деловито, с цифрами и рекомендациями.`;
 }
 
-// ── Отправка WhatsApp сообщения ───────────────────────────────────────
+// ── Отправка WhatsApp сообщения через Green API ──────────────────────
 async function sendWhatsApp(to, text) {
+  // Форматируем номер — убираем + и добавляем @c.us
+  const chatId = to.replace(/[^0-9]/g, '') + '@c.us';
+
   // Разбиваем длинные сообщения на части по 4000 символов
   const chunks = [];
   for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
 
   for (const chunk of chunks) {
     const body = JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'text',
-      text: { body: chunk }
+      chatId: chatId,
+      message: chunk
     });
 
     await new Promise((resolve, reject) => {
+      const url = new URL(`${GREEN_API_URL}/sendMessage/${GREEN_API_TOKEN}`);
       const req = https.request({
-        hostname: 'graph.facebook.com',
-        path: `/v18.0/${PHONE_NUMBER_ID}/messages`,
+        hostname: url.hostname,
+        path: url.pathname,
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${WHATSAPP_TOKEN}`,
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body)
         }
@@ -359,7 +361,7 @@ async function sendWhatsApp(to, text) {
         let data = '';
         res.on('data', d => data += d);
         res.on('end', () => {
-          if (res.statusCode !== 200) console.error('WA send error:', data);
+          if (res.statusCode !== 200) console.error('Green API send error:', res.statusCode, data);
           resolve();
         });
       });
@@ -367,6 +369,9 @@ async function sendWhatsApp(to, text) {
       req.write(body);
       req.end();
     });
+
+    // Небольшая задержка между сообщениями
+    await new Promise(r => setTimeout(r, 500));
   }
 }
 
@@ -832,48 +837,50 @@ async function handleMessage(fromPhone, messageText, messageType, mediaId) {
   }
 }
 
-// ── Webhook верификация ───────────────────────────────────────────────
+// ── Webhook Green API ────────────────────────────────────────────────
 app.get('/webhook', (req, res) => {
-  const mode      = req.query['hub.mode'];
-  const token     = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('Webhook verified');
-    res.status(200).send(challenge);
-  } else {
-    res.sendStatus(403);
-  }
+  res.json({ status: 'ok', service: 'TOMI NANE PARIS' });
 });
 
-// ── Webhook получение сообщений ───────────────────────────────────────
 app.post('/webhook', async (req, res) => {
-  res.sendStatus(200); // сразу отвечаем Meta
+  res.sendStatus(200); // сразу отвечаем Green API
 
   try {
-    const entry = req.body?.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const value = changes?.value;
-    const messages = value?.messages;
-    if (!messages || messages.length === 0) return;
+    const body = req.body;
+    if (!body || !body.typeWebhook) return;
 
-    const msg = messages[0];
-    const fromPhone = msg.from;
-    const messageType = msg.type;
+    // Обрабатываем только входящие сообщения
+    if (body.typeWebhook !== 'incomingMessageReceived') return;
+
+    const msg = body.messageData;
+    const sender = body.senderData;
+    if (!msg || !sender) return;
+
+    // Получаем номер отправителя (убираем @c.us)
+    const fromPhone = sender.chatId.replace('@c.us', '').replace('@g.us', '');
+
+    // Игнорируем групповые чаты
+    if (sender.chatId.includes('@g.us')) return;
 
     let messageText = '';
     let mediaId = null;
+    let messageType = 'text';
 
-    if (messageType === 'text') {
-      messageText = msg.text?.body || '';
-    } else if (messageType === 'image') {
-      mediaId = msg.image?.id;
-      messageText = msg.image?.caption || '';
-    } else if (messageType === 'document') {
-      mediaId = msg.document?.id;
-      messageText = msg.document?.caption || '';
+    if (msg.typeMessage === 'textMessage') {
+      messageText = msg.textMessageData?.textMessage || '';
+    } else if (msg.typeMessage === 'imageMessage') {
+      messageType = 'image';
+      mediaId = msg.fileMessageData?.downloadUrl;
+      messageText = msg.fileMessageData?.caption || '';
+    } else if (msg.typeMessage === 'documentMessage') {
+      messageType = 'document';
+      mediaId = msg.fileMessageData?.downloadUrl;
+      messageText = msg.fileMessageData?.caption || '';
     } else {
       return; // игнорируем другие типы
     }
+
+    if (!messageText && !mediaId) return;
 
     await handleMessage(fromPhone, messageText, messageType, mediaId);
   } catch(e) {
