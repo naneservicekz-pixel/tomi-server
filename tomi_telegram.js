@@ -621,9 +621,15 @@ bot.on('message', async (msg) => {
                 items: []
               };
             } else {
+              // Обновляем телефон если нашли нормальный
               if (!prepMap[groupKey].phone && phone) prepMap[groupKey].phone = phone;
-              prepMap[groupKey].amount += amount;
-              prepMap[groupKey].balance += parseInt(String(r[7]||'0').replace(/[^0-9]/g,'')) || 0;
+              // НЕ суммируем — каждая строка дублирует общую сумму заказа
+              // Берём максимальную сумму как итог заказа
+              if (amount > prepMap[groupKey].amount) prepMap[groupKey].amount = amount;
+              // Остаток тоже берём максимальный
+              const bal = parseInt(String(r[7]||'0').replace(/[^0-9]/g,'')) || 0;
+              if (bal > prepMap[groupKey].balance) prepMap[groupKey].balance = bal;
+              // Если хоть одна строка открыта — весь заказ открыт
               if (!status.includes('закрыт') && !status.includes('выдан')) {
                 prepMap[groupKey].status = status;
               }
