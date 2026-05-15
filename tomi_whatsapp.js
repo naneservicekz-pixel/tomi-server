@@ -805,16 +805,17 @@ async function handleMessage(fromPhone, messageText, messageType, mediaId) {
 
     // Запрос к Claude
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-5',
+      model: 'claude-opus-4-5',
       max_tokens: 2000,
       system: systemPrompt,
       messages: conversations[fromPhone]
     });
 
-    // Извлекаем только текстовые блоки из ответа Claude
+    // Извлекаем только текстовые блоки — фильтруем thinking, tool_use и прочее
     const reply = response.content
-      .filter(block => block.type === 'text')
-      .map(block => block.text)
+      .filter(block => block.type === 'text' && block.text && !block.text.includes('<function_calls>'))
+      .map(block => block.text.trim())
+      .filter(t => t.length > 0)
       .join('\n')
       .trim();
 
