@@ -42,7 +42,20 @@ const openShifts    = {}; // { phone: { name, time, shop, cashOpen } }
 
 // ── Google Sheets ─────────────────────────────────────────────────────
 function getSheets() {
-  const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+  // Читаем из двух коротких переменных вместо одного большого JSON
+  const creds = {
+    type: 'service_account',
+    project_id: 'tomi-nane',
+    private_key_id: '70384f8bcb840da762e2d8493af280a8b84a408b',
+    private_key: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
+    client_email: process.env.GOOGLE_CLIENT_EMAIL || 'tomi-sheets@tomi-nane.iam.gserviceaccount.com',
+    client_id: '100228927705920212548',
+    auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+    token_uri: 'https://oauth2.googleapis.com/token',
+    auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+    client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/tomi-sheets%40tomi-nane.iam.gserviceaccount.com',
+    universe_domain: 'googleapis.com'
+  };
   const auth = new google.auth.GoogleAuth({
     credentials: creds,
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
