@@ -811,7 +811,19 @@ async function handleMessage(fromPhone, messageText, messageType, mediaId) {
       messages: conversations[fromPhone]
     });
 
-    const reply = response.content[0].text;
+    // Извлекаем только текстовые блоки из ответа Claude
+    const reply = response.content
+      .filter(block => block.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+      .trim();
+
+    if (!reply) {
+      console.error('Claude вернул пустой ответ:', JSON.stringify(response.content));
+      await sendWhatsApp(fromPhone, 'Произошла ошибка. Попробуй ещё раз.');
+      return;
+    }
+
     conversations[fromPhone].push({ role: 'assistant', content: reply });
 
     // Обрабатываем системные команды и получаем чистый текст
