@@ -41,14 +41,42 @@ const conversations = {}; // { phone: [ {role, content}, ... ] }
 const openShifts    = {}; // { phone: { name, time, shop, cashOpen } }
 
 // ── Google Sheets ─────────────────────────────────────────────────────
+const GOOGLE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDXQU0YWE5wixDi
+kU0X0blrAMQASdMvaQxWlztaWeSQ8K1/uj9Cgm5o1Q4YJY5tL++7xSZN7TYNhQ/n
+m17QnOVsQyF7WSNq9hcJwQPBBO2QKXANjD1O32Bqe/A4OVB0upjjq/MLwRAgMo3/
+ZhHabhn/zT6ZMo22hKiVAmSs5ZhOu22zdUK7nimucBF6O0H+hCfhEXVN91JcQKiU
+puF4bpYMYpdg/BMW4ERyXg8BOwRQ++Zufkpuw/qbT7PidqY0ZydGcNsQ/k0z0h1m
+qDxCWQwvleF0FPMV5mNfycjHcxbzRdG1XmfSI9uEs5wWKhZaKA6BYXJICUvCTY23
+B+DIC909AgMBAAECggEACimXAEj9AmMNEUafCeVDeH82VwrP5GC0gysL048ZE38K
+uz7EXqQQnoo+f9qCuqTFJUuLFynq6nZSLahVcIppFMnSPRlUgCfYUcQnJKKnrO3J
+O0PYH3mRev2Dy20TShYxgoAwpD5Wv/pltKgxkWsvduGjrLETuolRTzWoIfc1+rOC
+4ptUNfSduMv9Jm5x5oeINQU5Phq7Srzs5gxNPyvVYylcbuEilkyxqbl2EEVRL5dU
+UavVt/0KyugLFVWRd27A/7LemFMSxO9AQbf5O23T5lonB8oIksq7+5YkicEzl17C
+KSyBoiZMnj2rWx/5BqrTP13HTXkV8pnLxG7znzqN+QKBgQD8a0IHp4eYptxoq3BJ
+mkg4oQjlTGjfDRwwaP5ln9k0alMT0h8CklQyztWUvuMhKWs/aETGLWaTqNbIwjmK
+BghI/uoGOBx3w2FsjfV+xEctT70U5zxnbuLlH84tKRrZgJ8wJbK8E2Mzqgw6+zN9
+hrAtvHcO+PYxwDwl1tXrEJpCiQKBgQDaTxIE+nehurO+5EwJIKYxU4mz2l46tGdD
+OhmhxumFir/H0za26tSCdaa1XtX/jiVTyEn9nq3j8Rmcg4TzVfajHIjCJWF2ySCa
+0B2fLwkmIcO13Sw/N2bFP19jHdh9mw20/Vx287CsAGLrP1rWBvbzZ2z9lOpKXDgV
+SmSFtUcoFQKBgHQqpJPDPPs657rgE2g8MbqmGeL1PFpSvUNmPpXkb+DYge1gSVc0
+or1TRSYUh5EOb8YZpXUTFd8k19xCzpo/1nZJoshD8I4Jg/+igXXavOsUhG9nT/xG
+IvPRpGBSR4IL2Lce0lgOEByJyOEoFHVTlCcoUh644wzYbJX5fi+VT3kJAoGBAJUf
+VADAkr2QCj5INkQ54CxrkvGfJaTWHH+IjX+7n0KQX6aA+awDRvyCn0jfKjDyCT9s
+3lX3cXL1+3e1QzjxLJOI50YvQJ9ijfoSVVmqSIaao9Rz60iXcIUmX+MVvQ83vio2
+s1Wx6qnjba6iTUtL4J6ttH6XnV8EFW89rOLEzIFtAoGBAJviAai9xiUBx2hc53Iw
+TZNi7Z88wctwijjHcK1IhgE2FmndmtAdTryeKReHaF4LoU8mK6TfwJGtK55eken3
+QEEAqs6wz3nwz11a48YdS6P3qWY5zy7cJ5vNmtV72mUwM1jb3cR1N9nlViTRvMGw
+G2Xaa8KKIecwaLyNTlVw7DTZ
+-----END PRIVATE KEY-----`;
+
 function getSheets() {
-  // Читаем из двух коротких переменных вместо одного большого JSON
   const creds = {
     type: 'service_account',
     project_id: 'tomi-nane',
     private_key_id: '70384f8bcb840da762e2d8493af280a8b84a408b',
-    private_key: (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n'),
-    client_email: process.env.GOOGLE_CLIENT_EMAIL || 'tomi-sheets@tomi-nane.iam.gserviceaccount.com',
+    private_key: GOOGLE_PRIVATE_KEY,
+    client_email: 'tomi-sheets@tomi-nane.iam.gserviceaccount.com',
     client_id: '100228927705920212548',
     auth_uri: 'https://accounts.google.com/o/oauth2/auth',
     token_uri: 'https://oauth2.googleapis.com/token',
@@ -145,7 +173,9 @@ async function loadPrepays(type = 'open') {
     if (!client || client.length < 2) return;
     if (/^CL-\d+$/.test(client) || /^\d+$/.test(client)) return;
 
-    const status   = String(r[8] || '').trim().toLowerCase();
+    // Убираем эмодзи из статуса и приводим к нижнему регистру
+    const statusRaw = String(r[8] || '').trim();
+    const status = statusRaw.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}]/gu, '').trim().toLowerCase();
     const amount   = parseFloat(String(r[6] || '0').replace(/[^0-9.]/g, '')) || 0;
     const balance  = parseFloat(String(r[7] || '0').replace(/[^0-9.]/g, '')) || 0;
     const rawPhone = String(r[3] || '').replace(/[^0-9]/g, '');
@@ -159,7 +189,8 @@ async function loadPrepays(type = 'open') {
       };
     } else {
       if (!prepMap[prepId].phone && phone) prepMap[prepId].phone = phone;
-      prepMap[prepId].amount += amount;
+      // Не складываем суммы — берём максимальную
+      if (amount > prepMap[prepId].amount) prepMap[prepId].amount = amount;
       if (status.includes('открыт')) prepMap[prepId].status = status;
     }
     if (item && !prepMap[prepId].items.includes(item)) prepMap[prepId].items.push(item);
