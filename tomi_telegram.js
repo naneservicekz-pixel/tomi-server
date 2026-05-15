@@ -581,56 +581,74 @@ bot.on('message', async (msg) => {
           await bot.sendMessage(chatId, '📋 Предоплат пока нет.');
         } else {
 
-          // Группируем строки: PREP-xxx по PREP ID, CL-xxx по клиент+дата
+          // Таблица имеет ДВА формата строк:
+          // Старый (11 кол): A=PREP-001, B=Дата, C=Клиент, D=Телефон, E=Товар, F=Канал, G=Сумма, H=Остаток, I=Статус
+          // Новый (12 кол):  A=PREP-0024, B=CL-177..., C=Дата, D=Клиент, E=Телефон(7), F=Товар, G=Канал, H=Сумма, I=Остаток, J=Статус
           const prepMap = {};
           rows.slice(1).forEach(r => {
-            const rawId = String(r[0]||'').trim();
-            const clientName = String(r[2]||'').trim();
-            const status = String(r[8]||'').trim().toLowerCase();
-            const amount = parseInt(String(r[6]||'0').replace(/[^0-9]/g,'')) || 0;
-            const rawPhone = String(r[3]||'').replace(/[^0-9]/g,'').trim();
-            const item = String(r[4]||'').trim();
-            const date = String(r[1]||'').trim();
+            if (!r[0]) return; // пустая строка
 
-            // Пропускаем строки без нормального имени клиента
+            const prepId = String(r[0]||'').trim();
+            if (!prepId.toUpperCase().startsWith('PREP')) return; // не предоплата
+
+            // Определяем формат строки по колонке B
+            const isNewFormat = String(r[1]||'').startsWith('CL-');
+
+            let date, clientName, rawPhone, item, channel, amount, balance, status;
+
+            if (isNewFormat) {
+              // Новый формат: сдвиг на 1 колонку вправо
+              date     = String(r[2]||'').trim();
+              clientName = String(r[3]||'').trim();
+              rawPhone = String(r[4]||'').replace(/[^0-9]/g,'').trim();
+              item     = String(r[5]||'').trim();
+              channel  = String(r[6]||'—').trim();
+              amount   = parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,'')) || 0;
+              balance  = parseFloat(String(r[8]||'0').replace(/[^0-9.]/g,'')) || 0;
+              status   = String(r[9]||'').trim().toLowerCase();
+            } else {
+              // Старый формат: стандартный
+              date     = String(r[1]||'').trim();
+              clientName = String(r[2]||'').trim();
+              rawPhone = String(r[3]||'').replace(/[^0-9]/g,'').trim();
+              item     = String(r[4]||'').trim();
+              channel  = String(r[5]||'—').trim();
+              amount   = parseFloat(String(r[6]||'0').replace(/[^0-9.]/g,'')) || 0;
+              balance  = parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,'')) || 0;
+              status   = String(r[8]||'').trim().toLowerCase();
+            }
+
+            // Пропускаем пустые или мусорные строки
             if (!clientName || clientName.length < 2) return;
             if (/^CL-\d+$/.test(clientName)) return;
             if (/^\d+$/.test(clientName)) return;
 
-            // Телефон: "7" не показываем
+            // Телефон: если просто "7" — не показываем
             const phone = rawPhone.length > 4 ? rawPhone : '';
 
-            // Отображаемый ID только если PREP-
-            const displayId = /^PREP-/i.test(rawId) ? rawId : null;
-
-            // Ключ группировки
-            const groupKey = /^PREP-/i.test(rawId)
-              ? rawId
-              : (clientName.toLowerCase() + '|' + date);
+            // Группируем по PREP ID (каждый PREP — одна карточка)
+            const groupKey = prepId;
 
             if (!prepMap[groupKey]) {
               prepMap[groupKey] = {
-                id: displayId,
+                id: prepId,
                 date: date,
                 client: clientName,
                 phone: phone,
-                channel: String(r[5]||'—').trim(),
+                channel: channel,
                 amount: amount,
-                balance: parseInt(String(r[7]||'0').replace(/[^0-9]/g,'')) || 0,
+                balance: balance,
                 status: status,
                 items: []
               };
             } else {
               // Обновляем телефон если нашли нормальный
               if (!prepMap[groupKey].phone && phone) prepMap[groupKey].phone = phone;
-              // НЕ суммируем — каждая строка дублирует общую сумму заказа
-              // Берём максимальную сумму как итог заказа
-              if (amount > prepMap[groupKey].amount) prepMap[groupKey].amount = amount;
-              // Остаток тоже берём максимальный
-              const bal = parseInt(String(r[7]||'0').replace(/[^0-9]/g,'')) || 0;
-              if (bal > prepMap[groupKey].balance) prepMap[groupKey].balance = bal;
+              // Суммируем суммы — каждая строка это отдельный товар с своей суммой
+              prepMap[groupKey].amount += amount;
+              prepMap[groupKey].balance += balance;
               // Если хоть одна строка открыта — весь заказ открыт
-              if (!status.includes('закрыт') && !status.includes('выдан')) {
+              if (status.includes('открыт')) {
                 prepMap[groupKey].status = status;
               }
             }
