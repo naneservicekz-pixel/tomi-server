@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════════════
-// ТОМИ — WhatsApp AI Управляющий NANE PARIS
-// Версия 2.1 — Supabase память
+// ТОМИ — Telegram AI Управляющий NANE PARIS
+// Версия 3.0 — Telegram + Supabase память
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -19,82 +19,65 @@ const supabase = createClient(
 );
 
 // ── Переменные окружения ──────────────────────────────────────────────
-const GREEN_API_ID      = process.env.GREEN_API_ID || '7107620766';
-const GREEN_API_TOKEN   = process.env.GREEN_API_TOKEN;
-const GREEN_API_URL     = `https://7107.api.greenapi.com/waInstance${GREEN_API_ID}`;
+const TELEGRAM_TOKEN    = process.env.TELEGRAM_BOT_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SPREADSHEET_ID    = process.env.SPREADSHEET_ID;
 const CASH_ALERT_LIMIT  = parseInt(process.env.CASH_ALERT_LIMIT || '100000');
 
-const OWNER_PHONES = (process.env.OWNER_PHONES || '').split(',').map(p => p.trim()).filter(Boolean);
+const OWNER_IDS = (process.env.OWNER_TELEGRAM_IDS || '').split(',').map(p => p.trim()).filter(Boolean);
 
 const ALLOWED_MAP = {};
-(process.env.ALLOWED_USERS || '').split(',').forEach(entry => {
-  const [phone, name] = entry.split(':');
-  if (phone && name) ALLOWED_MAP[phone.trim()] = name.trim();
+(process.env.ALLOWED_TELEGRAM_USERS || '').split(',').forEach(entry => {
+  const [id, name] = entry.split(':');
+  if (id && name) ALLOWED_MAP[id.trim()] = name.trim();
 });
-OWNER_PHONES.forEach(p => { if (!ALLOWED_MAP[p]) ALLOWED_MAP[p] = 'Руководитель'; });
+OWNER_IDS.forEach(id => { if (!ALLOWED_MAP[id]) ALLOWED_MAP[id] = 'Руководитель'; });
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
-// ── Память (RAM кэш + Supabase) ───────────────────────────────────────
+// ── Память ────────────────────────────────────────────────────────────
 const conversations = {};
 const openShifts    = {};
 
 // ── Supabase функции ──────────────────────────────────────────────────
-async function loadConversation(phone) {
+async function loadConversation(userId) {
   try {
     const { data } = await supabase
       .from('conversations')
       .select('role, content')
-      .eq('phone', phone)
+      .eq('phone', userId)
       .order('created_at', { ascending: true })
       .limit(20);
     return data || [];
-  } catch(e) {
-    console.error('Supabase load error:', e.message);
-    return [];
-  }
+  } catch(e) { return []; }
 }
 
-async function saveMessages(phone, userContent, assistantContent) {
+async function saveMessages(userId, userContent, assistantContent) {
   try {
     await supabase.from('conversations').insert([
-      { phone, role: 'user', content: typeof userContent === 'string' ? userContent : JSON.stringify(userContent) },
-      { phone, role: 'assistant', content: assistantContent }
+      { phone: userId, role: 'user', content: typeof userContent === 'string' ? userContent : JSON.stringify(userContent) },
+      { phone: userId, role: 'assistant', content: assistantContent }
     ]);
-  } catch(e) {
-    console.error('Supabase save error:', e.message);
-  }
+  } catch(e) { console.error('Supabase save error:', e.message); }
 }
 
-async function loadOpenShift(phone) {
+async function loadOpenShift(userId) {
   try {
-    const { data } = await supabase
-      .from('open_shifts')
-      .select('*')
-      .eq('phone', phone)
-      .single();
+    const { data } = await supabase.from('open_shifts').select('*').eq('phone', userId).single();
     return data || null;
-  } catch(e) {
-    return null;
-  }
+  } catch(e) { return null; }
 }
 
-async function saveOpenShift(phone, shiftData) {
+async function saveOpenShift(userId, shiftData) {
   try {
-    await supabase.from('open_shifts').upsert({ phone, ...shiftData });
-  } catch(e) {
-    console.error('Supabase shift save error:', e.message);
-  }
+    await supabase.from('open_shifts').upsert({ phone: userId, ...shiftData });
+  } catch(e) { console.error('Supabase shift save error:', e.message); }
 }
 
-async function deleteOpenShift(phone) {
+async function deleteOpenShift(userId) {
   try {
-    await supabase.from('open_shifts').delete().eq('phone', phone);
-  } catch(e) {
-    console.error('Supabase shift delete error:', e.message);
-  }
+    await supabase.from('open_shifts').delete().eq('phone', userId);
+  } catch(e) { console.error('Supabase shift delete error:', e.message); }
 }
 
 // ── Google Sheets ─────────────────────────────────────────────────────
@@ -128,21 +111,20 @@ G2Xaa8KKIecwaLyNTlVw7DTZ
 -----END PRIVATE KEY-----`;
 
 function getSheets() {
-  const creds = {
-    type: 'service_account',
-    project_id: 'tomi-nane',
-    private_key_id: '70384f8bcb840da762e2d8493af280a8b84a408b',
-    private_key: GOOGLE_PRIVATE_KEY,
-    client_email: 'tomi-sheets@tomi-nane.iam.gserviceaccount.com',
-    client_id: '100228927705920212548',
-    auth_uri: 'https://accounts.google.com/o/oauth2/auth',
-    token_uri: 'https://oauth2.googleapis.com/token',
-    auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
-    client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/tomi-sheets%40tomi-nane.iam.gserviceaccount.com',
-    universe_domain: 'googleapis.com'
-  };
   const auth = new google.auth.GoogleAuth({
-    credentials: creds,
+    credentials: {
+      type: 'service_account',
+      project_id: 'tomi-nane',
+      private_key_id: '70384f8bcb840da762e2d8493af280a8b84a408b',
+      private_key: GOOGLE_PRIVATE_KEY,
+      client_email: 'tomi-sheets@tomi-nane.iam.gserviceaccount.com',
+      client_id: '100228927705920212548',
+      auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+      token_uri: 'https://oauth2.googleapis.com/token',
+      auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
+      client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/tomi-sheets%40tomi-nane.iam.gserviceaccount.com',
+      universe_domain: 'googleapis.com'
+    },
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
   return google.sheets({ version: 'v4', auth });
@@ -153,94 +135,85 @@ async function readSheet(range) {
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range });
     return res.data.values || [];
-  } catch(e) {
-    console.error('Sheets read error:', e.message);
-    return [];
-  }
+  } catch(e) { console.error('Sheets read error:', e.message); return []; }
 }
 
 async function appendSheet(range, values) {
   try {
     const sheets = getSheets();
     await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID,
-      range,
+      spreadsheetId: SPREADSHEET_ID, range,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [values] }
     });
     return true;
-  } catch(e) {
-    console.error('Sheets append error:', e.message);
-    return false;
-  }
+  } catch(e) { console.error('Sheets append error:', e.message); return false; }
 }
 
 async function updateSheetCell(range, value) {
   try {
     const sheets = getSheets();
     await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
-      range,
+      spreadsheetId: SPREADSHEET_ID, range,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [[value]] }
     });
     return true;
-  } catch(e) {
-    console.error('Sheets update error:', e.message);
-    return false;
+  } catch(e) { console.error('Sheets update error:', e.message); return false; }
+}
+
+// ── Отправка Telegram сообщения ───────────────────────────────────────
+async function sendTelegram(chatId, text, parseMode = 'HTML') {
+  const chunks = [];
+  for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
+
+  for (const chunk of chunks) {
+    const body = JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: parseMode });
+    await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.telegram.org',
+        path: `/bot${TELEGRAM_TOKEN}/sendMessage`,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      }, res => {
+        let data = '';
+        res.on('data', d => data += d);
+        res.on('end', () => { if (res.statusCode !== 200) console.error('Telegram send error:', data); resolve(); });
+      });
+      req.on('error', reject);
+      req.write(body);
+      req.end();
+    });
+    await new Promise(r => setTimeout(r, 300));
   }
 }
 
-// ── Загрузка данных для руководителя ─────────────────────────────────
+// ── Загрузка данных ───────────────────────────────────────────────────
 async function loadOwnerData() {
-  const [shifts, prepays] = await Promise.all([
-    readSheet('Смены!A:Y'),
-    readSheet('Предоплаты!A:K')
-  ]);
-
-  const recentShifts = shifts.slice(-30).map(r => ({
-    date: r[0], seller: r[1], rostaTotal: r[19], factTotal: r[20], diff: r[21], status: r[22]
-  }));
-
-  const openPrepays = prepays.slice(1).filter(r => {
-    if (!r[0]) return false;
-    const status = String(r[8] || '').toLowerCase();
-    return status.includes('открыт');
-  }).map(r => ({
-    id: r[0], date: r[1], client: r[2], phone: r[3],
-    item: r[4], channel: r[5], amount: r[6], balance: r[7]
-  }));
-
+  const [shifts, prepays] = await Promise.all([readSheet('Смены!A:Y'), readSheet('Предоплаты!A:K')]);
+  const recentShifts = shifts.slice(-30).map(r => ({ date: r[0], seller: r[1], rostaTotal: r[19], factTotal: r[20], diff: r[21], status: r[22] }));
+  const openPrepays = prepays.slice(1).filter(r => r[0] && String(r[8]||'').toLowerCase().includes('открыт')).map(r => ({ id: r[0], date: r[1], client: r[2], phone: r[3], item: r[4], channel: r[5], amount: r[6], balance: r[7] }));
   return { recentShifts, openPrepays };
 }
 
-// ── Загрузка предоплат ────────────────────────────────────────────────
 async function loadPrepays(type = 'open') {
   const rows = await readSheet('Предоплаты!A:K');
   const prepMap = {};
-
   rows.slice(1).forEach(r => {
     if (!r[0]) return;
     const prepId = String(r[0]).trim();
     if (!prepId.toUpperCase().startsWith('PREP')) return;
-
     const client = String(r[2] || '').trim();
     if (!client || client.length < 2) return;
     if (/^CL-\d+$/.test(client) || /^\d+$/.test(client)) return;
-
-    const statusRaw = String(r[8] || '').trim();
-    const status = statusRaw.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}]/gu, '').trim().toLowerCase();
-    const amount   = parseFloat(String(r[6] || '0').replace(/[^0-9.]/g, '')) || 0;
-    const balance  = parseFloat(String(r[7] || '0').replace(/[^0-9.]/g, '')) || 0;
-    const rawPhone = String(r[3] || '').replace(/[^0-9]/g, '');
-    const phone    = rawPhone.length > 4 ? rawPhone : '';
-    const item     = String(r[4] || '').trim();
-
+    const status = String(r[8]||'').replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}]/gu,'').trim().toLowerCase();
+    const amount = parseFloat(String(r[6]||'0').replace(/[^0-9.]/g,''))||0;
+    const balance = parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,''))||0;
+    const rawPhone = String(r[3]||'').replace(/[^0-9]/g,'');
+    const phone = rawPhone.length > 4 ? rawPhone : '';
+    const item = String(r[4]||'').trim();
     if (!prepMap[prepId]) {
-      prepMap[prepId] = {
-        id: prepId, date: String(r[1] || ''), client, phone,
-        channel: String(r[5] || '—'), amount, balance, status, items: []
-      };
+      prepMap[prepId] = { id: prepId, date: String(r[1]||''), client, phone, channel: String(r[5]||'—'), amount, balance, status, items: [] };
     } else {
       if (!prepMap[prepId].phone && phone) prepMap[prepId].phone = phone;
       if (amount > prepMap[prepId].amount) prepMap[prepId].amount = amount;
@@ -248,7 +221,6 @@ async function loadPrepays(type = 'open') {
     }
     if (item && !prepMap[prepId].items.includes(item)) prepMap[prepId].items.push(item);
   });
-
   let list = Object.values(prepMap);
   if (type === 'open') list = list.filter(p => p.status.includes('открыт'));
   if (type === 'closed') list = list.filter(p => p.status.includes('закрыт'));
@@ -256,24 +228,24 @@ async function loadPrepays(type = 'open') {
   return list;
 }
 
-// ── Форматирование карточки предоплаты ───────────────────────────────
+// ── Форматирование карточки предоплаты (Telegram HTML) ────────────────
 function formatPrepayCard(p, num) {
   const isClosed = p.status.includes('закрыт');
   const icon = isClosed ? '✅' : '🟡';
-  let card = `${icon} *№${num}. ${p.client}*\n`;
+  let card = `${icon} <b>№${num}. ${p.client}</b>\n`;
   if (p.id) card += `🆔 ${p.id}\n`;
   if (p.phone) card += `📞 ${p.phone}\n`;
   if (p.items.length) card += `👗 ${p.items.join(', ')}\n`;
   if (p.date) card += `📅 ${p.date}\n`;
-  card += `💰 Аванс: *${Number(p.amount).toLocaleString()} тг*\n`;
-  if (p.balance > 0) card += `⚠️ Долг: *${Number(p.balance).toLocaleString()} тг*\n`;
+  card += `💰 Аванс: <b>${Number(p.amount).toLocaleString()} тг</b>\n`;
+  if (p.balance > 0) card += `⚠️ Долг: <b>${Number(p.balance).toLocaleString()} тг</b>\n`;
   else if (isClosed) card += `✅ Оплачено полностью\n`;
   else card += `💵 Остаток уточнить\n`;
   card += `💳 ${p.channel}\n`;
   return card;
 }
 
-// ── Промпт для продавца ───────────────────────────────────────────────
+// ── Промпты ───────────────────────────────────────────────────────────
 function getSellerPrompt(sellerName, shopName) {
   const today = new Date().toLocaleDateString('ru-RU', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
   return `Ты — Томи, AI-управляющий магазина NANE PARIS (Астана).
@@ -289,7 +261,6 @@ function getSellerPrompt(sellerName, shopName) {
 Когда продавец пишет «Начала смену» — проводи строго по шагам:
 
 ШАГ 0 — ВНЕШНИЙ ВИД:
-Задай три вопроса по одному:
 1. «Макияж и укладка готовы?»
 2. «Одежда по стандарту магазина?»
 3. «Готова к работе с клиентами?»
@@ -298,55 +269,41 @@ function getSellerPrompt(sellerName, shopName) {
 
 ШАГ 1 — КАССА:
 «Касса. Сколько наличных на начало смены?»
-Продавец вводит цифру. Если 0 или меньше 1000 — уточни: «Уточни — в кассе действительно 0?»
 
 ШАГ 2 — ТЕРМИНАЛЫ:
 «Терминалы. Пришли фото экрана Kaspi и Halyk.»
-Принимаешь два фото. Если терминал не работает — уточни причину →
-TERMINAL_ALERT:{"seller":"${sellerName}","terminal":"","reason":""}
+Если терминал не работает → TERMINAL_ALERT:{"seller":"${sellerName}","terminal":"","reason":""}
 
 ШАГ 3 — ЗАЛ:
-«Зал. Проверь и ответь ок / не готово по каждому:»
-— Пыль (поверхности и вешала)
-— Ценники (на месте, читаемые)
-— Выкладка (аккуратно, нет пустых мест)
-— Освещение (все лампы работают)
-— Музыка (включена, громкость ок)
+«Зал. Проверь: Пыль / Ценники / Выкладка / Освещение / Музыка»
 
 ШАГ 4 — ПРИМЕРОЧНЫЕ:
-«Примерочные. Проверь:»
-— Чисто и убрано, нет оставленных вещей
-— Крючки на месте, зеркала чистые
+«Примерочные. Проверь: Чисто / Крючки / Зеркала»
 
 ШАГ 5 — ГОСТЕВАЯ ЗОНА:
-«Гостевая зона. Проверь:»
-— Чай и кофе готовы к подаче
-— Вода есть, стаканы чистые
-— Посуда чистая, расставлена
+«Гостевая зона. Проверь: Чай/кофе / Вода / Посуда»
 
 ШАГ 6 — УПАКОВКА:
-«Пакеты, коробки, бумага — есть в достаточном количестве?»
+«Пакеты, коробки, бумага — достаточно?»
 
 ШАГ 7 — ТЕЛЕФОН:
-«Телефон. Заряжен, на связи, уведомления включены?»
+«Телефон заряжен, на связи?»
 
 ШАГ 8 — ROSTA:
-«ROSTA. Касса открыта?»
+«ROSTA открыта?»
 После «да» → SHIFT_OPEN:{"seller":"${sellerName}","shop":"${shopName}","cashOpen":0,"time":""}
 
 ═══════════════════════════════════════════
 ПРЕДОПЛАТЫ
 ═══════════════════════════════════════════
-А) НОВАЯ предоплата — фиксируется В МОМЕНТ получения денег:
-Собери: ФИО клиента, телефон, товар (название+цвет+размер)
+А) НОВАЯ предоплата:
+Собери: ФИО, телефон, товар (название+цвет+размер)
 Канал: Kaspi QR / Halyk QR / Личная карта / Наличные / Бонусы
-ВСЕ переводы (казахстанские и иностранные RUB/USD/EUR) = «Личная карта»
 Сумма аванса, полная стоимость, дата выдачи.
-Требуй фото подтверждения оплаты (фото терминала или чека перевода).
-Для иностранных — конвертируй в тенге по текущему курсу.
-После подтверждения → PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}
+Требуй фото подтверждения оплаты.
+→ PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}
 
-Б) ВЫКУП — клиент забирает:
+Б) ВЫКУП:
 Имя → PREPAY_LIST:открытые → найти → уточнить доплату → PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}
 
 В) ПРОСМОТР:
@@ -357,143 +314,119 @@ TERMINAL_ALERT:{"seller":"${sellerName}","terminal":"","reason":""}
 ═══════════════════════════════════════════
 Когда продавец пишет «Закрываю смену»:
 
-ШАГ 1 — Z-ОТЧЁТ:
-«Z-отчёт. Сними Z-отчёт в ROSTA и пришли фото экрана кассы.»
-
-ШАГ 2 — ФИНАНСОВАЯ СВЕРКА:
-«Пришли фото итогового экрана Kaspi (дневной оборот).»
-«Пришли фото итогового экрана Halyk (дневной оборот).»
-Считываю через OCR. Сверяю терминалы с Z-отчётом.
-«Сколько наличных в кассе сейчас?» — вводит вручную.
-Возвраты если были — сумма и причина.
-
-Каналы ROSTA для ввода:
-Kaspi QR | Онлайн Kaspi | Halyk QR | Онлайн Halyk |
-Наличные | Личная карта | Бонусы |
-Возвраты Kaspi | Возвраты Halyk | Возвраты наличными
-
-ЗАКОННЫЕ расхождения:
-- Сумма БОЛЬШЕ Z-отчёта → получена предоплата (товар не пробит в ROSTA)
-- Сумма МЕНЬШЕ Z-отчёта → выдан товар по старой предоплате
-- Личная карта: допустимая погрешность ±5 000 тг (конвертация валют)
-
-Необъяснённое расхождение > 500 тг — НЕ ЗАКРЫВАЙ. Запроси объяснение.
+ШАГ 1 — Z-ОТЧЁТ: фото экрана ROSTA
+ШАГ 2 — ФИНАНСОВАЯ СВЕРКА: фото Kaspi терминал, фото Halyk терминал, наличные вручную
+ШАГ 3 — ИНКАССАЦИЯ: «Была инкассация? Сколько забрал Ермек?» → INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}
+ШАГ 4 — ПРЕДОПЛАТЫ: были выдачи за смену?
+ШАГ 5 — ЗАЛ: убрано?
+ШАГ 6 — ГОСТЕВАЯ ЗОНА: посуда вымыта?
+ШАГ 7 — ОБОРУДОВАНИЕ: ROSTA закрыта? Телефон на зарядке?
+ШАГ 8 — ГЕОЛОКАЦИЯ: пришли геолокацию
 
 После сверки → SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}
 
-ШАГ 3 — ИНКАССАЦИЯ (кросс-контроль):
-«Была ли инкассация сегодня? Ермек делал инкассацию? Сколько забрал?»
-Сверяю с данными от владельца → INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}
-
-ШАГ 4 — ПРЕДОПЛАТЫ:
-Подтяни открытые карточки. Были ли выдачи за смену?
-
-ШАГ 5 — ЗАЛ И ПРИМЕРОЧНЫЕ:
-«Зал. Проверь: товар убран / примерочные убраны / ценники после примерок»
-
-ШАГ 6 — ГОСТЕВАЯ ЗОНА:
-«Посуда вымыта и убрана? Стол чистый?»
-
-ШАГ 7 — ОБОРУДОВАНИЕ:
-«ROSTA закрыта? Телефон на зарядке? Свет и музыка выключены?»
-
-ШАГ 8 — ГЕОЛОКАЦИЯ:
-«Пришли геолокацию — подтверди что ты в магазине.»
-После геолокации смена закрыта.
-
-═══════════════════════════════════════════
-РАСХОДЫ И КАССА
-═══════════════════════════════════════════
-Расходы → категория + сумма + обоснование
-Наличных ≥ 100,000 тг → CASH_ALERT:{"amount":0}
+ЗАКОННЫЕ расхождения:
+- Больше Z → получена предоплата
+- Меньше Z → выдан товар по старой предоплате
+- Личная карта: ±5000 тг допустимо
+Необъяснённое > 500 тг — НЕ ЗАКРЫВАЙ.
 
 По-русски. Один вопрос за раз. Строго и чётко.`;
 }
 
-// ── Промпт для руководителя ───────────────────────────────────────────
 function getOwnerPrompt(ownerName, data) {
   const today = new Date().toLocaleDateString('ru-RU', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
   const totalPrepay = data.openPrepays.reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
-  return `Ты — Томи, AI-партнёр и команда экспертов NANE PARIS.
+  return `Ты — Томи, AI-партнёр NANE PARIS.
 Сегодня: ${today}. Владелец: ${ownerName}
 
-ХАРАКТЕР: Партнёр на равных. Прямо, честно, без фильтров.
-Не льстишь, не замалчиваешь проблемы. Говоришь что есть — с цифрами и рекомендациями.
-Инициируешь диалог сама когда видишь что-то важное.
+ХАРАКТЕР: Партнёр на равных. Прямо, честно, с цифрами.
 
-РОЛИ:
-- Управляющий директор — вся операционка в реальном времени, приходишь с решением
-- Финансист — P&L, маржа по линейкам, ФОТ контроль, налоги
-- Маркетолог — сезонность, топ дней и часов, что продаётся и почему
-- HR — объективная картина по команде, только факты без эмоций
-- Аналитик — метрики готовности к масштабированию
-- Бухгалтер — ФОТ, зарплатная ведомость, учёт инкассаций
-
-ДАННЫЕ ИЗ ТАБЛИЦЫ:
+ДАННЫЕ:
 Последние смены: ${JSON.stringify(data.recentShifts, null, 2)}
-
 Открытые предоплаты (${data.openPrepays.length} шт, итого: ${totalPrepay.toLocaleString()} тг):
 ${JSON.stringify(data.openPrepays.slice(0, 20), null, 2)}
 
-КОМАНДЫ ВЛАДЕЛЬЦА:
-«Отчёт» — операционный итог за последние сутки
-«Аналитика» — недельная сводка с выводами и рекомендациями
+КОМАНДЫ:
+«Отчёт» — итог за сутки
+«Аналитика» — недельная сводка
 «Предоплаты» → PREPAY_LIST:открытые
-«Команда» — сводка по продавцам с рейтингом
-«Как [имя]?» — детальный срез по продавцу
-«Масштабирование» — статус готовности к росту
-«Зарплата» — расчёт ФОТ за текущий месяц
-«Добавь в базу знаний: [текст]» — обновление знаний Томи
-«Инкассация [сумма]» — фиксирую для кросс-контроля → OWNER_INKASSO:{"amount":0,"time":""}
-
-ЛИНЕЙКИ NANE PARIS:
-- Корея масс-маркет и премиум (корейские размеры: XS=44, S=46, M=48, L=50, XL=52)
-- Италия масс-маркет (европейские размеры: XS=36-38, S=38-40, M=40-42, L=42-44)
-- Личная линейка кожа и замша премиум (куртки, дублёнки, плащи) — самый высокий чек
-
-ПРАВИЛА ВОЗВРАТА:
-- Обмен — 14 дней, чек + не ношено + бирки
-- Возврат денег — 14 дней при производственном браке
-- Кожа/замша — 30 дней при дефекте производства
-- Не подлежат возврату: бельё, без бирок, финальная распродажа (скидка 50%+)
+«Команда» — сводка по продавцам
+«Зарплата» — расчёт ФОТ
+«Инкассация [сумма]» → OWNER_INKASSO:{"amount":0,"time":""}
 
 ШКАЛА ФОТ: до 500к→1.2%, 500к-750к→1.7%, 750к-1млн→2.2%, 1млн+→2.7%
 Бонусы: >=700к +5000тг/чел, >=2млн +40000тг/чел
 Фикс: Асель 14000, Зарина 14000, Луиза 14000
 
-Прямо, с цифрами, конкретные рекомендации. По-русски.`;
+По-русски. Прямо, с цифрами.`;
 }
 
-// ── Отправка WhatsApp ─────────────────────────────────────────────────
-async function sendWhatsApp(to, text) {
-  const chatId = to.replace(/[^0-9]/g, '') + '@c.us';
-  const chunks = [];
-  for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
-
-  for (const chunk of chunks) {
-    const body = JSON.stringify({ chatId, message: chunk });
-    await new Promise((resolve, reject) => {
-      const url = new URL(`${GREEN_API_URL}/sendMessage/${GREEN_API_TOKEN}`);
-      const req = https.request({
-        hostname: url.hostname,
-        path: url.pathname,
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-      }, res => {
-        let data = '';
-        res.on('data', d => data += d);
-        res.on('end', () => { if (res.statusCode !== 200) console.error('Green API error:', res.statusCode, data); resolve(); });
-      });
-      req.on('error', reject);
-      req.write(body);
-      req.end();
+// ── OCR фото ──────────────────────────────────────────────────────────
+async function downloadTelegramFile(fileId) {
+  const fileInfo = await new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${TELEGRAM_TOKEN}/getFile?file_id=${fileId}`,
+      method: 'GET'
+    }, res => {
+      let data = '';
+      res.on('data', d => data += d);
+      res.on('end', () => resolve(JSON.parse(data)));
     });
-    await new Promise(r => setTimeout(r, 500));
+    req.on('error', reject);
+    req.end();
+  });
+
+  const filePath = fileInfo.result.file_path;
+  const fileData = await new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/file/bot${TELEGRAM_TOKEN}/${filePath}`,
+      method: 'GET'
+    }, res => {
+      const chunks = [];
+      res.on('data', d => chunks.push(d));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+  return fileData.toString('base64');
+}
+
+async function readPhotoWithClaude(base64Image, photoType) {
+  let prompt = '';
+  if (photoType === 'zreport') {
+    prompt = `Это Z-отчёт из ROSTA. Верни ТОЛЬКО JSON: {"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi":0,"ret_halyk":0,"ret_cash":0}`;
+  } else if (photoType === 'kaspi_terminal') {
+    prompt = `Это отчёт Kaspi терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}`;
+  } else if (photoType === 'halyk_terminal') {
+    prompt = `Это отчёт Halyk терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}`;
+  } else {
+    prompt = `Опиши документ. Извлеки все числовые данные по продажам и кассе.`;
   }
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 500,
+    messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Image } },
+      { type: 'text', text: prompt }
+    ]}]
+  });
+  return response.content[0].text;
+}
+
+function detectPhotoType(conversation) {
+  const last = conversation.slice(-6).map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).toLowerCase()).join(' ');
+  if (last.includes('z-отчёт') || last.includes('rosta') || last.includes('роста')) return 'zreport';
+  if (last.includes('kaspi терминал') || last.includes('терминал kaspi')) return 'kaspi_terminal';
+  if (last.includes('halyk терминал') || last.includes('терминал halyk')) return 'halyk_terminal';
+  return 'unknown';
 }
 
 // ── Обработка системных команд ────────────────────────────────────────
-async function handleSystemCommands(reply, fromPhone, sellerName) {
+async function handleSystemCommands(reply, userId, sellerName) {
   let cleanReply = reply;
 
   if (reply.includes('PREPAY_LIST:')) {
@@ -501,17 +434,17 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
     cleanReply = reply.replace(/PREPAY_LIST:\S+/g, '').trim();
     const list = await loadPrepays(type);
     if (list.length === 0) {
-      await sendWhatsApp(fromPhone, type === 'open' ? '📋 Открытых предоплат нет.' : '📋 Закрытых предоплат нет.');
+      await sendTelegram(userId, type === 'open' ? '📋 Открытых предоплат нет.' : '📋 Закрытых предоплат нет.');
     } else {
-      const header = type === 'open' ? `📋 *Открытые предоплаты: ${list.length} шт*\n\n` : `📋 *Закрытые предоплаты: ${list.length} шт*\n\n`;
+      const header = type === 'open' ? `📋 <b>Открытые предоплаты: ${list.length} шт</b>\n\n` : `📋 <b>Закрытые предоплаты: ${list.length} шт</b>\n\n`;
       for (let i = 0; i < list.length; i += 10) {
         const chunk = list.slice(i, i + 10);
-        let msg = i === 0 ? header : `📋 *...продолжение:*\n\n`;
+        let msg = i === 0 ? header : `📋 <b>...продолжение:</b>\n\n`;
         chunk.forEach((p, idx) => { msg += formatPrepayCard(p, i + idx + 1) + '\n'; });
-        await sendWhatsApp(fromPhone, msg);
+        await sendTelegram(userId, msg);
       }
     }
-    if (!cleanReply) return;
+    if (!cleanReply) return '';
   }
 
   if (reply.includes('PREPAY_SAVE:')) {
@@ -519,20 +452,13 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
       const jsonStr = reply.match(/PREPAY_SAVE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const p = JSON.parse(jsonStr);
-        const phone = String(p.phone || '').replace(/\D/g, '');
+        const phone = String(p.phone||'').replace(/\D/g,'');
         const today = new Date().toISOString().split('T')[0];
         const rows = await readSheet('Предоплаты!A:A');
         let maxNum = 0;
-        rows.forEach(r => {
-          const m = String(r[0] || '').match(/PREP-(\d+)/i);
-          if (m) { const n = parseInt(m[1]); if (n > maxNum) maxNum = n; }
-        });
+        rows.forEach(r => { const m = String(r[0]||'').match(/PREP-(\d+)/i); if (m) { const n = parseInt(m[1]); if (n > maxNum) maxNum = n; } });
         const id = `PREP-${String(maxNum + 1).padStart(4, '0')}`;
-        await appendSheet('Предоплаты!A:K', [
-          id, p.date || today, p.client || '', phone.length > 4 ? phone : '',
-          p.item || '', p.channel || '', p.amount || 0, p.balance || 0,
-          '🟡 Открыта', '', p.notes || sellerName
-        ]);
+        await appendSheet('Предоплаты!A:K', [id, p.date||today, p.client||'', phone.length>4?phone:'', p.item||'', p.channel||'', p.amount||0, p.balance||0, '🟡 Открыта', '', p.notes||sellerName]);
       }
     } catch(e) { console.error('PREPAY_SAVE error:', e.message); }
     cleanReply = reply.replace(/PREPAY_SAVE:\{.*?\}/s, '').trim();
@@ -546,10 +472,9 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
         const rows = await readSheet('Предоплаты!A:K');
         for (let i = 1; i < rows.length; i++) {
           if (String(rows[i][0]) === String(p.id)) {
-            const rowNum = i + 1;
-            await updateSheetCell(`Предоплаты!I${rowNum}`, '🟢 Закрыта');
-            await updateSheetCell(`Предоплаты!J${rowNum}`, p.closeDate || new Date().toISOString().split('T')[0]);
-            await updateSheetCell(`Предоплаты!K${rowNum}`, p.notes || 'Товар выдан');
+            await updateSheetCell(`Предоплаты!I${i+1}`, '🟢 Закрыта');
+            await updateSheetCell(`Предоплаты!J${i+1}`, p.closeDate||new Date().toISOString().split('T')[0]);
+            await updateSheetCell(`Предоплаты!K${i+1}`, p.notes||'Товар выдан');
             break;
           }
         }
@@ -564,17 +489,14 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
         const shiftData = { ...s, start_time: new Date().toISOString() };
-        openShifts[fromPhone] = shiftData;
-        await saveOpenShift(fromPhone, shiftData);
-
+        openShifts[userId] = shiftData;
+        await saveOpenShift(userId, shiftData);
         const now = new Date();
         if (now.getHours() > 11 || (now.getHours() === 11 && now.getMinutes() > 15)) {
-          const lateMsg = `⚠️ *Опоздание!*\n👤 ${s.seller}\n🕐 ${now.toLocaleTimeString('ru-RU')}\n🏪 ${s.shop}`;
-          for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, lateMsg);
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, `⚠️ <b>Опоздание!</b>\n👤 ${s.seller}\n🕐 ${now.toLocaleTimeString('ru-RU')}`);
         }
-        if ((s.cashOpen || 0) >= CASH_ALERT_LIMIT) {
-          const cashOpenMsg = `💰 *АЛЕРТ — касса на начало смены*\nНаличных: *${Number(s.cashOpen).toLocaleString()} тг*\n👤 ${s.seller} | 🏪 ${s.shop}\nНужна инкассация!`;
-          for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, cashOpenMsg);
+        if ((s.cashOpen||0) >= CASH_ALERT_LIMIT) {
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, `💰 <b>АЛЕРТ — касса на начало смены</b>\nНаличных: <b>${Number(s.cashOpen).toLocaleString()} тг</b>\n👤 ${s.seller}`);
         }
       }
     } catch(e) { console.error('SHIFT_OPEN error:', e.message); }
@@ -586,97 +508,70 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
       const jsonStr = reply.match(/SHIFT_CLOSE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
-        // Загружаем смену из Supabase если нет в RAM
-        const shift = openShifts[fromPhone] || await loadOpenShift(fromPhone) || {};
+        const shift = openShifts[userId] || await loadOpenShift(userId) || {};
         const today = new Date().toISOString().split('T')[0];
-
         const rostaTotal = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0)-(s.rRetKaspi||0)-(s.rRetHalyk||0)-(s.rRetCash||0);
-        const kaspiNet   = (s.tKaspi||0)-(s.tKaspiRet||0);
-        const halykNet   = (s.tHalyk||0)-(s.tHalykRet||0);
-        const cashSales  = (s.cashActual||0)-(s.cashOpen||0)+(s.cashPayouts||0)+(s.inkasso||0)+(s.rRetCash||0);
-        const factTotal  = kaspiNet + halykNet + cashSales + (s.tPersonal||0) + (s.rBonus||0);
-        const diff       = factTotal - rostaTotal;
-        const grossSales = rostaTotal + (s.rRetKaspi||0) + (s.rRetHalyk||0) + (s.rRetCash||0);
-        const totalRet   = (s.rRetKaspi||0) + (s.rRetHalyk||0) + (s.rRetCash||0);
-        const netSales   = grossSales - totalRet;
+        const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
+        const halykNet = (s.tHalyk||0)-(s.tHalykRet||0);
+        const cashSales = (s.cashActual||0)-(s.cashOpen||0)+(s.cashPayouts||0)+(s.inkasso||0)+(s.rRetCash||0);
+        const factTotal = kaspiNet + halykNet + cashSales + (s.tPersonal||0) + (s.rBonus||0);
+        const diff = factTotal - rostaTotal;
+        const totalRet = (s.rRetKaspi||0)+(s.rRetHalyk||0)+(s.rRetCash||0);
+        const netSales = rostaTotal + totalRet - totalRet;
 
         await appendSheet('Смены!A:Y', [
-          today, shift.seller || sellerName, shift.shop || '',
+          today, shift.seller||sellerName, shift.shop||'',
           s.rKaspi||0, s.rOnline||0, s.rHalyk||0, s.rHalykOnline||0,
           s.rCash||0, s.rPersonal||0, s.rBonus||0,
           s.rRetKaspi||0, s.rRetHalyk||0,
           s.inkasso||0, s.cashPayouts||0, s.cashOpen||0, s.cashActual||0,
           s.tKaspi||0, s.tHalyk||0, s.tPersonal||0,
           rostaTotal, factTotal, diff,
-          diff === 0 ? '✅ Корректно' : Math.abs(diff) < 500 ? '⚠️ Незначительное' : '🚨 Расхождение',
-          s.notes || '', new Date().toLocaleString('ru-RU')
+          diff===0 ? '✅ Корректно' : Math.abs(diff)<500 ? '⚠️ Незначительное' : '🚨 Расхождение',
+          s.notes||'', new Date().toLocaleString('ru-RU')
         ]);
 
-        if ((s.cashActual || 0) >= CASH_ALERT_LIMIT) {
-          const cashMsg = `💰 *АЛЕРТ ИНКАССАЦИИ*\nНаличных в кассе: *${Number(s.cashActual).toLocaleString()} тг*\n👤 ${shift.seller}\n📅 ${today}`;
-          for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, cashMsg);
-        }
-
-        const kaspiBlock = [
-          `  📲 Онлайн Kaspi: ${Number(s.rOnline||0).toLocaleString()} тг`,
-          `  📱 Kaspi QR: ${Number(s.rKaspi||0).toLocaleString()} тг`,
-          `  Терминал net: ${Number(kaspiNet).toLocaleString()} тг${(s.tKaspiRet||0)>0 ? ' (возврат −'+Number(s.tKaspiRet||0).toLocaleString()+' тг)' : ''}`
-        ].join('\n');
-
-        const halykBlock = [
-          `  📲 Онлайн Halyk: ${Number(s.rHalykOnline||0).toLocaleString()} тг`,
-          `  📱 Halyk QR: ${Number(s.rHalyk||0).toLocaleString()} тг`,
-          `  Терминал net: ${Number(halykNet).toLocaleString()} тг${(s.tHalykRet||0)>0 ? ' (возврат −'+Number(s.tHalykRet||0).toLocaleString()+' тг)' : ''}`
-        ].join('\n');
-
-        const otherBlock = [
-          `  💵 Наличные: ${Number(s.rCash||0).toLocaleString()} тг`,
-          (s.tPersonal||0)>0 ? `  💳 Личная карта (Айнур): ${Number(s.tPersonal||0).toLocaleString()} тг` : null,
-          (s.rBonus||0)>0 ? `  🎁 Бонусы (−): ${Number(s.rBonus||0).toLocaleString()} тг` : null,
-        ].filter(Boolean).join('\n');
-
-        const kassaBlock = (s.inkasso||0)>0
-          ? `  Начало: ${Number(s.cashOpen||0).toLocaleString()} тг → Конец: ${Number(s.cashActual||0).toLocaleString()} тг\n  Продажи нал: ${Number(cashSales).toLocaleString()} тг\n  💰 Инкассация: −${Number(s.inkasso||0).toLocaleString()} тг`
-          : `  Начало: ${Number(s.cashOpen||0).toLocaleString()} тг → Конец: ${Number(s.cashActual||0).toLocaleString()} тг\n  Продажи нал: ${Number(cashSales).toLocaleString()} тг`;
-
-        const sverkaLine = diff === 0 ? '✅ Kaspi · Halyk · Наличные — все сходятся'
-          : Math.abs(diff) < 500 ? '⚠️ Незначительное расхождение'
-          : '🚨 РАСХОЖДЕНИЕ — требует внимания';
+        const sverkaLine = diff===0 ? '✅ Kaspi · Halyk · Наличные — все сходятся' : Math.abs(diff)<500 ? '⚠️ Незначительное расхождение' : '🚨 РАСХОЖДЕНИЕ — требует внимания';
 
         const report = `━━━━━━━━━━━━━━━━━━━━━
-📊 *NANÉ PARIS · ОТЧЁТ СМЕНЫ*
+📊 <b>NANÉ PARIS · ОТЧЁТ СМЕНЫ</b>
 ━━━━━━━━━━━━━━━━━━━━━
-📅 ${today}  👤 ${shift.seller || sellerName}
+📅 ${today}  👤 ${shift.seller||sellerName}
 
-💚 *Чистые продажи: ${Number(netSales).toLocaleString()} тг*
+💚 <b>Чистые продажи: ${Number(rostaTotal).toLocaleString()} тг</b>
 💙 Получено деньгами: ${Number(factTotal).toLocaleString()} тг${totalRet>0 ? '\n🔴 Возвраты: −'+Number(totalRet).toLocaleString()+' тг' : ''}
 
 ━━━━━━━━━━━━━━━━━━━━━
-🔵 *KASPI ТЕРМИНАЛ*
-${kaspiBlock}
+🔵 <b>KASPI</b>
+  📲 Онлайн: ${Number(s.rOnline||0).toLocaleString()} тг
+  📱 QR: ${Number(s.rKaspi||0).toLocaleString()} тг
+  Терминал: ${Number(kaspiNet).toLocaleString()} тг
 
-🟣 *HALYK ТЕРМИНАЛ*
-${halykBlock}
+🟣 <b>HALYK</b>
+  📲 Онлайн: ${Number(s.rHalykOnline||0).toLocaleString()} тг
+  📱 QR: ${Number(s.rHalyk||0).toLocaleString()} тг
+  Терминал: ${Number(halykNet).toLocaleString()} тг
 
-🟢 *ПРОЧИЕ КАНАЛЫ*
-${otherBlock}
+🟢 <b>ПРОЧИЕ</b>
+  💵 Наличные: ${Number(s.rCash||0).toLocaleString()} тг${(s.tPersonal||0)>0 ? '\n  💳 Личная карта: '+Number(s.tPersonal||0).toLocaleString()+' тг' : ''}${(s.rBonus||0)>0 ? '\n  🎁 Бонусы: '+Number(s.rBonus||0).toLocaleString()+' тг' : ''}
 
 ━━━━━━━━━━━━━━━━━━━━━
-💵 *КАССА*
-${kassaBlock}${(s.cashPayouts||0)>0 ? '\n  Расходы: −'+Number(s.cashPayouts||0).toLocaleString()+' тг' : ''}
+💵 <b>КАССА</b>
+  Начало: ${Number(s.cashOpen||0).toLocaleString()} → Конец: ${Number(s.cashActual||0).toLocaleString()} тг
+  Продажи нал: ${Number(cashSales).toLocaleString()} тг${(s.inkasso||0)>0 ? '\n  💰 Инкассация: −'+Number(s.inkasso||0).toLocaleString()+' тг' : ''}${(s.cashPayouts||0)>0 ? '\n  Расходы: −'+Number(s.cashPayouts||0).toLocaleString()+' тг' : ''}
 
 ━━━━━━━━━━━━━━━━━━━━━
-🔍 *СВЕРКА*
+🔍 <b>СВЕРКА</b>
   ROSTA: ${Number(rostaTotal).toLocaleString()} тг
   Факт: ${Number(factTotal).toLocaleString()} тг
-  Расхождение: *${diff >= 0 ? '+' : ''}${Number(diff).toLocaleString()} тг*
+  Расхождение: <b>${diff>=0?'+':''}${Number(diff).toLocaleString()} тг</b>
 
 ${sverkaLine}
 ━━━━━━━━━━━━━━━━━━━━━`;
 
-        for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, report);
-        delete openShifts[fromPhone];
-        await deleteOpenShift(fromPhone);
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, report);
+        delete openShifts[userId];
+        await deleteOpenShift(userId);
       }
     } catch(e) { console.error('SHIFT_CLOSE error:', e.message); }
     cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
@@ -687,10 +582,9 @@ ${sverkaLine}
       const jsonStr = reply.match(/CASH_ALERT:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        const alertMsg = `💰 *АЛЕРТ ИНКАССАЦИИ*\nНаличных в кассе: *${Number(a.amount).toLocaleString()} тг*\n👤 ${sellerName}\n⏰ ${new Date().toLocaleTimeString('ru-RU')}`;
-        for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, alertMsg);
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, `💰 <b>АЛЕРТ ИНКАССАЦИИ</b>\nНаличных: <b>${Number(a.amount).toLocaleString()} тг</b>\n👤 ${sellerName}`);
       }
-    } catch(e) { console.error('CASH_ALERT error:', e.message); }
+    } catch(e) {}
     cleanReply = reply.replace(/CASH_ALERT:\{.*?\}/s, '').trim();
   }
 
@@ -699,10 +593,9 @@ ${sverkaLine}
       const jsonStr = reply.match(/LATE_ALERT:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        const lateMsg = `⚠️ *Опоздание!*\n👤 ${a.seller}\n🕐 ${a.time}`;
-        for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, lateMsg);
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, `⚠️ <b>Опоздание!</b>\n👤 ${a.seller}\n🕐 ${a.time}`);
       }
-    } catch(e) { console.error('LATE_ALERT error:', e.message); }
+    } catch(e) {}
     cleanReply = reply.replace(/LATE_ALERT:\{.*?\}/s, '').trim();
   }
 
@@ -711,10 +604,9 @@ ${sverkaLine}
       const jsonStr = reply.match(/TERMINAL_ALERT:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        const msg = `⚠️ *Терминал не работает*\n👤 ${a.seller}\n💳 Терминал: ${a.terminal}\n📝 Причина: ${a.reason}\n⏰ ${new Date().toLocaleTimeString('ru-RU')}`;
-        for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, msg);
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, `⚠️ <b>Терминал не работает</b>\n👤 ${a.seller}\n💳 ${a.terminal}\n📝 ${a.reason}`);
       }
-    } catch(e) { console.error('TERMINAL_ALERT error:', e.message); }
+    } catch(e) {}
     cleanReply = reply.replace(/TERMINAL_ALERT:\{.*?\}/s, '').trim();
   }
 
@@ -723,13 +615,12 @@ ${sverkaLine}
       const jsonStr = reply.match(/INKASSO_CHECK:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        const diff = Math.abs((parseFloat(a.sellerAmount)||0) - (parseFloat(a.ownerAmount)||0));
+        const diff = Math.abs((parseFloat(a.sellerAmount)||0)-(parseFloat(a.ownerAmount)||0));
         if (diff > 500) {
-          const msg = `🚨 *РАСХОЖДЕНИЕ ИНКАССАЦИИ!*\nЕрмек зафиксировал: ${Number(a.ownerAmount).toLocaleString()} тг\nПродавец говорит: ${Number(a.sellerAmount).toLocaleString()} тг\nРасхождение: ${Number(diff).toLocaleString()} тг`;
-          for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, msg);
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, `🚨 <b>РАСХОЖДЕНИЕ ИНКАССАЦИИ!</b>\nЕрмек: ${Number(a.ownerAmount).toLocaleString()} тг\nПродавец: ${Number(a.sellerAmount).toLocaleString()} тг\nРасхождение: ${Number(diff).toLocaleString()} тг`);
         }
       }
-    } catch(e) { console.error('INKASSO_CHECK error:', e.message); }
+    } catch(e) {}
     cleanReply = reply.replace(/INKASSO_CHECK:\{.*?\}/s, '').trim();
   }
 
@@ -740,91 +631,41 @@ ${sverkaLine}
         const a = JSON.parse(jsonStr);
         await appendSheet('Логи!A:F', [new Date().toLocaleString('ru-RU'), 'Инкассация', 'Владелец', '', `Инкассация: ${a.amount} тг`, '']);
       }
-    } catch(e) { console.error('OWNER_INKASSO error:', e.message); }
+    } catch(e) {}
     cleanReply = reply.replace(/OWNER_INKASSO:\{.*?\}/s, '').trim();
   }
 
   return cleanReply;
 }
 
-// ── OCR ───────────────────────────────────────────────────────────────
-async function downloadWhatsAppMedia(mediaUrl) {
-  const fileData = await new Promise((resolve, reject) => {
-    const url = new URL(mediaUrl);
-    const req = https.request({ hostname: url.hostname, path: url.pathname + url.search, method: 'GET' }, res => {
-      const chunks = [];
-      res.on('data', d => chunks.push(d));
-      res.on('end', () => resolve(Buffer.concat(chunks)));
-    });
-    req.on('error', reject);
-    req.end();
-  });
-  return fileData.toString('base64');
-}
-
-async function readPhotoWithClaude(base64Image, photoType) {
-  let prompt = '';
-  if (photoType === 'zreport') {
-    prompt = `Это Z-отчёт из кассовой программы ROSTA. Извлеки все суммы по каналам оплаты.
-Верни ТОЛЬКО JSON без пояснений:
-{"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi":0,"ret_halyk":0,"ret_cash":0}`;
-  } else if (photoType === 'kaspi_terminal') {
-    prompt = `Это отчёт с Kaspi терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}`;
-  } else if (photoType === 'halyk_terminal') {
-    prompt = `Это отчёт с Halyk терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}`;
-  } else {
-    prompt = `Опиши что видишь на этом документе. Извлеки все числовые данные.`;
-  }
-  const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 500,
-    messages: [{ role: 'user', content: [
-      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Image } },
-      { type: 'text', text: prompt }
-    ]}]
-  });
-  return response.content[0].text;
-}
-
-function detectPhotoType(conversation) {
-  const lastMessages = conversation.slice(-6).map(m =>
-    (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).toLowerCase()
-  ).join(' ');
-  if (lastMessages.includes('z-отчёт') || lastMessages.includes('rosta') || lastMessages.includes('роста')) return 'zreport';
-  if (lastMessages.includes('kaspi терминал') || lastMessages.includes('терминал kaspi')) return 'kaspi_terminal';
-  if (lastMessages.includes('halyk терминал') || lastMessages.includes('терминал halyk')) return 'halyk_terminal';
-  return 'unknown';
-}
-
 // ── Основной обработчик ───────────────────────────────────────────────
-async function handleMessage(fromPhone, messageText, messageType, mediaId) {
-  const senderName = ALLOWED_MAP[fromPhone];
+async function handleMessage(userId, messageText, photoFileId) {
+  const senderName = ALLOWED_MAP[String(userId)];
   if (!senderName) {
-    await sendWhatsApp(fromPhone, '🔒 Доступ закрыт. Обратитесь к руководителю.');
+    await sendTelegram(userId, '🔒 Доступ закрыт. Обратитесь к руководителю.');
     return;
   }
 
-  const isOwner = OWNER_PHONES.includes(fromPhone);
+  const isOwner = OWNER_IDS.includes(String(userId));
 
-  // Загружаем историю из Supabase если RAM пустой
-  if (!conversations[fromPhone]) {
-    const history = await loadConversation(fromPhone);
-    conversations[fromPhone] = history;
+  if (!conversations[userId]) {
+    const history = await loadConversation(String(userId));
+    conversations[userId] = history;
   }
 
   let userContent;
 
-  if (messageType === 'image' && mediaId) {
+  if (photoFileId) {
     try {
-      await sendWhatsApp(fromPhone, '📷 Читаю фото...');
-      const base64 = await downloadWhatsAppMedia(mediaId);
-      const photoType = detectPhotoType(conversations[fromPhone] || []);
+      await sendTelegram(userId, '📷 Читаю фото...');
+      const base64 = await downloadTelegramFile(photoFileId);
+      const photoType = detectPhotoType(conversations[userId] || []);
       const ocrResult = await readPhotoWithClaude(base64, photoType);
       let contextText = '';
-      if (photoType === 'zreport') contextText = 'Я прочитал Z-отчёт из ROSTA. Вот данные:\n' + ocrResult;
-      else if (photoType === 'kaspi_terminal') contextText = 'Я прочитал отчёт Kaspi терминала. Вот данные:\n' + ocrResult;
-      else if (photoType === 'halyk_terminal') contextText = 'Я прочитал отчёт Halyk терминала. Вот данные:\n' + ocrResult;
-      else contextText = 'Я прочитал фото. Вот что увидел:\n' + ocrResult;
+      if (photoType === 'zreport') contextText = 'Прочитал Z-отчёт ROSTA:\n' + ocrResult;
+      else if (photoType === 'kaspi_terminal') contextText = 'Прочитал Kaspi терминал:\n' + ocrResult;
+      else if (photoType === 'halyk_terminal') contextText = 'Прочитал Halyk терминал:\n' + ocrResult;
+      else contextText = 'Прочитал фото:\n' + ocrResult;
       userContent = [
         { type: 'text', text: messageText || 'Прочитай данные с фото.' },
         { type: 'text', text: contextText }
@@ -837,8 +678,8 @@ async function handleMessage(fromPhone, messageText, messageType, mediaId) {
     userContent = messageText;
   }
 
-  conversations[fromPhone].push({ role: 'user', content: userContent });
-  if (conversations[fromPhone].length > 20) conversations[fromPhone] = conversations[fromPhone].slice(-20);
+  conversations[userId].push({ role: 'user', content: userContent });
+  if (conversations[userId].length > 20) conversations[userId] = conversations[userId].slice(-20);
 
   try {
     let systemPrompt;
@@ -853,76 +694,71 @@ async function handleMessage(fromPhone, messageText, messageType, mediaId) {
       model: 'claude-sonnet-4-6',
       max_tokens: 2000,
       system: systemPrompt,
-      messages: conversations[fromPhone]
+      messages: conversations[userId]
     });
 
     const reply = response.content
-      .filter(block => block.type === 'text' && block.text)
-      .map(block => block.text.trim())
+      .filter(b => b.type === 'text' && b.text)
+      .map(b => b.text.trim())
       .filter(t => t.length > 0)
-      .join('\n')
-      .trim();
+      .join('\n').trim();
 
-    if (!reply) {
-      await sendWhatsApp(fromPhone, 'Произошла ошибка. Попробуй ещё раз.');
-      return;
-    }
+    if (!reply) { await sendTelegram(userId, 'Произошла ошибка. Попробуй ещё раз.'); return; }
 
-    conversations[fromPhone].push({ role: 'assistant', content: reply });
+    conversations[userId].push({ role: 'assistant', content: reply });
+    await saveMessages(String(userId), userContent, reply);
 
-    // Сохраняем в Supabase
-    await saveMessages(fromPhone, userContent, reply);
-
-    const cleanReply = await handleSystemCommands(reply, fromPhone, senderName);
-    if (cleanReply && cleanReply.trim()) await sendWhatsApp(fromPhone, cleanReply);
+    const cleanReply = await handleSystemCommands(reply, userId, senderName);
+    if (cleanReply && cleanReply.trim()) await sendTelegram(userId, cleanReply);
 
     await appendSheet('Логи!A:F', [
       new Date().toLocaleString('ru-RU'),
       isOwner ? 'Руководитель' : 'Продавец',
-      senderName, fromPhone,
+      senderName, String(userId),
       messageText || '[фото]',
       cleanReply?.slice(0, 500) || ''
     ]);
 
   } catch(e) {
     console.error('Claude error:', e.message);
-    await sendWhatsApp(fromPhone, 'Произошла ошибка. Попробуй ещё раз.');
+    await sendTelegram(userId, 'Произошла ошибка. Попробуй ещё раз.');
   }
 }
 
-// ── Webhook ───────────────────────────────────────────────────────────
-app.get('/webhook', (req, res) => res.json({ status: 'ok' }));
-
+// ── Webhook Telegram ──────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
     const body = req.body;
-    if (!body?.typeWebhook || body.typeWebhook !== 'incomingMessageReceived') return;
-    const msg = body.messageData;
-    const sender = body.senderData;
-    if (!msg || !sender) return;
-    const fromPhone = sender.chatId.replace('@c.us', '').replace('@g.us', '');
-    if (sender.chatId.includes('@g.us')) return;
+    const message = body.message || body.edited_message;
+    if (!message) return;
 
-    let messageText = '', mediaId = null, messageType = 'text';
-    if (msg.typeMessage === 'textMessage') {
-      messageText = msg.textMessageData?.textMessage || '';
-    } else if (msg.typeMessage === 'imageMessage') {
-      messageType = 'image';
-      mediaId = msg.fileMessageData?.downloadUrl;
-      messageText = msg.fileMessageData?.caption || '';
-    } else return;
+    const userId = message.chat.id;
+    const messageText = message.text || message.caption || '';
+    const photoFileId = message.photo ? message.photo[message.photo.length - 1].file_id : null;
 
-    if (!messageText && !mediaId) return;
-    await handleMessage(fromPhone, messageText, messageType, mediaId);
+    if (!messageText && !photoFileId) return;
+    await handleMessage(userId, messageText, photoFileId);
   } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS', version: '2.1' }));
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.0' }));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Томи WhatsApp запущена на порту ${PORT}`);
-  console.log(`Руководители: ${OWNER_PHONES.join(', ')}`);
-  console.log(`Разрешённых пользователей: ${Object.keys(ALLOWED_MAP).length}`);
+app.listen(PORT, async () => {
+  console.log(`Томи Telegram запущена на порту ${PORT}`);
+
+  // Регистрируем webhook
+  const webhookUrl = `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`;
+  const body = JSON.stringify({ url: webhookUrl });
+  https.request({
+    hostname: 'api.telegram.org',
+    path: `/bot${TELEGRAM_TOKEN}/setWebhook`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  }, res => {
+    let data = '';
+    res.on('data', d => data += d);
+    res.on('end', () => console.log('Webhook установлен:', data));
+  }).end(body);
 });
