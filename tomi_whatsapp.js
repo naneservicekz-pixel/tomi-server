@@ -678,12 +678,36 @@ async function loadPrepays(type) {
   return list;
 }
 
-function getSellerPrompt(sellerName, shopName, hasOpenShift) {
+function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, firstSellerName) {
   const today = getDate();
   const now = getTime();
+
+  // Второй продавец — упрощённый сценарий
+  if (isSecondSeller) {
+    return 'Ты — Томи, AI-управляющая NANE PARIS (Астана). Ты — женщина.\n' +
+      'Сегодня: ' + today + ', время: ' + now + '\nПродавец: ' + sellerName + '\n' +
+      'РОЛЬ: Второй продавец смены. Смену уже открыл(а) ' + (firstSellerName || 'первый продавец') + '.\n\n' +
+      'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Женский род.\n' +
+      'Один вопрос за раз. Только русский. Никакого Markdown.\n\n' +
+      'ЧЕК-ЛИСТ ПРИХОДА (второй продавец):\n' +
+      'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
+      'ШАГ 0 — ВНЕШНИЙ ВИД: макияж, одежда, готовность\n' +
+      'ШАГ 1 — ГЕОЛОКАЦИЯ: "Пришли геолокацию через скрепку."\n' +
+      'После "Геолокация принята (открытие)" => SECOND_ARRIVE:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
+      'После подтверждения — поприветствуй и пожелай хорошей смены. Больше ничего не спрашивай.\n\n' +
+      'УХОД (второй продавец уходит раньше закрытия):\n' +
+      'Когда пишет "Ухожу" или "Заканчиваю" — попроси геолокацию.\n' +
+      'После "Геолокация принята (закрытие)" => SECOND_LEAVE:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
+      'Попрощайся и пожелай хорошего вечера.\n\n' +
+      'ПРЕДОПЛАТЫ:\n' +
+      'Новая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
+      'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n\n' +
+      'ВАЖНО: на приветствия без "Начала смену" просто отвечай приветствием — НЕ начинай чек-лист.';
+  }
+
   const shiftStatus = hasOpenShift
     ? 'СМЕНА УЖЕ ОТКРЫТА. Не начинай чек-лист открытия заново. Продолжай работу.'
-    : 'Смена не открыта. Когда продавец напишет "Начала смену" — проводи чек-лист.';
+    : 'Смена не открыта. ВАЖНО: начинай чек-лист ТОЛЬКО когда продавец явно напишет "Начала смену", "Открываю смену" или "Начинаю смену". На приветствия просто отвечай приветствием — НЕ начинай чек-лист.';
   return 'Ты — Томи, AI-управляющая NANE PARIS (Астана). Ты — женщина.\n' +
     'Сегодня: ' + today + ', время: ' + now + '\nПродавец: ' + sellerName + '\n' +
     'СТАТУС СМЕНЫ: ' + shiftStatus + '\n\n' +
@@ -1011,6 +1035,41 @@ async function handleSystemCommands(reply, userId, sellerName) {
     cleanReply = reply.replace(/OWNER_INKASSO:\{.*?\}/s, '').trim();
   }
 
+  if (reply.includes('SECOND_ARRIVE:')) {
+    try {
+      const jsonStr = reply.match(/SECOND_ARRIVE:(\{.*?\})/s)?.[1];
+      if (jsonStr) {
+        const a = JSON.parse(jsonStr);
+        const timeStr = a.time || getTime();
+        const hour = parseInt(timeStr.split(':')[0]);
+        const min = parseInt(timeStr.split(':')[1]);
+        for (const ownerId of OWNER_IDS) {
+          await sendTelegram(ownerId, '✅ Второй продавец на месте\n👤 ' + a.seller + '\n🕐 ' + timeStr);
+        }
+        if (hour > 11 || (hour === 11 && min > 15)) {
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + a.seller + '\n🕐 ' + timeStr);
+        }
+        await appendSheet('Логи!A:F', [getNow(), 'Приход', a.seller, String(userId), 'Второй продавец пришёл в ' + timeStr, '']);
+      }
+    } catch(e) {}
+    cleanReply = reply.replace(/SECOND_ARRIVE:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('SECOND_LEAVE:')) {
+    try {
+      const jsonStr = reply.match(/SECOND_LEAVE:(\{.*?\})/s)?.[1];
+      if (jsonStr) {
+        const a = JSON.parse(jsonStr);
+        const timeStr = a.time || getTime();
+        for (const ownerId of OWNER_IDS) {
+          await sendTelegram(ownerId, '👋 Второй продавец ушёл\n👤 ' + a.seller + '\n🕐 ' + timeStr);
+        }
+        await appendSheet('Логи!A:F', [getNow(), 'Уход', a.seller, String(userId), 'Второй продавец ушёл в ' + timeStr, '']);
+      }
+    } catch(e) {}
+    cleanReply = reply.replace(/SECOND_LEAVE:\{.*?\}/s, '').trim();
+  }
+
   return cleanReply;
 }
 
@@ -1026,6 +1085,20 @@ async function handleMessage(userId, messageText, photoFileId) {
     if (dbShift) openShifts[userKey] = dbShift;
   }
   const hasOpenShift = !!openShifts[userKey];
+
+  // Определяем: второй продавец — если у него нет своей смены,
+  // но у ДРУГОГО продавца смена уже открыта сегодня
+  let isSecondSeller = false;
+  let firstSellerName = '';
+  if (!isOwner && !hasOpenShift) {
+    for (const [otherId, shiftData] of Object.entries(openShifts)) {
+      if (otherId !== userKey && shiftData && shiftData.seller) {
+        isSecondSeller = true;
+        firstSellerName = shiftData.seller;
+        break;
+      }
+    }
+  }
 
   let userContent;
   if (photoFileId) {
@@ -1053,7 +1126,7 @@ async function handleMessage(userId, messageText, photoFileId) {
       const data = await loadOwnerData();
       systemPrompt = getOwnerPrompt(senderName, data);
     } else {
-      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift);
+      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecondSeller, firstSellerName);
     }
 
     const response = await anthropic.messages.create({
