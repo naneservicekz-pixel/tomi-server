@@ -1,6 +1,6 @@
 {
   "name": "tomi-nane-paris",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "description": "Томи — AI управляющий NANE PARIS",
   "main": "tomi_whatsapp.js",
   "scripts": {
@@ -9,6 +9,7 @@
   "dependencies": {
     "express": "^4.18.2",
     "@anthropic-ai/sdk": "^0.20.0",
-    "googleapis": "^140.0.0"
+    "googleapis": "^140.0.0",
+    "@supabase/supabase-js": "^2.39.0"
   }
 }
