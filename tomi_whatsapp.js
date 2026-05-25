@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
-// Версия 3.8 — фикс памяти + фикс смены + запись в Учёт по дням
+// Версия 3.9 — HTML дашборд + запись в Учёт по дням
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -17,6 +17,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 const TELEGRAM_TOKEN    = process.env.TELEGRAM_BOT_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SPREADSHEET_ID    = process.env.SPREADSHEET_ID;
+const DASHBOARD_ID      = process.env.DASHBOARD_ID;
 const CASH_ALERT_LIMIT  = parseInt(process.env.CASH_ALERT_LIMIT || '100000');
 
 const SHOP_LAT = 51.135307;
@@ -49,66 +50,44 @@ function calcDistance(lat1, lon1, lat2, lon2) {
   return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
 }
 
-// ── Supabase: диалоги ─────────────────────────────────────────────────
 async function loadConversation(userId) {
   try {
-    const key = String(userId);
-    const { data } = await supabase.from('conversations')
-      .select('role, content')
-      .eq('phone', key)
-      .order('created_at', { ascending: true })
-      .limit(20);
+    const { data } = await supabase.from('conversations').select('role, content').eq('phone', String(userId)).order('created_at', { ascending: true }).limit(20);
     if (!data || data.length === 0) return [];
     return data.map(r => ({ role: r.role, content: r.content }));
-  } catch(e) { console.error('loadConversation error:', e.message); return []; }
+  } catch(e) { return []; }
 }
 
 async function saveMessages(userId, userContent, assistantContent) {
   try {
-    const key = String(userId);
     await supabase.from('conversations').insert([
-      { phone: key, role: 'user', content: typeof userContent === 'string' ? userContent : JSON.stringify(userContent) },
-      { phone: key, role: 'assistant', content: assistantContent }
+      { phone: String(userId), role: 'user', content: typeof userContent === 'string' ? userContent : JSON.stringify(userContent) },
+      { phone: String(userId), role: 'assistant', content: assistantContent }
     ]);
-  } catch(e) { console.error('saveMessages error:', e.message); }
-}
-
-// ── Supabase: открытые смены ──────────────────────────────────────────
-async function loadOpenShift(userId) {
-  try {
-    const key = String(userId);
-    const { data, error } = await supabase.from('open_shifts').select('*').eq('phone', key).maybeSingle();
-    if (error) { console.error('loadOpenShift error:', error.message); return null; }
-    return data || null;
-  } catch(e) { console.error('loadOpenShift exception:', e.message); return null; }
-}
-
-async function saveOpenShift(userId, shiftData) {
-  try {
-    const key = String(userId);
-    const { error } = await supabase.from('open_shifts').upsert({ phone: key, ...shiftData }, { onConflict: 'phone' });
-    if (error) console.error('saveOpenShift error:', error.message);
-  } catch(e) { console.error('saveOpenShift exception:', e.message); }
-}
-
-async function deleteOpenShift(userId) {
-  try {
-    const key = String(userId);
-    await supabase.from('open_shifts').delete().eq('phone', key);
   } catch(e) {}
 }
 
-// При старте загружаем открытые смены из Supabase в память
+async function loadOpenShift(userId) {
+  try {
+    const { data } = await supabase.from('open_shifts').select('*').eq('phone', String(userId)).maybeSingle();
+    return data || null;
+  } catch(e) { return null; }
+}
+
+async function saveOpenShift(userId, shiftData) {
+  try { await supabase.from('open_shifts').upsert({ phone: String(userId), ...shiftData }, { onConflict: 'phone' }); } catch(e) {}
+}
+
+async function deleteOpenShift(userId) {
+  try { await supabase.from('open_shifts').delete().eq('phone', String(userId)); } catch(e) {}
+}
+
 async function restoreOpenShifts() {
   try {
     const { data } = await supabase.from('open_shifts').select('*');
-    if (data) {
-      data.forEach(row => {
-        openShifts[row.phone] = row;
-      });
-      console.log('Восстановлено открытых смен:', data.length);
-    }
-  } catch(e) { console.error('restoreOpenShifts error:', e.message); }
+    if (data) data.forEach(row => { openShifts[row.phone] = row; });
+    console.log('Восстановлено смен:', (data||[]).length);
+  } catch(e) {}
 }
 
 const GOOGLE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -140,7 +119,7 @@ QEEAqs6wz3nwz11a48YdS6P3qWY5zy7cJ5vNmtV72mUwM1jb3cR1N9nlViTRvMGw
 G2Xaa8KKIecwaLyNTlVw7DTZ
 -----END PRIVATE KEY-----`;
 
-function getSheets() {
+function getSheets(spreadsheetId) {
   const auth = new google.auth.GoogleAuth({
     credentials: {
       type: 'service_account', project_id: 'tomi-nane',
@@ -156,47 +135,43 @@ function getSheets() {
     },
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
-  return google.sheets({ version: 'v4', auth });
+  return { api: google.sheets({ version: 'v4', auth }), id: spreadsheetId };
 }
 
-async function readSheet(range) {
+async function readSheet(range, spreadsheetId) {
   try {
-    const sheets = getSheets();
-    const res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range });
+    const { api, id } = getSheets(spreadsheetId || SPREADSHEET_ID);
+    const res = await api.spreadsheets.values.get({ spreadsheetId: id, range });
     return res.data.values || [];
   } catch(e) { console.error('readSheet error:', e.message); return []; }
 }
 
-async function appendSheet(range, values) {
+async function appendSheet(range, values, spreadsheetId) {
   try {
-    const sheets = getSheets();
-    await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range, valueInputOption: 'USER_ENTERED', resource: { values: [values] } });
+    const { api, id } = getSheets(spreadsheetId || SPREADSHEET_ID);
+    await api.spreadsheets.values.append({ spreadsheetId: id, range, valueInputOption: 'USER_ENTERED', resource: { values: [values] } });
     return true;
   } catch(e) { console.error('appendSheet error:', e.message); return false; }
 }
 
-async function updateSheetCell(range, value) {
+async function updateSheetCell(range, value, spreadsheetId) {
   try {
-    const sheets = getSheets();
-    await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range, valueInputOption: 'USER_ENTERED', resource: { values: [[value]] } });
+    const { api, id } = getSheets(spreadsheetId || SPREADSHEET_ID);
+    await api.spreadsheets.values.update({ spreadsheetId: id, range, valueInputOption: 'USER_ENTERED', resource: { values: [[value]] } });
     return true;
   } catch(e) { return false; }
 }
 
-// ── Запись в "Учёт по дням" ───────────────────────────────────────────
+// ── Запись в "Учёт по дням" дашборда ─────────────────────────────────
 async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
+  if (!DASHBOARD_ID) return false;
   try {
-    // Лист "Учёт по дням" — данные начинаются со строки 6
-    // Колонки: A=№, B=Дата, C=Оборот, D=Продавец1, E=Продавец2
-    const rows = await readSheet("'Учёт по дням'!B6:B100");
-    let nextRow = 6;
-    if (rows && rows.length > 0) {
-      nextRow = 6 + rows.filter(r => r[0]).length;
-    }
+    const rows = await readSheet("'Учёт по дням'!B6:B200", DASHBOARD_ID);
+    const nextRow = 6 + (rows ? rows.filter(r => r[0]).length : 0);
     const num = nextRow - 5;
-    const sheets = getSheets();
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SPREADSHEET_ID,
+    const { api } = getSheets(DASHBOARD_ID);
+    await api.spreadsheets.values.update({
+      spreadsheetId: DASHBOARD_ID,
       range: "'Учёт по дням'!A" + nextRow + ":E" + nextRow,
       valueInputOption: 'USER_ENTERED',
       resource: { values: [[num, date, rostaTotal, seller1 || '', seller2 || '']] }
@@ -204,6 +179,144 @@ async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
     console.log('Записано в Учёт по дням строка', nextRow);
     return true;
   } catch(e) { console.error('writeToUchetPoDnyam error:', e.message); return false; }
+}
+
+// ── Читаем дашборд и генерируем HTML ─────────────────────────────────
+async function generateDashboardHTML() {
+  try {
+    const dash = await readSheet('Дашборд!A1:H45', DASHBOARD_ID);
+    const settings = await readSheet('Настройки!A1:B35', DASHBOARD_ID);
+
+    // Парсим данные дашборда
+    const getVal = (rows, rowIdx, colIdx) => {
+      try { return rows[rowIdx] && rows[rowIdx][colIdx] ? rows[rowIdx][colIdx] : ''; } catch(e) { return ''; }
+    };
+
+    const plan = parseFloat(String(getVal(dash, 5, 1)).replace(/[^0-9.]/g,'')) || 27000000;
+    const aselFact = parseFloat(String(getVal(dash, 18, 1)).replace(/[^0-9.]/g,'')) || 0;
+    const zarinaFact = parseFloat(String(getVal(dash, 18, 2)).replace(/[^0-9.]/g,'')) || 0;
+    const luizaFact = parseFloat(String(getVal(dash, 18, 3)).replace(/[^0-9.]/g,'')) || 0;
+    const totalFact = parseFloat(String(getVal(dash, 18, 4)).replace(/[^0-9.]/g,'')) || (aselFact + zarinaFact + luizaFact);
+
+    const aselPlan = parseFloat(String(getVal(dash, 13, 1)).replace(/[^0-9.]/g,'')) || 0;
+    const zarinaPlan = parseFloat(String(getVal(dash, 13, 2)).replace(/[^0-9.]/g,'')) || 0;
+    const luizaPlan = parseFloat(String(getVal(dash, 13, 3)).replace(/[^0-9.]/g,'')) || 0;
+
+    const aselPct = aselPlan > 0 ? Math.round(aselFact / aselPlan * 100) : 0;
+    const zarinaPct = zarinaPlan > 0 ? Math.round(zarinaFact / zarinaPlan * 100) : 0;
+    const luizaPct = luizaPlan > 0 ? Math.round(luizaFact / luizaPlan * 100) : 0;
+    const totalPct = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
+    const remains = plan - totalFact;
+
+    // ФОТ
+    const aselFot = parseFloat(String(getVal(dash, 28, 1)).replace(/[^0-9.]/g,'')) || 0;
+    const zarinaFot = parseFloat(String(getVal(dash, 28, 2)).replace(/[^0-9.]/g,'')) || 0;
+    const luizaFot = parseFloat(String(getVal(dash, 28, 3)).replace(/[^0-9.]/g,'')) || 0;
+    const totalFot = parseFloat(String(getVal(dash, 28, 4)).replace(/[^0-9.]/g,'')) || (aselFot + zarinaFot + luizaFot);
+
+    const fmt = n => Number(n||0).toLocaleString('ru-RU');
+    const pctColor = pct => pct >= 100 ? '#1D9E75' : pct >= 80 ? '#BA7517' : '#E24B4A';
+    const barColor = pct => pct >= 100 ? '#1D9E75' : pct >= 80 ? '#F5A623' : '#E24B4A';
+    const barW = pct => Math.min(pct, 100);
+
+    const now = getNow();
+
+    return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANÉ PARIS — Дашборд</title>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#0f0f14; color:#e8e8e8; padding:20px 16px; }
+.container { max-width:680px; margin:0 auto; }
+.header { margin-bottom:24px; }
+.brand { font-size:22px; font-weight:700; letter-spacing:0.06em; color:#fff; }
+.brand-sub { font-size:11px; color:#666; text-transform:uppercase; letter-spacing:0.1em; margin-top:3px; }
+.updated { font-size:11px; color:#444; margin-top:4px; }
+.section-title { font-size:11px; color:#555; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:10px; margin-top:20px; }
+.grid2 { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:10px; }
+.grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:10px; }
+.card { background:#1a1a22; border:1px solid #2a2a35; border-radius:12px; padding:14px; }
+.card-label { font-size:11px; color:#555; margin-bottom:6px; }
+.card-value { font-size:22px; font-weight:700; color:#fff; }
+.card-sub { font-size:12px; color:#555; margin-top:4px; }
+.seller-card { background:#1a1a22; border:1px solid #2a2a35; border-radius:12px; padding:14px; margin-bottom:10px; }
+.seller-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.seller-name { font-size:14px; font-weight:600; color:#fff; }
+.seller-pct { font-size:18px; font-weight:700; }
+.seller-fact { font-size:13px; color:#888; margin-bottom:8px; }
+.bar-bg { background:#2a2a35; border-radius:20px; height:6px; overflow:hidden; }
+.bar-fill { height:6px; border-radius:20px; transition:width 0.3s; }
+.seller-details { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; margin-top:10px; }
+.detail { background:#111118; border-radius:8px; padding:8px 10px; }
+.detail-label { font-size:10px; color:#444; margin-bottom:2px; }
+.detail-value { font-size:13px; font-weight:500; color:#ccc; }
+.fot-card { background:#1a1a22; border:1px solid #2a2a35; border-radius:12px; padding:14px; }
+.fot-row { display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid #2a2a35; }
+.fot-row:last-child { border-bottom:none; font-weight:600; font-size:14px; color:#fff; }
+.fot-label { color:#666; }
+.fot-value { color:#ccc; }
+</style></head>
+<body><div class="container">
+  <div class="header">
+    <div class="brand">NANÉ PARIS</div>
+    <div class="brand-sub">Дашборд продаж — Май 2026</div>
+    <div class="updated">Обновлено: ${now}</div>
+  </div>
+
+  <div class="section-title">Магазин итого</div>
+  <div class="grid2">
+    <div class="card">
+      <div class="card-label">Оборот (факт)</div>
+      <div class="card-value">${fmt(totalFact)} ₸</div>
+      <div class="card-sub">из ${fmt(plan)} ₸</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Выполнение плана</div>
+      <div class="card-value" style="color:${pctColor(totalPct)}">${totalPct}%</div>
+      <div class="card-sub">осталось ${fmt(remains > 0 ? remains : 0)} ₸</div>
+    </div>
+  </div>
+  <div class="card" style="margin-bottom:10px;">
+    <div class="card-label">Прогресс к плану</div>
+    <div class="bar-bg" style="margin-top:8px;">
+      <div class="bar-fill" style="width:${barW(totalPct)}%; background:${barColor(totalPct)};"></div>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-top:6px; font-size:11px; color:#444;">
+      <span>0</span><span>${fmt(plan/2)} ₸</span><span>${fmt(plan)} ₸</span>
+    </div>
+  </div>
+
+  <div class="section-title">Продавцы</div>
+
+  ${[
+    {name:'Асель', fact:aselFact, plan:aselPlan, pct:aselPct, fot:aselFot, emoji:'💙'},
+    {name:'Зарина', fact:zarinaFact, plan:zarinaPlan, pct:zarinaPct, fot:zarinaFot, emoji:'💙'},
+    {name:'Луиза', fact:luizaFact, plan:luizaPlan, pct:luizaPct, fot:luizaFot, emoji:'💚'}
+  ].map(s => `
+  <div class="seller-card">
+    <div class="seller-top">
+      <div class="seller-name">${s.emoji} ${s.name}</div>
+      <div class="seller-pct" style="color:${pctColor(s.pct)}">${s.pct}%</div>
+    </div>
+    <div class="seller-fact">${fmt(s.fact)} ₸ из ${fmt(s.plan)} ₸</div>
+    <div class="bar-bg"><div class="bar-fill" style="width:${barW(s.pct)}%; background:${barColor(s.pct)};"></div></div>
+    <div class="seller-details">
+      <div class="detail"><div class="detail-label">Осталось</div><div class="detail-value">${fmt(Math.max(0,s.plan-s.fact))} ₸</div></div>
+      <div class="detail"><div class="detail-label">ФОТ к выплате</div><div class="detail-value">${fmt(s.fot)} ₸</div></div>
+    </div>
+  </div>`).join('')}
+
+  <div class="section-title">Зарплата к выплате</div>
+  <div class="fot-card">
+    <div class="fot-row"><span class="fot-label">💙 Асель</span><span class="fot-value">${fmt(aselFot)} ₸</span></div>
+    <div class="fot-row"><span class="fot-label">💙 Зарина</span><span class="fot-value">${fmt(zarinaFot)} ₸</span></div>
+    <div class="fot-row"><span class="fot-label">💚 Луиза</span><span class="fot-value">${fmt(luizaFot)} ₸</span></div>
+    <div class="fot-row"><span class="fot-label">Итого ФОТ</span><span class="fot-value">${fmt(totalFot)} ₸</span></div>
+  </div>
+
+</div></body></html>`;
+  } catch(e) {
+    console.error('generateDashboardHTML error:', e.message);
+    return null;
+  }
 }
 
 async function sendTelegram(chatId, text) {
@@ -249,8 +362,6 @@ function formatPrepayCardHTML(p, num) {
   const statusText = isClosed ? '✅ Закрыта' : '🟡 Открыта';
   const statusColor = isClosed ? '#3B6D11' : '#854F0B';
   const initials = p.client.split(' ').filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 2);
-  const avatarBg = isClosed ? '#eaf3de' : '#faeeda';
-  const avatarColor = isClosed ? '#3B6D11' : '#854F0B';
   const total = (p.amount || 0) + (p.balance || 0);
   const fmt = n => Number(n || 0).toLocaleString('ru-RU') + ' ₸';
   const debtBlock = p.balance > 0
@@ -259,7 +370,7 @@ function formatPrepayCardHTML(p, num) {
   return `<div style="background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; margin-bottom:12px;">
   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
     <div style="display:flex; align-items:center; gap:10px;">
-      <div style="width:38px; height:38px; border-radius:50%; background:${avatarBg}; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600; color:${avatarColor};">${initials}</div>
+      <div style="width:38px; height:38px; border-radius:50%; background:${statusBg}; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600; color:${statusColor};">${initials}</div>
       <div><div style="font-size:14px; font-weight:600; color:#1a1a1a;">${num}. ${p.client}</div><div style="font-size:11px; color:#888;">${p.id || ''} · ${p.date || ''}</div></div>
     </div>
     <div style="background:${statusBg}; border:1px solid ${statusBorder}; color:${statusColor}; font-size:11px; font-weight:600; padding:4px 10px; border-radius:20px;">${statusText}</div>
@@ -416,64 +527,65 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift) {
   const today = getDate();
   const now = getTime();
   const shiftStatus = hasOpenShift
-    ? 'СМЕНА УЖЕ ОТКРЫТА. Не начинай чек-лист открытия заново. Продолжай работу в рамках текущей смены.'
-    : 'Смена не открыта. Когда продавец напишет "Начала смену" — проводи чек-лист открытия.';
-
-  return 'Ты — Томи, AI-управляющая магазина NANE PARIS (Астана). Ты — женщина.\n' +
-    'Сегодня: ' + today + ', время: ' + now + '\n' +
-    'Продавец: ' + sellerName + '\n' +
+    ? 'СМЕНА УЖЕ ОТКРЫТА. Не начинай чек-лист открытия заново. Продолжай работу.'
+    : 'Смена не открыта. Когда продавец напишет "Начала смену" — проводи чек-лист.';
+  return 'Ты — Томи, AI-управляющая NANE PARIS (Астана). Ты — женщина.\n' +
+    'Сегодня: ' + today + ', время: ' + now + '\nПродавец: ' + sellerName + '\n' +
     'СТАТУС СМЕНЫ: ' + shiftStatus + '\n\n' +
-    'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Говоришь о себе в женском роде.\n' +
-    'Один вопрос за раз. Язык — русский.\n' +
-    'ВАЖНО: Никакого Markdown. Только обычный текст и эмодзи.\n\n' +
-    'ЧЕК-ЛИСТ ОТКРЫТИЯ СМЕНЫ (только если смена НЕ открыта):\n' +
-    'ШАГ 0 — ВНЕШНИЙ ВИД:\n1. "Макияж и укладка готовы?"\n2. "Одежда по стандарту магазина?"\n3. "Готова к работе с клиентами?"\n' +
-    'Только после трех "да" — переходи к следующему шагу.\n' +
-    'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n\n' +
-    'ШАГ 1 — ГЕОЛОКАЦИЯ ОТКРЫТИЯ: "Пришли геолокацию через скрепку."\n' +
-    'Когда получишь "Геолокация принята (открытие)" — продолжай.\n\n' +
-    'ШАГ 2 — КАССА: "Сколько наличных на начало смены?"\n\n' +
-    'ШАГ 3 — ТЕРМИНАЛЫ: "Пришли фото Kaspi и Halyk терминалов."\n' +
-    'Если терминал не работает => TERMINAL_ALERT:{"seller":"' + sellerName + '","terminal":"","reason":""}\n\n' +
-    'ШАГ 4 — ЗАЛ: "Проверь: Пыль / Ценники / Выкладка / Освещение / Музыка"\n' +
-    'ШАГ 5 — ПРИМЕРОЧНЫЕ: "Проверь: Чисто / Крючки / Зеркала"\n' +
-    'ШАГ 6 — ГОСТЕВАЯ ЗОНА: "Проверь: Чай/кофе / Вода / Посуда"\n' +
-    'ШАГ 7 — УПАКОВКА: "Пакеты, коробки, бумага — достаточно?"\n' +
-    'ШАГ 8 — ТЕЛЕФОН: "Телефон заряжен, на связи?"\n' +
-    'ШАГ 9 — ROSTA: "ROSTA открыта?"\n' +
+    'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Женский род.\n' +
+    'Один вопрос за раз. Только русский. Никакого Markdown.\n\n' +
+    'ЧЕК-ЛИСТ ОТКРЫТИЯ (только если смена НЕ открыта):\n' +
+    'ШАГ 0 — ВНЕШНИЙ ВИД: макияж, одежда, готовность\n' +
+    'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
+    'ШАГ 1 — ГЕОЛОКАЦИЯ: "Пришли геолокацию через скрепку."\n' +
+    'После "Геолокация принята (открытие)" — продолжай.\n' +
+    'ШАГ 2 — КАССА: наличные на начало\n' +
+    'ШАГ 3 — ТЕРМИНАЛЫ: фото Kaspi и Halyk\n' +
+    'Если не работает => TERMINAL_ALERT:{"seller":"' + sellerName + '","terminal":"","reason":""}\n' +
+    'ШАГ 4 — ЗАЛ: пыль/ценники/выкладка/освещение/музыка\n' +
+    'ШАГ 5 — ПРИМЕРОЧНЫЕ: чисто/крючки/зеркала\n' +
+    'ШАГ 6 — ГОСТЕВАЯ: чай/вода/посуда\n' +
+    'ШАГ 7 — УПАКОВКА: пакеты/коробки\n' +
+    'ШАГ 8 — ТЕЛЕФОН: заряжен?\n' +
+    'ШАГ 9 — ROSTA: открыта?\n' +
     'После "да" => SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":0,"time":"' + now + '"}\n\n' +
-    'ПРЕДОПЛАТЫ\n' +
-    'А) НОВАЯ => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
-    'Б) ВЫКУП => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
-    'В) ПРОСМОТР: PREPAY_LIST:открытые или PREPAY_LIST:закрытые\n\n' +
-    'ЗАКРЫТИЕ СМЕНЫ\n' +
-    'ШАГ 1 — Z-ОТЧЕТ: фото экрана ROSTA\n' +
-    'ШАГ 2 — СВЕРКА: фото Kaspi терминал, Halyk терминал, наличные, личная карта из ROSTA\n' +
-    'ШАГ 3 — ИНКАССАЦИЯ => INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}\n' +
-    'ШАГ 4 — ПРЕДОПЛАТЫ: были выдачи?\n' +
-    'ШАГ 5 — ЗАЛ, ШАГ 6 — ГОСТЕВАЯ, ШАГ 7 — ОБОРУДОВАНИЕ\n' +
-    'ШАГ 8 — ГЕОЛОКАЦИЯ: отправь геолокацию.\n' +
-    'Когда получишь "Геолокация принята (закрытие)" => SHIFT_CLOSE с данными.\n\n' +
-    'rKaspi=Kaspi QR, rOnline=Онлайн Kaspi, rHalyk=Halyk QR, rHalykOnline=Онлайн Halyk\n' +
+    'ПРЕДОПЛАТЫ:\n' +
+    'Новая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
+    'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
+    'Просмотр => PREPAY_LIST:открытые или PREPAY_LIST:закрытые\n\n' +
+    'ЗАКРЫТИЕ:\n' +
+    'ШАГ 1 — Z-ОТЧЕТ фото ROSTA\n' +
+    'ШАГ 2 — Kaspi терминал фото, Halyk терминал фото, наличные, личная карта из ROSTA\n' +
+    'ШАГ 3 => INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}\n' +
+    'ШАГ 4-7 — предоплаты/зал/гостевая/оборудование\n' +
+    'ШАГ 8 — ГЕОЛОКАЦИЯ => после "Геолокация принята (закрытие)" => SHIFT_CLOSE\n\n' +
+    'rKaspi=QR Kaspi ROSTA, rOnline=Онлайн Kaspi ROSTA, rHalyk=QR Halyk ROSTA, rHalykOnline=Онлайн Halyk ROSTA\n' +
     'rCash=Наличные, rPersonal=Личная карта ROSTA, rBonus=Бонусы\n' +
-    'tKaspi=Kaspi ФАКТ, tKaspiRet=возврат Kaspi, tHalyk=Halyk ФАКТ, tHalykRet=возврат Halyk\n' +
-    'cashOpen=касса начало, cashActual=касса конец\n\n' +
+    'tKaspi=Kaspi ФАКТ, tKaspiRet=возврат, tHalyk=Halyk ФАКТ, tHalykRet=возврат\n' +
+    'cashOpen=начало, cashActual=конец\n' +
     '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}\n\n' +
-    'ЗАКОННЫЕ РАСХОЖДЕНИЯ: предоплата, выдача по старой, личная карта +-5000 тг. Необъясненное >500 тг — НЕ ЗАКРЫВАЙ.\n\nПо-русски. Один вопрос за раз.';
+    'Необъясненное >500 тг — НЕ ЗАКРЫВАЙ. Один вопрос за раз.';
 }
 
 function getOwnerPrompt(ownerName, data) {
   const today = getDate();
   const now = getTime();
   const totalPrepay = data.openPrepays.reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
-  return 'Ты — Томи, AI-партнер NANE PARIS. Ты — женщина, говоришь о себе в женском роде.\n' +
+  return 'Ты — Томи, AI-партнер NANE PARIS. Ты — женщина.\n' +
     'Сегодня: ' + today + ', время: ' + now + '\nВладелец: ' + ownerName + '\n\n' +
-    'ХАРАКТЕР: Партнер на равных. Прямо, честно, с цифрами.\n' +
-    'ВАЖНО: Никакого Markdown. Только обычный текст и эмодзи.\n\n' +
+    'ХАРАКТЕР: Партнер на равных. Прямо, честно, с цифрами. Никакого Markdown.\n\n' +
     'ДАННЫЕ:\nПоследние смены: ' + JSON.stringify(data.recentShifts) + '\n' +
     'Открытые предоплаты (' + data.openPrepays.length + ' шт, итого: ' + totalPrepay.toLocaleString() + ' тг):\n' +
     JSON.stringify(data.openPrepays.slice(0, 20)) + '\n\n' +
-    'КОМАНДЫ:\n"Отчет" — итог за сутки\n"Аналитика" — недельная сводка\n"Предоплаты" => PREPAY_LIST:открытые\n"Команда" — сводка по продавцам\n"Зарплата" — расчет ФОТ\n"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n\n' +
+    'ВАЖНО: При каждом закрытии смены ты автоматически записываешь данные в Google Sheets "Учёт по дням".\n\n' +
+    'КОМАНДЫ:\n' +
+    '"Отчет" — итог за сутки\n' +
+    '"Аналитика" — недельная сводка\n' +
+    '"Предоплаты" => PREPAY_LIST:открытые\n' +
+    '"Команда" — сводка по продавцам\n' +
+    '"Зарплата" — расчет ФОТ\n' +
+    '"Дашборд" => DASHBOARD_HTML\n' +
+    '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n\n' +
     'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
     'Бонусы: от 700к +5000 тг/чел, от 2млн +40000 тг/чел\nФикс: Асель 14000, Зарина 14000, Луиза 14000\n\nПо-русски. Прямо, с цифрами.';
 }
@@ -520,6 +632,20 @@ function detectPhotoType(conversation) {
 
 async function handleSystemCommands(reply, userId, sellerName) {
   let cleanReply = reply;
+
+  // ── Дашборд HTML ──────────────────────────────────────────────────
+  if (reply.includes('DASHBOARD_HTML')) {
+    cleanReply = reply.replace(/DASHBOARD_HTML/g, '').trim();
+    await sendTelegram(userId, '📊 Читаю дашборд...');
+    const html = await generateDashboardHTML();
+    if (html) {
+      const filename = 'dashboard_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
+      await sendTelegramDocument(userId, filename, html, '📊 Дашборд NANÉ PARIS — открой в браузере');
+    } else {
+      await sendTelegram(userId, '❌ Не удалось загрузить данные дашборда.');
+    }
+    if (!cleanReply) return '';
+  }
 
   if (reply.includes('PREPAY_LIST:')) {
     const type = reply.includes('PREPAY_LIST:закрытые') ? 'closed' : 'open';
@@ -610,10 +736,10 @@ async function handleSystemCommands(reply, userId, sellerName) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + s.seller + '\n🕐 ' + timeStr);
         }
         if ((s.cashOpen||0) >= CASH_ALERT_LIMIT) {
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ — касса на начало смены\nНаличных: ' + Number(s.cashOpen).toLocaleString() + ' тг\n👤 ' + s.seller);
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ — касса\nНаличных: ' + Number(s.cashOpen).toLocaleString() + ' тг\n👤 ' + s.seller);
         }
       }
-    } catch(e) { console.error('SHIFT_OPEN error:', e.message); }
+    } catch(e) {}
     cleanReply = reply.replace(/SHIFT_OPEN:\{.*?\}/s, '').trim();
   }
 
@@ -624,7 +750,6 @@ async function handleSystemCommands(reply, userId, sellerName) {
         const s = JSON.parse(jsonStr);
         const shift = openShifts[String(userId)] || await loadOpenShift(userId) || {};
         const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
-        const todayForSheet = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         const closeTime = getTime();
         const rostaTotal = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0)-(s.rRetKaspi||0)-(s.rRetHalyk||0)-(s.rRetCash||0);
         const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
@@ -643,7 +768,6 @@ async function handleSystemCommands(reply, userId, sellerName) {
 
         const sellerFinal = shift.seller || sellerName;
 
-        // Пишем в лист "Смены"
         await appendSheet('Смены!A:Y', [
           today, sellerFinal, shift.shop||'',
           s.rKaspi||0, s.rOnline||0, s.rHalyk||0, s.rHalykOnline||0,
@@ -656,8 +780,8 @@ async function handleSystemCommands(reply, userId, sellerName) {
           s.notes||'', getNow()
         ]);
 
-        // Пишем в "Учёт по дням" — оборот и продавцы
-        await writeToUchetPoDnyam(todayForSheet, rostaTotal, sellerFinal, '');
+        // Записываем в дашборд "Учёт по дням"
+        await writeToUchetPoDnyam(today, rostaTotal, sellerFinal, '');
 
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
@@ -681,7 +805,7 @@ async function handleSystemCommands(reply, userId, sellerName) {
       const jsonStr = reply.match(/CASH_ALERT:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(a.amount).toLocaleString() + ' тг\n👤 ' + sellerName + '\n🕐 ' + getTime());
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ\nНаличных: ' + Number(a.amount).toLocaleString() + ' тг\n👤 ' + sellerName + '\n🕐 ' + getTime());
       }
     } catch(e) {}
     cleanReply = reply.replace(/CASH_ALERT:\{.*?\}/s, '').trim();
@@ -739,16 +863,11 @@ async function handleSystemCommands(reply, userId, sellerName) {
 
 async function handleMessage(userId, messageText, photoFileId) {
   const senderName = ALLOWED_MAP[String(userId)];
-  if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт. Обратитесь к руководителю.'); return; }
+  if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт.'); return; }
   const isOwner = OWNER_IDS.includes(String(userId));
-
-  // Загружаем диалог из Supabase если нет в памяти
-  if (!conversations[String(userId)]) {
-    conversations[String(userId)] = await loadConversation(userId);
-  }
-
-  // Проверяем открытую смену
   const userKey = String(userId);
+
+  if (!conversations[userKey]) conversations[userKey] = await loadConversation(userId);
   if (!openShifts[userKey]) {
     const dbShift = await loadOpenShift(userId);
     if (dbShift) openShifts[userKey] = dbShift;
@@ -820,22 +939,17 @@ app.post('/webhook', async (req, res) => {
       const lat = message.location.latitude;
       const lon = message.location.longitude;
       const distance = calcDistance(lat, lon, SHOP_LAT, SHOP_LON);
-
       if (distance > SHOP_RADIUS) {
         if (senderName) {
-          await sendTelegram(userId, '❌ Геолокация не принята.\nТы находишься в ' + distance + ' м от магазина.\nПодойди ближе и отправь геолокацию снова.');
-          for (const ownerId of OWNER_IDS) {
-            await sendTelegram(ownerId, '⚠️ Попытка не из магазина!\n👤 ' + senderName + '\n📍 ' + distance + ' м\n🕐 ' + getTime());
-          }
+          await sendTelegram(userId, '❌ Геолокация не принята.\nТы в ' + distance + ' м от магазина.\nПодойди ближе и отправь снова.');
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Попытка не из магазина!\n👤 ' + senderName + '\n📍 ' + distance + ' м\n🕐 ' + getTime());
         }
         return;
       }
-
       const action = pendingGeoAction[userId] || 'close_shift';
       delete pendingGeoAction[userId];
-
       if (action === 'open_shift') {
-        await handleMessage(userId, 'Геолокация принята (открытие). Продавец в магазине. Расстояние: ' + distance + ' м. Продолжай чек-лист открытия.', null);
+        await handleMessage(userId, 'Геолокация принята (открытие). Продавец в магазине. Расстояние: ' + distance + ' м. Продолжай чек-лист.', null);
       } else {
         await handleMessage(userId, 'Геолокация принята (закрытие). Продавец в магазине. Расстояние: ' + distance + ' м.', null);
       }
@@ -856,7 +970,7 @@ app.post('/webhook', async (req, res) => {
   } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.8' }));
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.9' }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
