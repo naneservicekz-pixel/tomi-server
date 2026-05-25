@@ -204,26 +204,26 @@ async function generateDashboardHTML() {
     };
 
     // ── Лист "Дашборд" ────────────────────────────────────────────
-    // Строка 6  (индекс 5)  — план магазина, колонка B (индекс 1)
-    // Строка 19 (индекс 18) — оборот факт: B=Асель, C=Зарина, D=Луиза, E=Итого
-    // Строка 14 (индекс 13) — личный план: B=Асель, C=Зарина, D=Луиза
-    // Строка 22 (индекс 21) — осталось до плана: B=Асель, C=Зарина, D=Луиза, E=Итого
+    // Строка 6  (индекс 5)  — план магазина, колонка C (индекс 2)
+    // Строка 14 (индекс 13) — личный план: C=Асель, D=Зарина, E=Луиза, G=Итого
+    // Строка 19 (индекс 18) — оборот факт: C=Асель, D=Зарина, E=Луиза, G=Итого
+    // Строка 22 (индекс 21) — осталось до плана: C=Асель, D=Зарина, E=Луиза, G=Итого
 
-    const plan       = num(dash, 5, 1) || 27000000;
+    const plan       = num(dash, 5, 2) || 27000000;
 
-    const aselFact   = num(dash, 18, 1);
-    const zarinaFact = num(dash, 18, 2);
-    const luizaFact  = num(dash, 18, 3);
-    const totalFact  = num(dash, 18, 4) || (aselFact + zarinaFact + luizaFact);
+    const aselFact   = num(dash, 18, 2);
+    const zarinaFact = num(dash, 18, 3);
+    const luizaFact  = num(dash, 18, 4);
+    const totalFact  = num(dash, 18, 6) || (aselFact + zarinaFact + luizaFact);
 
-    const aselPlan   = num(dash, 13, 1);
-    const zarinaPlan = num(dash, 13, 2);
-    const luizaPlan  = num(dash, 13, 3);
+    const aselPlan   = num(dash, 13, 2);
+    const zarinaPlan = num(dash, 13, 3);
+    const luizaPlan  = num(dash, 13, 4);
 
-    const aselLeft   = num(dash, 21, 1);
-    const zarinaLeft = num(dash, 21, 2);
-    const luizaLeft  = num(dash, 21, 3);
-    const totalLeft  = num(dash, 21, 4) || Math.max(0, plan - totalFact);
+    const aselLeft   = num(dash, 21, 2);
+    const zarinaLeft = num(dash, 21, 3);
+    const luizaLeft  = num(dash, 21, 4);
+    const totalLeft  = num(dash, 21, 6) || Math.max(0, plan - totalFact);
 
     const aselPct    = aselPlan  > 0 ? Math.round(aselFact  / aselPlan  * 100) : 0;
     const zarinaPct  = zarinaPlan > 0 ? Math.round(zarinaFact / zarinaPlan * 100) : 0;
