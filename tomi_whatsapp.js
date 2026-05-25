@@ -82,22 +82,21 @@ async function deleteOpenShift(userId) {
   try { await supabase.from('open_shifts').delete().eq('phone', String(userId)); } catch(e) {}
 }
 
-// Сохраняем остаток кассы после закрытия смены
-async function saveLastCash(cashActual) {
-  try {
-    await supabase.from('open_shifts').upsert(
-      { phone: 'last_cash_balance', cashActual, updated_at: new Date().toISOString() },
-      { onConflict: 'phone' }
-    );
-  } catch(e) {}
-}
-
-// Читаем остаток кассы от последней закрытой смены
+// Читаем остаток кассы из последней закрытой смены (Google Sheets)
 async function loadLastCash() {
   try {
-    const { data } = await supabase.from('open_shifts').select('cashActual').eq('phone', 'last_cash_balance').maybeSingle();
-    return data ? (parseFloat(data.cashActual) || 0) : null;
-  } catch(e) { return null; }
+    const rows = await readSheet('Смены!A:Y', SPREADSHEET_ID);
+    if (!rows || rows.length < 2) return null;
+    // Последняя строка с данными (пропускаем заголовок)
+    for (let i = rows.length - 1; i >= 1; i--) {
+      const cashActual = parseFloat(String(rows[i][15]||'0').replace(/[^0-9.]/g,''));
+      if (cashActual > 0) {
+        console.log('Последний остаток кассы из Смены:', cashActual, '(строка', i+1, ')');
+        return cashActual;
+      }
+    }
+    return null;
+  } catch(e) { console.error('loadLastCash error:', e.message); return null; }
 }
 
 async function restoreOpenShifts() {
@@ -1095,9 +1094,6 @@ async function handleSystemCommands(reply, userId, sellerName) {
         ]);
 
         await writeToUchetPoDnyam(today, rostaTotal, sellerFinal, '');
-
-        // Сохраняем остаток кассы для проверки при следующем открытии
-        await saveLastCash(s.cashActual || 0);
 
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
