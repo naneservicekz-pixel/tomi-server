@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
-// Версия 3.7 — старый формат карточек + HTML файл
+// Версия 3.8 — фикс памяти + фикс смены + запись в Учёт по дням
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -49,35 +49,66 @@ function calcDistance(lat1, lon1, lat2, lon2) {
   return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
 }
 
+// ── Supabase: диалоги ─────────────────────────────────────────────────
 async function loadConversation(userId) {
   try {
-    const { data } = await supabase.from('conversations').select('role, content').eq('phone', userId).order('created_at', { ascending: true }).limit(20);
-    return data || [];
-  } catch(e) { return []; }
+    const key = String(userId);
+    const { data } = await supabase.from('conversations')
+      .select('role, content')
+      .eq('phone', key)
+      .order('created_at', { ascending: true })
+      .limit(20);
+    if (!data || data.length === 0) return [];
+    return data.map(r => ({ role: r.role, content: r.content }));
+  } catch(e) { console.error('loadConversation error:', e.message); return []; }
 }
 
 async function saveMessages(userId, userContent, assistantContent) {
   try {
+    const key = String(userId);
     await supabase.from('conversations').insert([
-      { phone: userId, role: 'user', content: typeof userContent === 'string' ? userContent : JSON.stringify(userContent) },
-      { phone: userId, role: 'assistant', content: assistantContent }
+      { phone: key, role: 'user', content: typeof userContent === 'string' ? userContent : JSON.stringify(userContent) },
+      { phone: key, role: 'assistant', content: assistantContent }
     ]);
-  } catch(e) {}
+  } catch(e) { console.error('saveMessages error:', e.message); }
 }
 
+// ── Supabase: открытые смены ──────────────────────────────────────────
 async function loadOpenShift(userId) {
   try {
-    const { data } = await supabase.from('open_shifts').select('*').eq('phone', userId).single();
+    const key = String(userId);
+    const { data, error } = await supabase.from('open_shifts').select('*').eq('phone', key).maybeSingle();
+    if (error) { console.error('loadOpenShift error:', error.message); return null; }
     return data || null;
-  } catch(e) { return null; }
+  } catch(e) { console.error('loadOpenShift exception:', e.message); return null; }
 }
 
 async function saveOpenShift(userId, shiftData) {
-  try { await supabase.from('open_shifts').upsert({ phone: userId, ...shiftData }); } catch(e) {}
+  try {
+    const key = String(userId);
+    const { error } = await supabase.from('open_shifts').upsert({ phone: key, ...shiftData }, { onConflict: 'phone' });
+    if (error) console.error('saveOpenShift error:', error.message);
+  } catch(e) { console.error('saveOpenShift exception:', e.message); }
 }
 
 async function deleteOpenShift(userId) {
-  try { await supabase.from('open_shifts').delete().eq('phone', userId); } catch(e) {}
+  try {
+    const key = String(userId);
+    await supabase.from('open_shifts').delete().eq('phone', key);
+  } catch(e) {}
+}
+
+// При старте загружаем открытые смены из Supabase в память
+async function restoreOpenShifts() {
+  try {
+    const { data } = await supabase.from('open_shifts').select('*');
+    if (data) {
+      data.forEach(row => {
+        openShifts[row.phone] = row;
+      });
+      console.log('Восстановлено открытых смен:', data.length);
+    }
+  } catch(e) { console.error('restoreOpenShifts error:', e.message); }
 }
 
 const GOOGLE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -133,7 +164,7 @@ async function readSheet(range) {
     const sheets = getSheets();
     const res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range });
     return res.data.values || [];
-  } catch(e) { return []; }
+  } catch(e) { console.error('readSheet error:', e.message); return []; }
 }
 
 async function appendSheet(range, values) {
@@ -141,7 +172,7 @@ async function appendSheet(range, values) {
     const sheets = getSheets();
     await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range, valueInputOption: 'USER_ENTERED', resource: { values: [values] } });
     return true;
-  } catch(e) { return false; }
+  } catch(e) { console.error('appendSheet error:', e.message); return false; }
 }
 
 async function updateSheetCell(range, value) {
@@ -150,6 +181,29 @@ async function updateSheetCell(range, value) {
     await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range, valueInputOption: 'USER_ENTERED', resource: { values: [[value]] } });
     return true;
   } catch(e) { return false; }
+}
+
+// ── Запись в "Учёт по дням" ───────────────────────────────────────────
+async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
+  try {
+    // Лист "Учёт по дням" — данные начинаются со строки 6
+    // Колонки: A=№, B=Дата, C=Оборот, D=Продавец1, E=Продавец2
+    const rows = await readSheet("'Учёт по дням'!B6:B100");
+    let nextRow = 6;
+    if (rows && rows.length > 0) {
+      nextRow = 6 + rows.filter(r => r[0]).length;
+    }
+    const num = nextRow - 5;
+    const sheets = getSheets();
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: "'Учёт по дням'!A" + nextRow + ":E" + nextRow,
+      valueInputOption: 'USER_ENTERED',
+      resource: { values: [[num, date, rostaTotal, seller1 || '', seller2 || '']] }
+    });
+    console.log('Записано в Учёт по дням строка', nextRow);
+    return true;
+  } catch(e) { console.error('writeToUchetPoDnyam error:', e.message); return false; }
 }
 
 async function sendTelegram(chatId, text) {
@@ -188,7 +242,6 @@ async function sendTelegramDocument(chatId, filename, content, caption) {
   });
 }
 
-// ── HTML карточка предоплаты ───────────────────────────────────────────
 function formatPrepayCardHTML(p, num) {
   const isClosed = p.status.includes('закрыт');
   const statusBg = isClosed ? '#eaf3de' : '#faeeda';
@@ -200,19 +253,14 @@ function formatPrepayCardHTML(p, num) {
   const avatarColor = isClosed ? '#3B6D11' : '#854F0B';
   const total = (p.amount || 0) + (p.balance || 0);
   const fmt = n => Number(n || 0).toLocaleString('ru-RU') + ' ₸';
-
   const debtBlock = p.balance > 0
     ? '<div style="background:#fcebeb; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#A32D2D; margin-bottom:4px;">Долг к доплате</div><div style="font-size:15px; font-weight:600; color:#A32D2D;">' + fmt(p.balance) + '</div></div>'
     : '<div style="background:#eaf3de; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#3B6D11; margin-bottom:4px;">Долг</div><div style="font-size:15px; font-weight:600; color:#3B6D11;">Оплачено</div></div>';
-
   return `<div style="background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; margin-bottom:12px;">
   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
     <div style="display:flex; align-items:center; gap:10px;">
       <div style="width:38px; height:38px; border-radius:50%; background:${avatarBg}; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600; color:${avatarColor};">${initials}</div>
-      <div>
-        <div style="font-size:14px; font-weight:600; color:#1a1a1a;">${num}. ${p.client}</div>
-        <div style="font-size:11px; color:#888;">${p.id || ''} · ${p.date || ''}</div>
-      </div>
+      <div><div style="font-size:14px; font-weight:600; color:#1a1a1a;">${num}. ${p.client}</div><div style="font-size:11px; color:#888;">${p.id || ''} · ${p.date || ''}</div></div>
     </div>
     <div style="background:${statusBg}; border:1px solid ${statusBorder}; color:${statusColor}; font-size:11px; font-weight:600; padding:4px 10px; border-radius:20px;">${statusText}</div>
   </div>
@@ -222,9 +270,7 @@ function formatPrepayCardHTML(p, num) {
     <div style="background:#f5f5f0; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#888; margin-bottom:4px;">Аванс</div><div style="font-size:14px; font-weight:600; color:#1a1a1a;">${fmt(p.amount)}</div></div>
     ${debtBlock}
   </div>
-  <div style="border-top:1px solid #f0f0ec; padding-top:8px; font-size:12px; color:#888;">
-    ${p.phone ? '📞 ' + p.phone + '&nbsp;&nbsp;' : ''}💳 ${p.channel || '—'}
-  </div>
+  <div style="border-top:1px solid #f0f0ec; padding-top:8px; font-size:12px; color:#888;">${p.phone ? '📞 ' + p.phone + '&nbsp;&nbsp;' : ''}💳 ${p.channel || '—'}</div>
 </div>`;
 }
 
@@ -259,7 +305,6 @@ function generateShiftHTML(data) {
   const diffColor = diff > 0 ? '#1D9E75' : diff < 0 ? '#E24B4A' : '#1D9E75';
   const diffSign = diff > 0 ? '+' : '';
   const fmt = n => Number(n || 0).toLocaleString('ru-RU') + ' ₸';
-
   let diffDetails = '';
   if (isDanger && channelDiffs && channelDiffs.length > 0) {
     diffDetails = '<div style="background:#fff8f8; border:1px solid #F7C1C1; border-radius:8px; padding:14px; margin-bottom:16px;"><div style="font-size:13px; font-weight:600; color:#A32D2D; margin-bottom:10px;">Расшифровка расхождений</div>';
@@ -271,7 +316,6 @@ function generateShiftHTML(data) {
     });
     diffDetails += '</div>';
   }
-
   return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Отчёт смены — ${sellerName}</title>
 <style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f0; color:#1a1a1a; padding:24px 16px; } .container { max-width:680px; margin:0 auto; } .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; } .brand { font-size:22px; font-weight:600; letter-spacing:0.04em; } .brand-sub { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; } .header-right { text-align:right; font-size:13px; color:#555; } .header-right strong { color:#1a1a1a; display:block; font-size:14px; } .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; } .grid2 { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:16px; } .metric { background:#efefea; border-radius:8px; padding:14px; } .metric-label { font-size:11px; color:#888; margin-bottom:6px; } .metric-value { font-size:20px; font-weight:600; } .card { background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; } .card-title { display:flex; align-items:center; gap:7px; margin-bottom:12px; font-size:13px; font-weight:600; } .dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; } .row { display:flex; justify-content:space-between; font-size:12px; padding:5px 0; border-bottom:1px solid #f0f0ec; } .row-label { color:#888; } .row-value { font-weight:500; } .row-total { display:flex; justify-content:space-between; font-size:13px; font-weight:600; padding:8px 0 0; } .sverka-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }</style></head>
 <body><div class="container">
@@ -368,53 +412,54 @@ async function loadPrepays(type) {
   return list;
 }
 
-function getSellerPrompt(sellerName, shopName) {
+function getSellerPrompt(sellerName, shopName, hasOpenShift) {
   const today = getDate();
   const now = getTime();
+  const shiftStatus = hasOpenShift
+    ? 'СМЕНА УЖЕ ОТКРЫТА. Не начинай чек-лист открытия заново. Продолжай работу в рамках текущей смены.'
+    : 'Смена не открыта. Когда продавец напишет "Начала смену" — проводи чек-лист открытия.';
+
   return 'Ты — Томи, AI-управляющая магазина NANE PARIS (Астана). Ты — женщина.\n' +
     'Сегодня: ' + today + ', время: ' + now + '\n' +
-    'Продавец: ' + sellerName + '\n\n' +
+    'Продавец: ' + sellerName + '\n' +
+    'СТАТУС СМЕНЫ: ' + shiftStatus + '\n\n' +
     'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Говоришь о себе в женском роде.\n' +
     'Один вопрос за раз. Язык — русский.\n' +
     'ВАЖНО: Никакого Markdown. Только обычный текст и эмодзи.\n\n' +
-    'ЧЕК-ЛИСТ ОТКРЫТИЯ СМЕНЫ (начало 11:00)\n' +
-    'Когда продавец пишет "Начала смену" — проводи строго по шагам:\n\n' +
+    'ЧЕК-ЛИСТ ОТКРЫТИЯ СМЕНЫ (только если смена НЕ открыта):\n' +
     'ШАГ 0 — ВНЕШНИЙ ВИД:\n1. "Макияж и укладка готовы?"\n2. "Одежда по стандарту магазина?"\n3. "Готова к работе с клиентами?"\n' +
     'Только после трех "да" — переходи к следующему шагу.\n' +
     'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n\n' +
-    'ШАГ 1 — ГЕОЛОКАЦИЯ ОТКРЫТИЯ:\n"Пришли геолокацию через скрепку — подтверди что ты в магазине."\n' +
+    'ШАГ 1 — ГЕОЛОКАЦИЯ ОТКРЫТИЯ: "Пришли геолокацию через скрепку."\n' +
     'Когда получишь "Геолокация принята (открытие)" — продолжай.\n\n' +
-    'ШАГ 2 — КАССА: "Касса. Сколько наличных на начало смены?"\n\n' +
-    'ШАГ 3 — ТЕРМИНАЛЫ: "Терминалы. Пришли фото экрана Kaspi и Halyk."\n' +
+    'ШАГ 2 — КАССА: "Сколько наличных на начало смены?"\n\n' +
+    'ШАГ 3 — ТЕРМИНАЛЫ: "Пришли фото Kaspi и Halyk терминалов."\n' +
     'Если терминал не работает => TERMINAL_ALERT:{"seller":"' + sellerName + '","terminal":"","reason":""}\n\n' +
-    'ШАГ 4 — ЗАЛ: "Зал. Проверь: Пыль / Ценники / Выкладка / Освещение / Музыка"\n\n' +
-    'ШАГ 5 — ПРИМЕРОЧНЫЕ: "Примерочные. Проверь: Чисто / Крючки / Зеркала"\n\n' +
-    'ШАГ 6 — ГОСТЕВАЯ ЗОНА: "Гостевая зона. Проверь: Чай/кофе / Вода / Посуда"\n\n' +
-    'ШАГ 7 — УПАКОВКА: "Пакеты, коробки, бумага — достаточно?"\n\n' +
-    'ШАГ 8 — ТЕЛЕФОН: "Телефон заряжен, на связи?"\n\n' +
+    'ШАГ 4 — ЗАЛ: "Проверь: Пыль / Ценники / Выкладка / Освещение / Музыка"\n' +
+    'ШАГ 5 — ПРИМЕРОЧНЫЕ: "Проверь: Чисто / Крючки / Зеркала"\n' +
+    'ШАГ 6 — ГОСТЕВАЯ ЗОНА: "Проверь: Чай/кофе / Вода / Посуда"\n' +
+    'ШАГ 7 — УПАКОВКА: "Пакеты, коробки, бумага — достаточно?"\n' +
+    'ШАГ 8 — ТЕЛЕФОН: "Телефон заряжен, на связи?"\n' +
     'ШАГ 9 — ROSTA: "ROSTA открыта?"\n' +
     'После "да" => SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":0,"time":"' + now + '"}\n\n' +
     'ПРЕДОПЛАТЫ\n' +
-    'А) НОВАЯ: ФИО, телефон, товар, канал, аванс, полная стоимость, дата выдачи. Требуй фото.\n' +
-    '=> PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n\n' +
-    'Б) ВЫКУП => PREPAY_LIST:открытые => найти => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n\n' +
-    'В) ПРОСМОТР: открытые => PREPAY_LIST:открытые | закрытые => PREPAY_LIST:закрытые\n\n' +
+    'А) НОВАЯ => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
+    'Б) ВЫКУП => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
+    'В) ПРОСМОТР: PREPAY_LIST:открытые или PREPAY_LIST:закрытые\n\n' +
     'ЗАКРЫТИЕ СМЕНЫ\n' +
     'ШАГ 1 — Z-ОТЧЕТ: фото экрана ROSTA\n' +
-    'ШАГ 2 — СВЕРКА: фото Kaspi терминал, фото Halyk терминал, наличные вручную, личная карта из ROSTA\n' +
-    'ШАГ 3 — ИНКАССАЦИЯ: "Была инкассация? Сколько забрал Ермек?" => INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}\n' +
+    'ШАГ 2 — СВЕРКА: фото Kaspi терминал, Halyk терминал, наличные, личная карта из ROSTA\n' +
+    'ШАГ 3 — ИНКАССАЦИЯ => INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}\n' +
     'ШАГ 4 — ПРЕДОПЛАТЫ: были выдачи?\n' +
-    'ШАГ 5 — ЗАЛ: убрано?\nШАГ 6 — ГОСТЕВАЯ ЗОНА: посуда вымыта?\nШАГ 7 — ОБОРУДОВАНИЕ: ROSTA закрыта? Телефон на зарядке?\n' +
-    'ШАГ 8 — ГЕОЛОКАЦИЯ ЗАКРЫТИЯ: отправь геолокацию через скрепку.\n' +
+    'ШАГ 5 — ЗАЛ, ШАГ 6 — ГОСТЕВАЯ, ШАГ 7 — ОБОРУДОВАНИЕ\n' +
+    'ШАГ 8 — ГЕОЛОКАЦИЯ: отправь геолокацию.\n' +
     'Когда получишь "Геолокация принята (закрытие)" => SHIFT_CLOSE с данными.\n\n' +
-    'КАНАЛЫ В SHIFT_CLOSE:\n' +
     'rKaspi=Kaspi QR, rOnline=Онлайн Kaspi, rHalyk=Halyk QR, rHalykOnline=Онлайн Halyk\n' +
-    'rCash=Наличные, rPersonal=Личная карта из ROSTA (не с терминала!), rBonus=Бонусы\n' +
-    'tKaspi=Kaspi терминал ФАКТ, tKaspiRet=возврат Kaspi, tHalyk=Halyk ФАКТ, tHalykRet=возврат Halyk\n' +
+    'rCash=Наличные, rPersonal=Личная карта ROSTA, rBonus=Бонусы\n' +
+    'tKaspi=Kaspi ФАКТ, tKaspiRet=возврат Kaspi, tHalyk=Halyk ФАКТ, tHalykRet=возврат Halyk\n' +
     'cashOpen=касса начало, cashActual=касса конец\n\n' +
     '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}\n\n' +
-    'ЗАКОННЫЕ РАСХОЖДЕНИЯ: больше Z — предоплата, меньше Z — выдача по старой, личная карта +-5000 тг.\n' +
-    'Необъясненное >500 тг — НЕ ЗАКРЫВАЙ.\n\nПо-русски. Один вопрос за раз.';
+    'ЗАКОННЫЕ РАСХОЖДЕНИЯ: предоплата, выдача по старой, личная карта +-5000 тг. Необъясненное >500 тг — НЕ ЗАКРЫВАЙ.\n\nПо-русски. Один вопрос за раз.';
 }
 
 function getOwnerPrompt(ownerName, data) {
@@ -486,8 +531,6 @@ async function handleSystemCommands(reply, userId, sellerName) {
       const totalDebt = list.filter(p => !p.status.includes('закрыт')).reduce((s,p) => s + (p.balance||0), 0);
       const header = (type === 'open' ? '📋 Открытые предоплаты: ' + list.length + ' шт' : '📋 Закрытые предоплаты: ' + list.length + ' шт') +
         (totalDebt > 0 ? '\n💰 Общий долг: ' + Number(totalDebt).toLocaleString() + ' тг' : '') + '\n\n';
-
-      // Старый формат карточек в чат
       for (let i = 0; i < list.length; i += 8) {
         let msg = i === 0 ? header : '📋 ...продолжение:\n\n';
         list.slice(i, i + 8).forEach((p, num) => {
@@ -509,8 +552,6 @@ async function handleSystemCommands(reply, userId, sellerName) {
         });
         await sendTelegram(userId, msg);
       }
-
-      // HTML файл дополнительно
       const htmlContent = generatePrepaysHTML(list, type);
       const filename = (type === 'open' ? 'prepays_open' : 'prepays_closed') + '_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
       await sendTelegramDocument(userId, filename, htmlContent, '📋 Красивые карточки — открой в браузере');
@@ -559,8 +600,8 @@ async function handleSystemCommands(reply, userId, sellerName) {
       const jsonStr = reply.match(/SHIFT_OPEN:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
-        const shiftData = { ...s, start_time: new Date().toISOString() };
-        openShifts[userId] = shiftData;
+        const shiftData = { seller: s.seller, shop: s.shop, cashOpen: s.cashOpen, time: s.time, start_time: new Date().toISOString() };
+        openShifts[String(userId)] = shiftData;
         await saveOpenShift(userId, shiftData);
         const timeStr = getTime();
         const hour = parseInt(timeStr.split(':')[0]);
@@ -572,7 +613,7 @@ async function handleSystemCommands(reply, userId, sellerName) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ — касса на начало смены\nНаличных: ' + Number(s.cashOpen).toLocaleString() + ' тг\n👤 ' + s.seller);
         }
       }
-    } catch(e) {}
+    } catch(e) { console.error('SHIFT_OPEN error:', e.message); }
     cleanReply = reply.replace(/SHIFT_OPEN:\{.*?\}/s, '').trim();
   }
 
@@ -581,8 +622,9 @@ async function handleSystemCommands(reply, userId, sellerName) {
       const jsonStr = reply.match(/SHIFT_CLOSE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
-        const shift = openShifts[userId] || await loadOpenShift(userId) || {};
+        const shift = openShifts[String(userId)] || await loadOpenShift(userId) || {};
         const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
+        const todayForSheet = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         const closeTime = getTime();
         const rostaTotal = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0)-(s.rRetKaspi||0)-(s.rRetHalyk||0)-(s.rRetCash||0);
         const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
@@ -599,8 +641,11 @@ async function handleSystemCommands(reply, userId, sellerName) {
         const cashDiff = cashSales - (s.rCash||0);
         if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff });
 
+        const sellerFinal = shift.seller || sellerName;
+
+        // Пишем в лист "Смены"
         await appendSheet('Смены!A:Y', [
-          today, shift.seller||sellerName, shift.shop||'',
+          today, sellerFinal, shift.shop||'',
           s.rKaspi||0, s.rOnline||0, s.rHalyk||0, s.rHalykOnline||0,
           s.rCash||0, s.rPersonal||0, s.rBonus||0,
           s.rRetKaspi||0, s.rRetHalyk||0,
@@ -611,16 +656,20 @@ async function handleSystemCommands(reply, userId, sellerName) {
           s.notes||'', getNow()
         ]);
 
+        // Пишем в "Учёт по дням" — оборот и продавцы
+        await writeToUchetPoDnyam(todayForSheet, rostaTotal, sellerFinal, '');
+
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + (shift.seller||sellerName));
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
         }
 
-        const htmlReport = generateShiftHTML({ sellerName: shift.seller||sellerName, date: today, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs });
-        const filename = 'otchet_' + today.replace(/\./g,'_') + '_' + (shift.seller||sellerName) + '.html';
+        const htmlReport = generateShiftHTML({ sellerName: sellerFinal, date: today, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs });
+        const filename = 'otchet_' + today.replace(/\./g,'_') + '_' + sellerFinal + '.html';
         for (const ownerId of OWNER_IDS) {
-          await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + (shift.seller||sellerName) + ' · ' + today + ' · ' + closeTime);
+          await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
         }
-        delete openShifts[userId];
+
+        delete openShifts[String(userId)];
         await deleteOpenShift(userId);
       }
     } catch(e) { console.error('SHIFT_CLOSE error:', e.message); }
@@ -692,14 +741,26 @@ async function handleMessage(userId, messageText, photoFileId) {
   const senderName = ALLOWED_MAP[String(userId)];
   if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт. Обратитесь к руководителю.'); return; }
   const isOwner = OWNER_IDS.includes(String(userId));
-  if (!conversations[userId]) conversations[userId] = await loadConversation(String(userId));
+
+  // Загружаем диалог из Supabase если нет в памяти
+  if (!conversations[String(userId)]) {
+    conversations[String(userId)] = await loadConversation(userId);
+  }
+
+  // Проверяем открытую смену
+  const userKey = String(userId);
+  if (!openShifts[userKey]) {
+    const dbShift = await loadOpenShift(userId);
+    if (dbShift) openShifts[userKey] = dbShift;
+  }
+  const hasOpenShift = !!openShifts[userKey];
 
   let userContent;
   if (photoFileId) {
     try {
       await sendTelegram(userId, '📷 Читаю фото...');
       const base64 = await downloadTelegramFile(photoFileId);
-      const photoType = detectPhotoType(conversations[userId] || []);
+      const photoType = detectPhotoType(conversations[userKey] || []);
       const ocrResult = await readPhotoWithClaude(base64, photoType);
       let contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
         : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
@@ -711,8 +772,8 @@ async function handleMessage(userId, messageText, photoFileId) {
     userContent = messageText;
   }
 
-  conversations[userId].push({ role: 'user', content: userContent });
-  if (conversations[userId].length > 20) conversations[userId] = conversations[userId].slice(-20);
+  conversations[userKey].push({ role: 'user', content: userContent });
+  if (conversations[userKey].length > 20) conversations[userKey] = conversations[userKey].slice(-20);
 
   try {
     let systemPrompt;
@@ -720,19 +781,19 @@ async function handleMessage(userId, messageText, photoFileId) {
       const data = await loadOwnerData();
       systemPrompt = getOwnerPrompt(senderName, data);
     } else {
-      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана');
+      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift);
     }
 
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 2000,
-      system: systemPrompt, messages: conversations[userId]
+      system: systemPrompt, messages: conversations[userKey]
     });
 
     const reply = response.content.filter(b => b.type === 'text' && b.text).map(b => b.text.trim()).filter(t => t.length > 0).join('\n').trim();
     if (!reply) { await sendTelegram(userId, 'Произошла ошибка. Попробуй еще раз.'); return; }
 
-    conversations[userId].push({ role: 'assistant', content: reply });
-    await saveMessages(String(userId), userContent, reply);
+    conversations[userKey].push({ role: 'assistant', content: reply });
+    await saveMessages(userId, userContent, reply);
 
     const cleanReply = await handleSystemCommands(reply, userId, senderName);
     if (cleanReply && cleanReply.trim()) await sendTelegram(userId, cleanReply);
@@ -795,11 +856,12 @@ app.post('/webhook', async (req, res) => {
   } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.7' }));
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.8' }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log('Томи Telegram запущена на порту ' + PORT);
+  await restoreOpenShifts();
   const webhookUrl = 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN + '/webhook';
   const body = JSON.stringify({ url: webhookUrl });
   https.request({
