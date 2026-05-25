@@ -768,8 +768,10 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'Спроси: телефон заряжен?\n\n' +
     'ШАГ 9 — ROSTA\n' +
     'Спроси: ROSTA открыта?\n' +
-    'После "да" — выдай SHIFT_OPEN с суммой кассы из шага 2:\n' +
-    '=> SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":0,"time":"' + now + '"}\n\n' +
+    'После "да" — выдай SHIFT_OPEN с суммой кассы из шага 2.\n' +
+    'ВАЖНО: в cashOpen подставь РЕАЛЬНУЮ сумму которую назвала продавец на шаге 2, НЕ 0!\n' +
+    'Например если сказала "15000" — пиши cashOpen:15000\n' +
+    '=> SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":СУММА_ИЗ_ШАГА_2,"time":"' + now + '"}\n\n' +
 
     'ЗАКРЫТИЕ СМЕНЫ — ЖЁСТКИЙ КОНТРОЛЬ:\n' +
     'ШАГ 1 — Z-ОТЧЕТ: попроси фото экрана ROSTA. Считай все суммы по каналам.\n' +
@@ -974,8 +976,10 @@ async function handleSystemCommands(reply, userId, sellerName) {
         // ── Проверка остатка кассы от предыдущей смены ──────────────
         const lastCash = await loadLastCash();
         const cashOpen = parseFloat(s.cashOpen) || 0;
-        if (lastCash !== null) {
+        console.log('SHIFT_OPEN проверка кассы: cashOpen=', cashOpen, 'lastCash=', lastCash);
+        if (lastCash !== null && lastCash > 0) {
           const cashDiff = cashOpen - lastCash;
+          console.log('Разница кассы:', cashDiff);
           if (Math.abs(cashDiff) > 500) {
             const direction = cashDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
             const sign = cashDiff > 0 ? '+' : '';
@@ -994,12 +998,16 @@ async function handleSystemCommands(reply, userId, sellerName) {
               await sendTelegram(ownerId,
                 '🚨 РАСХОЖДЕНИЕ КАССЫ при открытии!\n' +
                 '👤 ' + s.seller + ' · ' + getTime() + '\n\n' +
-                '💰 Закрыли вчера: ' + Number(lastCash).toLocaleString() + ' тг\n' +
-                '💰 Открыли сегодня: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
+                '💰 Закрыли прошлый раз: ' + Number(lastCash).toLocaleString() + ' тг\n' +
+                '💰 Открыли сейчас: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
                 '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг'
               );
             }
+          } else {
+            console.log('Касса в норме, расхождение в пределах 500 тг');
           }
+        } else {
+          console.log('lastCash null или 0 — пропускаем проверку');
         }
 
         const shiftData = { seller: s.seller, shop: s.shop, cashOpen: s.cashOpen, time: s.time, start_time: new Date().toISOString() };
@@ -1015,7 +1023,7 @@ async function handleSystemCommands(reply, userId, sellerName) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ — касса\nНаличных: ' + Number(s.cashOpen).toLocaleString() + ' тг\n👤 ' + s.seller);
         }
       }
-    } catch(e) {}
+    } catch(e) { console.error('SHIFT_OPEN error:', e.message); }
     cleanReply = reply.replace(/SHIFT_OPEN:\{.*?\}/s, '').trim();
   }
 
