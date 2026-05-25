@@ -1,18 +1,24 @@
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — WhatsApp AI Управляющий NANE PARIS
-// Версия 2.0 — полный апгрейд по ТЗ
+// Версия 2.1 — Supabase память
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
 const Anthropic = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
 const https = require('https');
+const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 app.use(express.json());
 
+// ── Supabase ──────────────────────────────────────────────────────────
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
+
 // ── Переменные окружения ──────────────────────────────────────────────
-// Green API настройки
 const GREEN_API_ID      = process.env.GREEN_API_ID || '7107620766';
 const GREEN_API_TOKEN   = process.env.GREEN_API_TOKEN;
 const GREEN_API_URL     = `https://7107.api.greenapi.com/waInstance${GREEN_API_ID}`;
@@ -20,25 +26,76 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SPREADSHEET_ID    = process.env.SPREADSHEET_ID;
 const CASH_ALERT_LIMIT  = parseInt(process.env.CASH_ALERT_LIMIT || '100000');
 
-// Руководители — их номера получат отчёты
-// Формат: 77001234567,77009876543
 const OWNER_PHONES = (process.env.OWNER_PHONES || '').split(',').map(p => p.trim()).filter(Boolean);
 
-// Белый список — только эти номера могут писать Томи
-// Формат: 77001234567:Продавец1,77009876543:Продавец2
 const ALLOWED_MAP = {};
 (process.env.ALLOWED_USERS || '').split(',').forEach(entry => {
   const [phone, name] = entry.split(':');
   if (phone && name) ALLOWED_MAP[phone.trim()] = name.trim();
 });
-// Руководители тоже в белом списке
 OWNER_PHONES.forEach(p => { if (!ALLOWED_MAP[p]) ALLOWED_MAP[p] = 'Руководитель'; });
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
-// ── Память диалогов (в RAM, сбрасывается при перезапуске) ────────────
-const conversations = {}; // { phone: [ {role, content}, ... ] }
-const openShifts    = {}; // { phone: { name, time, shop, cashOpen } }
+// ── Память (RAM кэш + Supabase) ───────────────────────────────────────
+const conversations = {};
+const openShifts    = {};
+
+// ── Supabase функции ──────────────────────────────────────────────────
+async function loadConversation(phone) {
+  try {
+    const { data } = await supabase
+      .from('conversations')
+      .select('role, content')
+      .eq('phone', phone)
+      .order('created_at', { ascending: true })
+      .limit(20);
+    return data || [];
+  } catch(e) {
+    console.error('Supabase load error:', e.message);
+    return [];
+  }
+}
+
+async function saveMessages(phone, userContent, assistantContent) {
+  try {
+    await supabase.from('conversations').insert([
+      { phone, role: 'user', content: typeof userContent === 'string' ? userContent : JSON.stringify(userContent) },
+      { phone, role: 'assistant', content: assistantContent }
+    ]);
+  } catch(e) {
+    console.error('Supabase save error:', e.message);
+  }
+}
+
+async function loadOpenShift(phone) {
+  try {
+    const { data } = await supabase
+      .from('open_shifts')
+      .select('*')
+      .eq('phone', phone)
+      .single();
+    return data || null;
+  } catch(e) {
+    return null;
+  }
+}
+
+async function saveOpenShift(phone, shiftData) {
+  try {
+    await supabase.from('open_shifts').upsert({ phone, ...shiftData });
+  } catch(e) {
+    console.error('Supabase shift save error:', e.message);
+  }
+}
+
+async function deleteOpenShift(phone) {
+  try {
+    await supabase.from('open_shifts').delete().eq('phone', phone);
+  } catch(e) {
+    console.error('Supabase shift delete error:', e.message);
+  }
+}
 
 // ── Google Sheets ─────────────────────────────────────────────────────
 const GOOGLE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
@@ -141,12 +198,10 @@ async function loadOwnerData() {
     readSheet('Предоплаты!A:K')
   ]);
 
-  // Последние 30 смен
   const recentShifts = shifts.slice(-30).map(r => ({
     date: r[0], seller: r[1], rostaTotal: r[19], factTotal: r[20], diff: r[21], status: r[22]
   }));
 
-  // Открытые предоплаты
   const openPrepays = prepays.slice(1).filter(r => {
     if (!r[0]) return false;
     const status = String(r[8] || '').toLowerCase();
@@ -159,7 +214,7 @@ async function loadOwnerData() {
   return { recentShifts, openPrepays };
 }
 
-// ── Загрузка предоплат для продавца ──────────────────────────────────
+// ── Загрузка предоплат ────────────────────────────────────────────────
 async function loadPrepays(type = 'open') {
   const rows = await readSheet('Предоплаты!A:K');
   const prepMap = {};
@@ -173,7 +228,6 @@ async function loadPrepays(type = 'open') {
     if (!client || client.length < 2) return;
     if (/^CL-\d+$/.test(client) || /^\d+$/.test(client)) return;
 
-    // Убираем эмодзи из статуса и приводим к нижнему регистру
     const statusRaw = String(r[8] || '').trim();
     const status = statusRaw.replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}]/gu, '').trim().toLowerCase();
     const amount   = parseFloat(String(r[6] || '0').replace(/[^0-9.]/g, '')) || 0;
@@ -189,7 +243,6 @@ async function loadPrepays(type = 'open') {
       };
     } else {
       if (!prepMap[prepId].phone && phone) prepMap[prepId].phone = phone;
-      // Не складываем суммы — берём максимальную
       if (amount > prepMap[prepId].amount) prepMap[prepId].amount = amount;
       if (status.includes('открыт')) prepMap[prepId].status = status;
     }
@@ -320,9 +373,9 @@ Kaspi QR | Онлайн Kaspi | Halyk QR | Онлайн Halyk |
 Возвраты Kaspi | Возвраты Halyk | Возвраты наличными
 
 ЗАКОННЫЕ расхождения:
-• Сумма БОЛЬШЕ Z-отчёта → получена предоплата (товар не пробит в ROSTA)
-• Сумма МЕНЬШЕ Z-отчёта → выдан товар по старой предоплате
-• Личная карта: допустимая погрешность ±5 000 тг (конвертация валют)
+- Сумма БОЛЬШЕ Z-отчёта → получена предоплата (товар не пробит в ROSTA)
+- Сумма МЕНЬШЕ Z-отчёта → выдан товар по старой предоплате
+- Личная карта: допустимая погрешность ±5 000 тг (конвертация валют)
 
 Необъяснённое расхождение > 500 тг — НЕ ЗАКРЫВАЙ. Запроси объяснение.
 
@@ -357,7 +410,7 @@ Kaspi QR | Онлайн Kaspi | Halyk QR | Онлайн Halyk |
 По-русски. Один вопрос за раз. Строго и чётко.`;
 }
 
-// ── Промпт для руководителя ─────────────────────────────────────────────
+// ── Промпт для руководителя ───────────────────────────────────────────
 function getOwnerPrompt(ownerName, data) {
   const today = new Date().toLocaleDateString('ru-RU', {weekday:'long', year:'numeric', month:'long', day:'numeric'});
   const totalPrepay = data.openPrepays.reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
@@ -369,12 +422,12 @@ function getOwnerPrompt(ownerName, data) {
 Инициируешь диалог сама когда видишь что-то важное.
 
 РОЛИ:
-• Управляющий директор — вся операционка в реальном времени, приходишь с решением
-• Финансист — P&L, маржа по линейкам, ФОТ контроль, налоги
-• Маркетолог — сезонность, топ дней и часов, что продаётся и почему
-• HR — объективная картина по команде, только факты без эмоций
-• Аналитик — метрики готовности к масштабированию
-• Бухгалтер — ФОТ, зарплатная ведомость, учёт инкассаций
+- Управляющий директор — вся операционка в реальном времени, приходишь с решением
+- Финансист — P&L, маржа по линейкам, ФОТ контроль, налоги
+- Маркетолог — сезонность, топ дней и часов, что продаётся и почему
+- HR — объективная картина по команде, только факты без эмоций
+- Аналитик — метрики готовности к масштабированию
+- Бухгалтер — ФОТ, зарплатная ведомость, учёт инкассаций
 
 ДАННЫЕ ИЗ ТАБЛИЦЫ:
 Последние смены: ${JSON.stringify(data.recentShifts, null, 2)}
@@ -394,15 +447,15 @@ ${JSON.stringify(data.openPrepays.slice(0, 20), null, 2)}
 «Инкассация [сумма]» — фиксирую для кросс-контроля → OWNER_INKASSO:{"amount":0,"time":""}
 
 ЛИНЕЙКИ NANE PARIS:
-• Корея масс-маркет и премиум (корейские размеры: XS=44, S=46, M=48, L=50, XL=52)
-• Италия масс-маркет (европейские размеры: XS=36-38, S=38-40, M=40-42, L=42-44)
-• Личная линейка кожа и замша премиум (куртки, дублёнки, плащи) — самый высокий чек
+- Корея масс-маркет и премиум (корейские размеры: XS=44, S=46, M=48, L=50, XL=52)
+- Италия масс-маркет (европейские размеры: XS=36-38, S=38-40, M=40-42, L=42-44)
+- Личная линейка кожа и замша премиум (куртки, дублёнки, плащи) — самый высокий чек
 
 ПРАВИЛА ВОЗВРАТА:
-• Обмен — 14 дней, чек + не ношено + бирки
-• Возврат денег — 14 дней при производственном браке
-• Кожа/замша — 30 дней при дефекте производства
-• Не подлежат возврату: бельё, без бирок, финальная распродажа (скидка 50%+)
+- Обмен — 14 дней, чек + не ношено + бирки
+- Возврат денег — 14 дней при производственном браке
+- Кожа/замша — 30 дней при дефекте производства
+- Не подлежат возврату: бельё, без бирок, финальная распродажа (скидка 50%+)
 
 ШКАЛА ФОТ: до 500к→1.2%, 500к-750к→1.7%, 750к-1млн→2.2%, 1млн+→2.7%
 Бонусы: >=700к +5000тг/чел, >=2млн +40000тг/чел
@@ -411,67 +464,46 @@ ${JSON.stringify(data.openPrepays.slice(0, 20), null, 2)}
 Прямо, с цифрами, конкретные рекомендации. По-русски.`;
 }
 
-// ── Отправка WhatsApp сообщения через Green API ──────────────────────
+// ── Отправка WhatsApp ─────────────────────────────────────────────────
 async function sendWhatsApp(to, text) {
-  // Форматируем номер — убираем + и добавляем @c.us
   const chatId = to.replace(/[^0-9]/g, '') + '@c.us';
-
-  // Разбиваем длинные сообщения на части по 4000 символов
   const chunks = [];
   for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
 
   for (const chunk of chunks) {
-    const body = JSON.stringify({
-      chatId: chatId,
-      message: chunk
-    });
-
+    const body = JSON.stringify({ chatId, message: chunk });
     await new Promise((resolve, reject) => {
       const url = new URL(`${GREEN_API_URL}/sendMessage/${GREEN_API_TOKEN}`);
       const req = https.request({
         hostname: url.hostname,
         path: url.pathname,
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(body)
-        }
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
       }, res => {
         let data = '';
         res.on('data', d => data += d);
-        res.on('end', () => {
-          if (res.statusCode !== 200) console.error('Green API send error:', res.statusCode, data);
-          resolve();
-        });
+        res.on('end', () => { if (res.statusCode !== 200) console.error('Green API error:', res.statusCode, data); resolve(); });
       });
       req.on('error', reject);
       req.write(body);
       req.end();
     });
-
-    // Небольшая задержка между сообщениями
     await new Promise(r => setTimeout(r, 500));
   }
 }
 
-// ── Обработка системных команд из ответа Томи ────────────────────────
+// ── Обработка системных команд ────────────────────────────────────────
 async function handleSystemCommands(reply, fromPhone, sellerName) {
   let cleanReply = reply;
 
-  // PREPAY_LIST — показать список предоплат
   if (reply.includes('PREPAY_LIST:')) {
     const type = reply.includes('PREPAY_LIST:закрытые') ? 'closed' : 'open';
     cleanReply = reply.replace(/PREPAY_LIST:\S+/g, '').trim();
-
     const list = await loadPrepays(type);
     if (list.length === 0) {
       await sendWhatsApp(fromPhone, type === 'open' ? '📋 Открытых предоплат нет.' : '📋 Закрытых предоплат нет.');
     } else {
-      const header = type === 'open'
-        ? `📋 *Открытые предоплаты: ${list.length} шт*\n\n`
-        : `📋 *Закрытые предоплаты: ${list.length} шт*\n\n`;
-
-      // Отправляем по 10 карточек
+      const header = type === 'open' ? `📋 *Открытые предоплаты: ${list.length} шт*\n\n` : `📋 *Закрытые предоплаты: ${list.length} шт*\n\n`;
       for (let i = 0; i < list.length; i += 10) {
         const chunk = list.slice(i, i + 10);
         let msg = i === 0 ? header : `📋 *...продолжение:*\n\n`;
@@ -482,7 +514,6 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
     if (!cleanReply) return;
   }
 
-  // PREPAY_SAVE — сохранить новую предоплату
   if (reply.includes('PREPAY_SAVE:')) {
     try {
       const jsonStr = reply.match(/PREPAY_SAVE:(\{.*?\})/s)?.[1];
@@ -490,8 +521,6 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
         const p = JSON.parse(jsonStr);
         const phone = String(p.phone || '').replace(/\D/g, '');
         const today = new Date().toISOString().split('T')[0];
-
-        // Получаем следующий PREP ID
         const rows = await readSheet('Предоплаты!A:A');
         let maxNum = 0;
         rows.forEach(r => {
@@ -499,19 +528,16 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
           if (m) { const n = parseInt(m[1]); if (n > maxNum) maxNum = n; }
         });
         const id = `PREP-${String(maxNum + 1).padStart(4, '0')}`;
-
         await appendSheet('Предоплаты!A:K', [
           id, p.date || today, p.client || '', phone.length > 4 ? phone : '',
           p.item || '', p.channel || '', p.amount || 0, p.balance || 0,
           '🟡 Открыта', '', p.notes || sellerName
         ]);
-        console.log('Предоплата сохранена:', id);
       }
     } catch(e) { console.error('PREPAY_SAVE error:', e.message); }
     cleanReply = reply.replace(/PREPAY_SAVE:\{.*?\}/s, '').trim();
   }
 
-  // PREPAY_CLOSE — закрыть предоплату (выдать товар)
   if (reply.includes('PREPAY_CLOSE:')) {
     try {
       const jsonStr = reply.match(/PREPAY_CLOSE:(\{.*?\})/s)?.[1];
@@ -524,7 +550,6 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
             await updateSheetCell(`Предоплаты!I${rowNum}`, '🟢 Закрыта');
             await updateSheetCell(`Предоплаты!J${rowNum}`, p.closeDate || new Date().toISOString().split('T')[0]);
             await updateSheetCell(`Предоплаты!K${rowNum}`, p.notes || 'Товар выдан');
-            console.log('Предоплата закрыта:', p.id);
             break;
           }
         }
@@ -533,22 +558,20 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
     cleanReply = reply.replace(/PREPAY_CLOSE:\{.*?\}/s, '').trim();
   }
 
-  // SHIFT_OPEN — открытие смены
   if (reply.includes('SHIFT_OPEN:')) {
     try {
       const jsonStr = reply.match(/SHIFT_OPEN:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
-        openShifts[fromPhone] = { ...s, startTime: new Date().toISOString() };
+        const shiftData = { ...s, start_time: new Date().toISOString() };
+        openShifts[fromPhone] = shiftData;
+        await saveOpenShift(fromPhone, shiftData);
 
-        // Проверяем опоздание
         const now = new Date();
-        const hour = now.getHours(), min = now.getMinutes();
-        if (hour > 11 || (hour === 11 && min > 15)) {
+        if (now.getHours() > 11 || (now.getHours() === 11 && now.getMinutes() > 15)) {
           const lateMsg = `⚠️ *Опоздание!*\n👤 ${s.seller}\n🕐 ${now.toLocaleTimeString('ru-RU')}\n🏪 ${s.shop}`;
           for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, lateMsg);
         }
-        // Проверяем кассу на начало смены
         if ((s.cashOpen || 0) >= CASH_ALERT_LIMIT) {
           const cashOpenMsg = `💰 *АЛЕРТ — касса на начало смены*\nНаличных: *${Number(s.cashOpen).toLocaleString()} тг*\n👤 ${s.seller} | 🏪 ${s.shop}\nНужна инкассация!`;
           for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, cashOpenMsg);
@@ -558,23 +581,21 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
     cleanReply = reply.replace(/SHIFT_OPEN:\{.*?\}/s, '').trim();
   }
 
-  // SHIFT_CLOSE — закрытие смены
   if (reply.includes('SHIFT_CLOSE:')) {
     try {
       const jsonStr = reply.match(/SHIFT_CLOSE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
-        const shift = openShifts[fromPhone] || {};
+        // Загружаем смену из Supabase если нет в RAM
+        const shift = openShifts[fromPhone] || await loadOpenShift(fromPhone) || {};
         const today = new Date().toISOString().split('T')[0];
 
-        // Бонусы: в ROSTA есть (клиент оплатил баллами), в терминале нет — вычитаем из факта для сверки
         const rostaTotal = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0)-(s.rRetKaspi||0)-(s.rRetHalyk||0)-(s.rRetCash||0);
         const kaspiNet   = (s.tKaspi||0)-(s.tKaspiRet||0);
         const halykNet   = (s.tHalyk||0)-(s.tHalykRet||0);
         const cashSales  = (s.cashActual||0)-(s.cashOpen||0)+(s.cashPayouts||0)+(s.inkasso||0)+(s.rRetCash||0);
         const factTotal  = kaspiNet + halykNet + cashSales + (s.tPersonal||0) + (s.rBonus||0);
         const diff       = factTotal - rostaTotal;
-        // Эффективность дня
         const grossSales = rostaTotal + (s.rRetKaspi||0) + (s.rRetHalyk||0) + (s.rRetCash||0);
         const totalRet   = (s.rRetKaspi||0) + (s.rRetHalyk||0) + (s.rRetCash||0);
         const netSales   = grossSales - totalRet;
@@ -591,14 +612,11 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
           s.notes || '', new Date().toLocaleString('ru-RU')
         ]);
 
-        // Алерт инкассации
         if ((s.cashActual || 0) >= CASH_ALERT_LIMIT) {
           const cashMsg = `💰 *АЛЕРТ ИНКАССАЦИИ*\nНаличных в кассе: *${Number(s.cashActual).toLocaleString()} тг*\n👤 ${shift.seller}\n📅 ${today}`;
           for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, cashMsg);
         }
 
-        // Отчёт руководителям
-        // Формируем каналы ROSTA
         const kaspiBlock = [
           `  📲 Онлайн Kaspi: ${Number(s.rOnline||0).toLocaleString()} тг`,
           `  📱 Kaspi QR: ${Number(s.rKaspi||0).toLocaleString()} тг`,
@@ -618,13 +636,11 @@ async function handleSystemCommands(reply, fromPhone, sellerName) {
         ].filter(Boolean).join('\n');
 
         const kassaBlock = (s.inkasso||0)>0
-          ? `  Начало: ${Number(s.cashOpen||0).toLocaleString()} тг → Конец: ${Number(s.cashActual||0).toLocaleString()} тг\n  Продажи нал: ${Number(cashSales).toLocaleString()} тг\n  💰 Инкассация: −${Number(s.inkasso||0).toLocaleString()} тг\n  Остаток после: ${Number(s.cashActual||0).toLocaleString()} тг`
+          ? `  Начало: ${Number(s.cashOpen||0).toLocaleString()} тг → Конец: ${Number(s.cashActual||0).toLocaleString()} тг\n  Продажи нал: ${Number(cashSales).toLocaleString()} тг\n  💰 Инкассация: −${Number(s.inkasso||0).toLocaleString()} тг`
           : `  Начало: ${Number(s.cashOpen||0).toLocaleString()} тг → Конец: ${Number(s.cashActual||0).toLocaleString()} тг\n  Продажи нал: ${Number(cashSales).toLocaleString()} тг`;
 
-        const sverkaLine = diff === 0
-          ? '✅ Kaspi · Halyk · Наличные — все сходятся'
-          : Math.abs(diff) < 500
-          ? '⚠️ Незначительное расхождение'
+        const sverkaLine = diff === 0 ? '✅ Kaspi · Halyk · Наличные — все сходятся'
+          : Math.abs(diff) < 500 ? '⚠️ Незначительное расхождение'
           : '🚨 РАСХОЖДЕНИЕ — требует внимания';
 
         const report = `━━━━━━━━━━━━━━━━━━━━━
@@ -660,12 +676,12 @@ ${sverkaLine}
 
         for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, report);
         delete openShifts[fromPhone];
+        await deleteOpenShift(fromPhone);
       }
     } catch(e) { console.error('SHIFT_CLOSE error:', e.message); }
     cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
   }
 
-  // CASH_ALERT — алерт наличных
   if (reply.includes('CASH_ALERT:')) {
     try {
       const jsonStr = reply.match(/CASH_ALERT:(\{.*?\})/s)?.[1];
@@ -678,7 +694,6 @@ ${sverkaLine}
     cleanReply = reply.replace(/CASH_ALERT:\{.*?\}/s, '').trim();
   }
 
-  // LATE_ALERT — алерт опоздания
   if (reply.includes('LATE_ALERT:')) {
     try {
       const jsonStr = reply.match(/LATE_ALERT:(\{.*?\})/s)?.[1];
@@ -691,7 +706,6 @@ ${sverkaLine}
     cleanReply = reply.replace(/LATE_ALERT:\{.*?\}/s, '').trim();
   }
 
-  // TERMINAL_ALERT — терминал не работает
   if (reply.includes('TERMINAL_ALERT:')) {
     try {
       const jsonStr = reply.match(/TERMINAL_ALERT:(\{.*?\})/s)?.[1];
@@ -704,17 +718,14 @@ ${sverkaLine}
     cleanReply = reply.replace(/TERMINAL_ALERT:\{.*?\}/s, '').trim();
   }
 
-  // INKASSO_CHECK — кросс-контроль инкассации продавец vs владелец
   if (reply.includes('INKASSO_CHECK:')) {
     try {
       const jsonStr = reply.match(/INKASSO_CHECK:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        const sellerAmt = parseFloat(a.sellerAmount) || 0;
-        const ownerAmt  = parseFloat(a.ownerAmount)  || 0;
-        const diff = Math.abs(sellerAmt - ownerAmt);
+        const diff = Math.abs((parseFloat(a.sellerAmount)||0) - (parseFloat(a.ownerAmount)||0));
         if (diff > 500) {
-          const msg = `🚨 *РАСХОЖДЕНИЕ ИНКАССАЦИИ!*\nЕрмек зафиксировал: ${Number(ownerAmt).toLocaleString()} тг\nПродавец говорит: ${Number(sellerAmt).toLocaleString()} тг\nРасхождение: ${Number(diff).toLocaleString()} тг\n⏰ ${new Date().toLocaleString('ru-RU')}`;
+          const msg = `🚨 *РАСХОЖДЕНИЕ ИНКАССАЦИИ!*\nЕрмек зафиксировал: ${Number(a.ownerAmount).toLocaleString()} тг\nПродавец говорит: ${Number(a.sellerAmount).toLocaleString()} тг\nРасхождение: ${Number(diff).toLocaleString()} тг`;
           for (const ownerPhone of OWNER_PHONES) await sendWhatsApp(ownerPhone, msg);
         }
       }
@@ -722,15 +733,12 @@ ${sverkaLine}
     cleanReply = reply.replace(/INKASSO_CHECK:\{.*?\}/s, '').trim();
   }
 
-  // OWNER_INKASSO — владелец фиксирует инкассацию
   if (reply.includes('OWNER_INKASSO:')) {
     try {
       const jsonStr = reply.match(/OWNER_INKASSO:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        const now = new Date().toLocaleString('ru-RU');
-        await appendSheet('Логи!A:F', [now, 'Инкассация', 'Владелец', '', `Инкассация: ${a.amount} тг`, '']);
-        console.log('Инкассация владельца зафиксирована:', a.amount, 'тг');
+        await appendSheet('Логи!A:F', [new Date().toLocaleString('ru-RU'), 'Инкассация', 'Владелец', '', `Инкассация: ${a.amount} тг`, '']);
       }
     } catch(e) { console.error('OWNER_INKASSO error:', e.message); }
     cleanReply = reply.replace(/OWNER_INKASSO:\{.*?\}/s, '').trim();
@@ -739,17 +747,11 @@ ${sverkaLine}
   return cleanReply;
 }
 
-
-// ── Скачать медиафайл из WhatsApp (Green API) ────────────────────────
+// ── OCR ───────────────────────────────────────────────────────────────
 async function downloadWhatsAppMedia(mediaUrl) {
-  // Green API передаёт прямой URL — скачиваем его
   const fileData = await new Promise((resolve, reject) => {
     const url = new URL(mediaUrl);
-    const req = https.request({
-      hostname: url.hostname,
-      path: url.pathname + url.search,
-      method: 'GET'
-    }, res => {
+    const req = https.request({ hostname: url.hostname, path: url.pathname + url.search, method: 'GET' }, res => {
       const chunks = [];
       res.on('data', d => chunks.push(d));
       res.on('end', () => resolve(Buffer.concat(chunks)));
@@ -760,91 +762,42 @@ async function downloadWhatsAppMedia(mediaUrl) {
   return fileData.toString('base64');
 }
 
-// ── OCR фото через Claude Vision ──────────────────────────────────────
 async function readPhotoWithClaude(base64Image, photoType) {
   let prompt = '';
-
   if (photoType === 'zreport') {
     prompt = `Это Z-отчёт из кассовой программы ROSTA. Извлеки все суммы по каналам оплаты.
 Верни ТОЛЬКО JSON без пояснений:
-{
-  "kaspi_qr": число,
-  "online_kaspi": число,
-  "halyk_qr": число,
-  "online_halyk": число,
-  "cash": число,
-  "personal": число,
-  "bonus": число,
-  "ret_kaspi": число,
-  "ret_halyk": число,
-  "ret_cash": число
-}
-Если канал не найден — ставь 0. Только цифры без пробелов и символов валюты.`;
-
+{"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi":0,"ret_halyk":0,"ret_cash":0}`;
   } else if (photoType === 'kaspi_terminal') {
-    prompt = `Это отчёт с Kaspi терминала. Терминал показывает три строки: продажи (валовые), возвраты (со знаком минус), итого за период.
-Верни ТОЛЬКО JSON:
-{
-  "gross": число,
-  "returns": число,
-  "net": число
-}
-gross = валовые продажи (без возвратов), returns = возвраты (положительное число), net = итого (gross - returns). Только цифры.`;
-
+    prompt = `Это отчёт с Kaspi терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}`;
   } else if (photoType === 'halyk_terminal') {
-    prompt = `Это отчёт с Halyk терминала. Извлеки суммы продаж и возвратов.
-Верни ТОЛЬКО JSON:
-{
-  "gross": число,
-  "returns": число,
-  "net": число
-}
-gross = валовые продажи, returns = возвраты (положительное число), net = итого. Только цифры.`;
-
+    prompt = `Это отчёт с Halyk терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}`;
   } else {
-    prompt = `Опиши что видишь на этом документе/фото. Извлеки все числовые данные которые могут относиться к продажам, кассе или финансам.`;
+    prompt = `Опиши что видишь на этом документе. Извлеки все числовые данные.`;
   }
-
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 500,
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Image } },
-        { type: 'text', text: prompt }
-      ]
-    }]
+    messages: [{ role: 'user', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64Image } },
+      { type: 'text', text: prompt }
+    ]}]
   });
-
   return response.content[0].text;
 }
 
-// ── Определить тип фото по контексту разговора ───────────────────────
 function detectPhotoType(conversation) {
-  const lastMessages = conversation.slice(-6).map(m => 
+  const lastMessages = conversation.slice(-6).map(m =>
     (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).toLowerCase()
   ).join(' ');
-
-  if (lastMessages.includes('z-отчёт') || lastMessages.includes('z отчёт') || 
-      lastMessages.includes('зетчёт') || lastMessages.includes('rosta') || 
-      lastMessages.includes('роста') || lastMessages.includes('z-report')) {
-    return 'zreport';
-  }
-  if (lastMessages.includes('kaspi терминал') || lastMessages.includes('каспи терминал') ||
-      lastMessages.includes('терминал kaspi') || lastMessages.includes('kaspi terminal')) {
-    return 'kaspi_terminal';
-  }
-  if (lastMessages.includes('halyk терминал') || lastMessages.includes('халык терминал') ||
-      lastMessages.includes('терминал halyk')) {
-    return 'halyk_terminal';
-  }
+  if (lastMessages.includes('z-отчёт') || lastMessages.includes('rosta') || lastMessages.includes('роста')) return 'zreport';
+  if (lastMessages.includes('kaspi терминал') || lastMessages.includes('терминал kaspi')) return 'kaspi_terminal';
+  if (lastMessages.includes('halyk терминал') || lastMessages.includes('терминал halyk')) return 'halyk_terminal';
   return 'unknown';
 }
 
-// ── Основной обработчик сообщений ────────────────────────────────────
+// ── Основной обработчик ───────────────────────────────────────────────
 async function handleMessage(fromPhone, messageText, messageType, mediaId) {
-  // Проверяем белый список
   const senderName = ALLOWED_MAP[fromPhone];
   if (!senderName) {
     await sendWhatsApp(fromPhone, '🔒 Доступ закрыт. Обратитесь к руководителю.');
@@ -853,61 +806,49 @@ async function handleMessage(fromPhone, messageText, messageType, mediaId) {
 
   const isOwner = OWNER_PHONES.includes(fromPhone);
 
-  // Инициализируем историю диалога
-  if (!conversations[fromPhone]) conversations[fromPhone] = [];
+  // Загружаем историю из Supabase если RAM пустой
+  if (!conversations[fromPhone]) {
+    const history = await loadConversation(fromPhone);
+    conversations[fromPhone] = history;
+  }
 
   let userContent;
 
-  // Обработка фото — OCR через Claude Vision
   if (messageType === 'image' && mediaId) {
     try {
       await sendWhatsApp(fromPhone, '📷 Читаю фото...');
       const base64 = await downloadWhatsAppMedia(mediaId);
       const photoType = detectPhotoType(conversations[fromPhone] || []);
       const ocrResult = await readPhotoWithClaude(base64, photoType);
-
       let contextText = '';
-      if (photoType === 'zreport') {
-        contextText = 'Я прочитал Z-отчёт из ROSTA. Вот данные:\n' + ocrResult;
-      } else if (photoType === 'kaspi_terminal') {
-        contextText = 'Я прочитал отчёт Kaspi терминала. Вот данные:\n' + ocrResult;
-      } else if (photoType === 'halyk_terminal') {
-        contextText = 'Я прочитал отчёт Halyk терминала. Вот данные:\n' + ocrResult;
-      } else {
-        contextText = 'Я прочитал фото. Вот что увидел:\n' + ocrResult;
-      }
-
+      if (photoType === 'zreport') contextText = 'Я прочитал Z-отчёт из ROSTA. Вот данные:\n' + ocrResult;
+      else if (photoType === 'kaspi_terminal') contextText = 'Я прочитал отчёт Kaspi терминала. Вот данные:\n' + ocrResult;
+      else if (photoType === 'halyk_terminal') contextText = 'Я прочитал отчёт Halyk терминала. Вот данные:\n' + ocrResult;
+      else contextText = 'Я прочитал фото. Вот что увидел:\n' + ocrResult;
       userContent = [
-        { type: 'text', text: messageText || 'Прочитай данные с фото и помоги заполнить смену.' },
+        { type: 'text', text: messageText || 'Прочитай данные с фото.' },
         { type: 'text', text: contextText }
       ];
     } catch(e) {
       console.error('OCR error:', e.message);
-      userContent = messageText || 'Не удалось прочитать фото, попробуй ещё раз.';
+      userContent = messageText || 'Не удалось прочитать фото.';
     }
   } else {
     userContent = messageText;
   }
 
   conversations[fromPhone].push({ role: 'user', content: userContent });
-
-  // Ограничиваем историю последними 20 сообщениями
-  if (conversations[fromPhone].length > 20) {
-    conversations[fromPhone] = conversations[fromPhone].slice(-20);
-  }
+  if (conversations[fromPhone].length > 20) conversations[fromPhone] = conversations[fromPhone].slice(-20);
 
   try {
-    // Получаем данные для промпта
     let systemPrompt;
     if (isOwner) {
       const data = await loadOwnerData();
       systemPrompt = getOwnerPrompt(senderName, data);
     } else {
-      const shopName = 'NANE PARIS Астана';
-      systemPrompt = getSellerPrompt(senderName, shopName);
+      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана');
     }
 
-    // Запрос к Claude
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 2000,
@@ -915,31 +856,26 @@ async function handleMessage(fromPhone, messageText, messageType, mediaId) {
       messages: conversations[fromPhone]
     });
 
-    // Извлекаем только текстовые блоки — фильтруем thinking, tool_use и прочее
     const reply = response.content
-      .filter(block => block.type === 'text' && block.text && !block.text.includes('<function_calls>'))
+      .filter(block => block.type === 'text' && block.text)
       .map(block => block.text.trim())
       .filter(t => t.length > 0)
       .join('\n')
       .trim();
 
     if (!reply) {
-      console.error('Claude вернул пустой ответ:', JSON.stringify(response.content));
       await sendWhatsApp(fromPhone, 'Произошла ошибка. Попробуй ещё раз.');
       return;
     }
 
     conversations[fromPhone].push({ role: 'assistant', content: reply });
 
-    // Обрабатываем системные команды и получаем чистый текст
+    // Сохраняем в Supabase
+    await saveMessages(fromPhone, userContent, reply);
+
     const cleanReply = await handleSystemCommands(reply, fromPhone, senderName);
+    if (cleanReply && cleanReply.trim()) await sendWhatsApp(fromPhone, cleanReply);
 
-    // Отправляем ответ
-    if (cleanReply && cleanReply.trim()) {
-      await sendWhatsApp(fromPhone, cleanReply);
-    }
-
-    // Логируем диалог
     await appendSheet('Логи!A:F', [
       new Date().toLocaleString('ru-RU'),
       isOwner ? 'Руководитель' : 'Продавец',
@@ -954,63 +890,36 @@ async function handleMessage(fromPhone, messageText, messageType, mediaId) {
   }
 }
 
-// ── Webhook Green API ────────────────────────────────────────────────
-app.get('/webhook', (req, res) => {
-  res.json({ status: 'ok', service: 'TOMI NANE PARIS' });
-});
+// ── Webhook ───────────────────────────────────────────────────────────
+app.get('/webhook', (req, res) => res.json({ status: 'ok' }));
 
 app.post('/webhook', async (req, res) => {
-  res.sendStatus(200); // сразу отвечаем Green API
-
+  res.sendStatus(200);
   try {
     const body = req.body;
-    if (!body || !body.typeWebhook) return;
-
-    // Обрабатываем только входящие сообщения
-    if (body.typeWebhook !== 'incomingMessageReceived') return;
-
+    if (!body?.typeWebhook || body.typeWebhook !== 'incomingMessageReceived') return;
     const msg = body.messageData;
     const sender = body.senderData;
     if (!msg || !sender) return;
-
-    // Получаем номер отправителя (убираем @c.us)
     const fromPhone = sender.chatId.replace('@c.us', '').replace('@g.us', '');
-
-    // Игнорируем групповые чаты
     if (sender.chatId.includes('@g.us')) return;
 
-    let messageText = '';
-    let mediaId = null;
-    let messageType = 'text';
-
+    let messageText = '', mediaId = null, messageType = 'text';
     if (msg.typeMessage === 'textMessage') {
       messageText = msg.textMessageData?.textMessage || '';
     } else if (msg.typeMessage === 'imageMessage') {
       messageType = 'image';
       mediaId = msg.fileMessageData?.downloadUrl;
       messageText = msg.fileMessageData?.caption || '';
-    } else if (msg.typeMessage === 'documentMessage') {
-      messageType = 'document';
-      mediaId = msg.fileMessageData?.downloadUrl;
-      messageText = msg.fileMessageData?.caption || '';
-    } else {
-      return; // игнорируем другие типы
-    }
+    } else return;
 
     if (!messageText && !mediaId) return;
-
     await handleMessage(fromPhone, messageText, messageType, mediaId);
-  } catch(e) {
-    console.error('Webhook error:', e.message);
-  }
+  } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-// ── Health check ──────────────────────────────────────────────────────
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', service: 'TOMI NANE PARIS WhatsApp', version: '1.0' });
-});
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS', version: '2.1' }));
 
-// ── Запуск ────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Томи WhatsApp запущена на порту ${PORT}`);
