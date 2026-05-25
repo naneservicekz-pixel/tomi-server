@@ -764,6 +764,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Команда" — сводка по продавцам\n' +
     '"Зарплата" — расчет ФОТ\n' +
     '"Дашборд" => DASHBOARD_HTML\n' +
+    '"Дайджест" — утренняя сводка прямо сейчас => DIGEST_NOW\n' +
     '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n\n' +
     'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
     'Бонусы: от 700к +5000 тг/чел, от 2млн +40000 тг/чел\nФикс: Асель 14000, Зарина 14000, Луиза 14000\n\nПо-русски. Прямо, с цифрами.';
@@ -811,6 +812,12 @@ function detectPhotoType(conversation) {
 
 async function handleSystemCommands(reply, userId, sellerName) {
   let cleanReply = reply;
+
+  if (reply.includes('DIGEST_NOW')) {
+    cleanReply = reply.replace(/DIGEST_NOW/g, '').trim();
+    await sendMorningDigest();
+    if (!cleanReply) return '';
+  }
 
   if (reply.includes('DASHBOARD_HTML')) {
     cleanReply = reply.replace(/DASHBOARD_HTML/g, '').trim();
@@ -1196,12 +1203,162 @@ app.post('/webhook', async (req, res) => {
   } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '4.0' }));
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '4.2' }));
+
+// ══════════════════════════════════════════════════════════════════════
+// УТРЕННИЙ ДАЙДЖЕСТ — каждый день в 09:00 по Алматы
+// ══════════════════════════════════════════════════════════════════════
+async function sendMorningDigest() {
+  try {
+    console.log('Отправляю утренний дайджест...');
+
+    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
+
+    // 1. Итоги вчера из листа "Смены"
+    const shifts = await readSheet('Смены!A:Y', SPREADSHEET_ID);
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+
+    const yesterdayShifts = shifts.filter(r => r[0] === yesterdayStr);
+    let yesterdayTotal = 0;
+    let yesterdayHasIssues = false;
+    let yesterdaySellers = [];
+    yesterdayShifts.forEach(r => {
+      const rostaTotal = parseFloat(String(r[19]||'0').replace(/[^0-9.]/g,'')) || 0;
+      const diff = parseFloat(String(r[21]||'0').replace(/[^0-9.]/g,'')) || 0;
+      yesterdayTotal += rostaTotal;
+      if (Math.abs(diff) >= 500) yesterdayHasIssues = true;
+      if (r[1]) yesterdaySellers.push(r[1]);
+    });
+
+    // 2. Кто работает сегодня из "Учёт по дням"
+    const today = new Date();
+    const todayDay = today.getDate(); // число месяца
+    const uchet = await readSheet("'Учёт по дням'!A6:E200", DASHBOARD_ID);
+    let todaySeller1 = '';
+    let todaySeller2 = '';
+    uchet.forEach(r => {
+      const rowNum = parseInt(r[0]);
+      if (rowNum === todayDay) {
+        todaySeller1 = r[3] || '';
+        todaySeller2 = r[4] || '';
+      }
+    });
+
+    // 3. Открытые предоплаты
+    const prepays = await readSheet('Предоплаты!A:K', SPREADSHEET_ID);
+    const openPrepays = prepays.slice(1).filter(r =>
+      r[0] && String(r[8]||'').toLowerCase().includes('открыт')
+    );
+    const totalDebt = openPrepays.reduce((s, r) => {
+      return s + (parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,'')) || 0);
+    }, 0);
+
+    // 4. % плана месяца из дашборда
+    const dash = await readSheet("'Дашборд'!A1:H25", DASHBOARD_ID);
+    const getNum = (rows, ri, ci) => {
+      try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
+    };
+    const plan = getNum(dash, 5, 2) || 27000000;
+    const totalFact = getNum(dash, 18, 6) || (getNum(dash,18,2)+getNum(dash,18,3)+getNum(dash,18,4));
+    const pct = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
+    const remains = Math.max(0, plan - totalFact);
+
+    // Дней прошло и осталось в месяце
+    const daysInMonth = new Date(today.getFullYear(), today.getMonth()+1, 0).getDate();
+    const daysPassed = today.getDate();
+    const daysLeft = daysInMonth - daysPassed;
+    const dailyNeed = daysLeft > 0 ? Math.round(remains / daysLeft) : 0;
+
+    // Формируем сообщение
+    const todayDateStr = today.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', day: 'numeric', month: 'long' });
+
+    let msg = '☀️ Доброе утро, Ермек!\n';
+    msg += todayDateStr.charAt(0).toUpperCase() + todayDateStr.slice(1) + '\n\n';
+
+    // Итоги вчера
+    msg += '📊 ВЧЕРА (' + yesterdayStr + ')\n';
+    if (yesterdayShifts.length > 0) {
+      msg += '💰 Оборот: ' + fmt(yesterdayTotal) + ' тг\n';
+      msg += '👤 Работали: ' + (yesterdaySellers.join(', ') || '—') + '\n';
+      msg += yesterdayHasIssues ? '⚠️ Были расхождения — проверь отчёт\n' : '✅ Расхождений нет\n';
+    } else {
+      msg += 'Данных за вчера нет\n';
+    }
+
+    // Месяц
+    msg += '\n📈 ПЛАН МЕСЯЦА\n';
+    msg += '✅ Выполнено: ' + fmt(totalFact) + ' тг (' + pct + '%)\n';
+    msg += '🎯 Осталось: ' + fmt(remains) + ' тг\n';
+    msg += '📅 Дней осталось: ' + daysLeft + '\n';
+    msg += '📌 Нужно в день: ' + fmt(dailyNeed) + ' тг\n';
+
+    // Сегодня кто работает
+    msg += '\n👥 СЕГОДНЯ РАБОТАЮТ\n';
+    if (todaySeller1 || todaySeller2) {
+      if (todaySeller1) msg += '• ' + todaySeller1 + '\n';
+      if (todaySeller2) msg += '• ' + todaySeller2 + '\n';
+    } else {
+      msg += 'График не указан\n';
+    }
+
+    // Предоплаты
+    msg += '\n💳 ПРЕДОПЛАТЫ\n';
+    if (openPrepays.length > 0) {
+      msg += '📋 Открытых: ' + openPrepays.length + ' шт\n';
+      msg += '💵 Общий долг: ' + fmt(totalDebt) + ' тг\n';
+      // Показать первые 3 с долгом
+      const withDebt = openPrepays.filter(r => parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,'')) > 0).slice(0, 3);
+      if (withDebt.length > 0) {
+        msg += 'Ближайшие:\n';
+        withDebt.forEach(r => {
+          const client = String(r[2]||'').trim();
+          const debt = parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,'')) || 0;
+          msg += '  • ' + client + ' — ' + fmt(debt) + ' тг\n';
+        });
+      }
+    } else {
+      msg += '✅ Открытых предоплат нет\n';
+    }
+
+    msg += '\nХорошего дня! 💪';
+
+    for (const ownerId of OWNER_IDS) {
+      await sendTelegram(ownerId, msg);
+    }
+    console.log('Утренний дайджест отправлен');
+
+  } catch(e) {
+    console.error('Ошибка дайджеста:', e.message);
+  }
+}
+
+// Планировщик — каждую минуту проверяем время
+function startDailyScheduler() {
+  setInterval(() => {
+    const now = new Date();
+    const almatyTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const hours = almatyTime.getHours();
+    const minutes = almatyTime.getMinutes();
+    const seconds = almatyTime.getSeconds();
+    // Запускаем в 09:00:00 - 09:00:59
+    if (hours === 9 && minutes === 0 && seconds < 60) {
+      const todayKey = almatyTime.toDateString();
+      if (startDailyScheduler.lastRun !== todayKey) {
+        startDailyScheduler.lastRun = todayKey;
+        sendMorningDigest();
+      }
+    }
+  }, 30000); // проверяем каждые 30 секунд
+  console.log('Планировщик дайджеста запущен — каждый день в 09:00');
+}
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log('Томи Telegram запущена на порту ' + PORT);
   await restoreOpenShifts();
+  startDailyScheduler();
   const webhookUrl = 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN + '/webhook';
   const body = JSON.stringify({ url: webhookUrl });
   https.request({
