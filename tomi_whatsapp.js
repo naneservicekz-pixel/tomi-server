@@ -82,6 +82,24 @@ async function deleteOpenShift(userId) {
   try { await supabase.from('open_shifts').delete().eq('phone', String(userId)); } catch(e) {}
 }
 
+// Сохраняем остаток кассы после закрытия смены
+async function saveLastCash(cashActual) {
+  try {
+    await supabase.from('open_shifts').upsert(
+      { phone: 'last_cash_balance', cashActual, updated_at: new Date().toISOString() },
+      { onConflict: 'phone' }
+    );
+  } catch(e) {}
+}
+
+// Читаем остаток кассы от последней закрытой смены
+async function loadLastCash() {
+  try {
+    const { data } = await supabase.from('open_shifts').select('cashActual').eq('phone', 'last_cash_balance').maybeSingle();
+    return data ? (parseFloat(data.cashActual) || 0) : null;
+  } catch(e) { return null; }
+}
+
 async function restoreOpenShifts() {
   try {
     const { data } = await supabase.from('open_shifts').select('*');
@@ -732,7 +750,9 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'После "Геолокация принята (открытие)" — переходи к шагу 2.\n\n' +
     'ШАГ 2 — КАССА\n' +
     'Спроси: сколько наличных в кассе на начало смены?\n' +
-    'Запомни сумму — она войдёт в SHIFT_OPEN как cashOpen.\n\n' +
+    'Запомни сумму — она войдёт в SHIFT_OPEN как cashOpen.\n' +
+    'ВАЖНО: система автоматически сравнит эту сумму с остатком предыдущей смены.\n' +
+    'Если продавец сообщила расхождение кассы — потребуй объяснение до продолжения чек-листа.\n\n' +
     'ШАГ 3 — ТЕРМИНАЛЫ\n' +
     'Спроси: пришли фото экрана Kaspi терминала.\n' +
     'Потом: пришли фото экрана Halyk терминала.\n' +
@@ -951,6 +971,38 @@ async function handleSystemCommands(reply, userId, sellerName) {
       const jsonStr = reply.match(/SHIFT_OPEN:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
+
+        // ── Проверка остатка кассы от предыдущей смены ──────────────
+        const lastCash = await loadLastCash();
+        const cashOpen = parseFloat(s.cashOpen) || 0;
+        if (lastCash !== null) {
+          const cashDiff = cashOpen - lastCash;
+          if (Math.abs(cashDiff) > 500) {
+            const direction = cashDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
+            const sign = cashDiff > 0 ? '+' : '';
+
+            // Алерт продавцу
+            await sendTelegram(userId,
+              '⚠️ РАСХОЖДЕНИЕ КАССЫ при открытии!\n\n' +
+              '💰 Остаток прошлой смены: ' + Number(lastCash).toLocaleString() + ' тг\n' +
+              '💰 Ты пересчитала: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
+              '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг\n\n' +
+              'Пересчитай кассу ещё раз и объясни причину расхождения.'
+            );
+
+            // Алерт владельцу
+            for (const ownerId of OWNER_IDS) {
+              await sendTelegram(ownerId,
+                '🚨 РАСХОЖДЕНИЕ КАССЫ при открытии!\n' +
+                '👤 ' + s.seller + ' · ' + getTime() + '\n\n' +
+                '💰 Закрыли вчера: ' + Number(lastCash).toLocaleString() + ' тг\n' +
+                '💰 Открыли сегодня: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
+                '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг'
+              );
+            }
+          }
+        }
+
         const shiftData = { seller: s.seller, shop: s.shop, cashOpen: s.cashOpen, time: s.time, start_time: new Date().toISOString() };
         openShifts[String(userId)] = shiftData;
         await saveOpenShift(userId, shiftData);
@@ -1043,6 +1095,9 @@ async function handleSystemCommands(reply, userId, sellerName) {
         ]);
 
         await writeToUchetPoDnyam(today, rostaTotal, sellerFinal, '');
+
+        // Сохраняем остаток кассы для проверки при следующем открытии
+        await saveLastCash(s.cashActual || 0);
 
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
