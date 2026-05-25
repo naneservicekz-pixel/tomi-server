@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
-// Версия 3.6 — комбо карточки + фикс долга
+// Версия 3.7 — старый формат карточек + HTML файл
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -188,17 +188,7 @@ async function sendTelegramDocument(chatId, filename, content, caption) {
   });
 }
 
-// ── Краткий текстовый список предоплат ───────────────────────────────
-function formatPrepayShort(p, num) {
-  const isClosed = p.status.includes('закрыт');
-  const icon = isClosed ? '✅' : '🟡';
-  const debtStr = p.balance > 0
-    ? 'долг ' + Number(p.balance).toLocaleString() + ' тг'
-    : '✅ оплачено';
-  return icon + ' ' + num + '. ' + p.client + ' — ' + debtStr;
-}
-
-// ── Полная карточка предоплаты (для HTML) ─────────────────────────────
+// ── HTML карточка предоплаты ───────────────────────────────────────────
 function formatPrepayCardHTML(p, num) {
   const isClosed = p.status.includes('закрыт');
   const statusBg = isClosed ? '#eaf3de' : '#faeeda';
@@ -211,12 +201,9 @@ function formatPrepayCardHTML(p, num) {
   const total = (p.amount || 0) + (p.balance || 0);
   const fmt = n => Number(n || 0).toLocaleString('ru-RU') + ' ₸';
 
-  let debtBlock = '';
-  if (p.balance > 0) {
-    debtBlock = '<div style="background:#fcebeb; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#A32D2D; margin-bottom:4px;">Долг к доплате</div><div style="font-size:15px; font-weight:600; color:#A32D2D;">' + fmt(p.balance) + '</div></div>';
-  } else {
-    debtBlock = '<div style="background:#eaf3de; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#3B6D11; margin-bottom:4px;">Долг</div><div style="font-size:15px; font-weight:600; color:#3B6D11;">Оплачено</div></div>';
-  }
+  const debtBlock = p.balance > 0
+    ? '<div style="background:#fcebeb; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#A32D2D; margin-bottom:4px;">Долг к доплате</div><div style="font-size:15px; font-weight:600; color:#A32D2D;">' + fmt(p.balance) + '</div></div>'
+    : '<div style="background:#eaf3de; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#3B6D11; margin-bottom:4px;">Долг</div><div style="font-size:15px; font-weight:600; color:#3B6D11;">Оплачено</div></div>';
 
   return `<div style="background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; margin-bottom:12px;">
   <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
@@ -241,17 +228,16 @@ function formatPrepayCardHTML(p, num) {
 </div>`;
 }
 
-// ── HTML файл списка предоплат ─────────────────────────────────────────
 function generatePrepaysHTML(list, type) {
   const title = type === 'open' ? 'Открытые предоплаты' : 'Закрытые предоплаты';
   const totalDebt = list.filter(p => !p.status.includes('закрыт')).reduce((s,p) => s + (p.balance||0), 0);
   const totalAmount = list.reduce((s,p) => s + (p.amount||0), 0);
   const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
-
   return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
-<style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f0; padding:20px 16px; } .container { max-width:680px; margin:0 auto; } .header { margin-bottom:20px; } .brand { font-size:20px; font-weight:600; letter-spacing:0.04em; } .brand-sub { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; } .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:20px; } .stat { background:#efefea; border-radius:8px; padding:12px; } .stat-label { font-size:11px; color:#888; margin-bottom:4px; } .stat-value { font-size:18px; font-weight:600; color:#1a1a1a; }</style></head>
+<style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f0; padding:20px 16px; } .container { max-width:680px; margin:0 auto; } .brand { font-size:20px; font-weight:600; letter-spacing:0.04em; } .brand-sub { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; margin-bottom:16px; } .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:20px; } .stat { background:#efefea; border-radius:8px; padding:12px; } .stat-label { font-size:11px; color:#888; margin-bottom:4px; } .stat-value { font-size:18px; font-weight:600; color:#1a1a1a; }</style></head>
 <body><div class="container">
-  <div class="header"><div class="brand">NANÉ PARIS</div><div class="brand-sub">${title} · ${list.length} шт · ${getNow()}</div></div>
+  <div class="brand">NANÉ PARIS</div>
+  <div class="brand-sub">${title} · ${list.length} шт · ${getNow()}</div>
   <div class="stats">
     <div class="stat"><div class="stat-label">Всего позиций</div><div class="stat-value">${list.length}</div></div>
     <div class="stat"><div class="stat-label">Сумма авансов</div><div class="stat-value">${fmt(totalAmount)}</div></div>
@@ -393,14 +379,10 @@ function getSellerPrompt(sellerName, shopName) {
     'ВАЖНО: Никакого Markdown. Только обычный текст и эмодзи.\n\n' +
     'ЧЕК-ЛИСТ ОТКРЫТИЯ СМЕНЫ (начало 11:00)\n' +
     'Когда продавец пишет "Начала смену" — проводи строго по шагам:\n\n' +
-    'ШАГ 0 — ВНЕШНИЙ ВИД:\n' +
-    '1. "Макияж и укладка готовы?"\n' +
-    '2. "Одежда по стандарту магазина?"\n' +
-    '3. "Готова к работе с клиентами?"\n' +
+    'ШАГ 0 — ВНЕШНИЙ ВИД:\n1. "Макияж и укладка готовы?"\n2. "Одежда по стандарту магазина?"\n3. "Готова к работе с клиентами?"\n' +
     'Только после трех "да" — переходи к следующему шагу.\n' +
     'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n\n' +
-    'ШАГ 1 — ГЕОЛОКАЦИЯ ОТКРЫТИЯ:\n' +
-    '"Пришли геолокацию через скрепку — подтверди что ты в магазине."\n' +
+    'ШАГ 1 — ГЕОЛОКАЦИЯ ОТКРЫТИЯ:\n"Пришли геолокацию через скрепку — подтверди что ты в магазине."\n' +
     'Когда получишь "Геолокация принята (открытие)" — продолжай.\n\n' +
     'ШАГ 2 — КАССА: "Касса. Сколько наличных на начало смены?"\n\n' +
     'ШАГ 3 — ТЕРМИНАЛЫ: "Терминалы. Пришли фото экрана Kaspi и Halyk."\n' +
@@ -422,9 +404,7 @@ function getSellerPrompt(sellerName, shopName) {
     'ШАГ 2 — СВЕРКА: фото Kaspi терминал, фото Halyk терминал, наличные вручную, личная карта из ROSTA\n' +
     'ШАГ 3 — ИНКАССАЦИЯ: "Была инкассация? Сколько забрал Ермек?" => INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}\n' +
     'ШАГ 4 — ПРЕДОПЛАТЫ: были выдачи?\n' +
-    'ШАГ 5 — ЗАЛ: убрано?\n' +
-    'ШАГ 6 — ГОСТЕВАЯ ЗОНА: посуда вымыта?\n' +
-    'ШАГ 7 — ОБОРУДОВАНИЕ: ROSTA закрыта? Телефон на зарядке?\n' +
+    'ШАГ 5 — ЗАЛ: убрано?\nШАГ 6 — ГОСТЕВАЯ ЗОНА: посуда вымыта?\nШАГ 7 — ОБОРУДОВАНИЕ: ROSTA закрыта? Телефон на зарядке?\n' +
     'ШАГ 8 — ГЕОЛОКАЦИЯ ЗАКРЫТИЯ: отправь геолокацию через скрепку.\n' +
     'Когда получишь "Геолокация принята (закрытие)" => SHIFT_CLOSE с данными.\n\n' +
     'КАНАЛЫ В SHIFT_CLOSE:\n' +
@@ -442,8 +422,7 @@ function getOwnerPrompt(ownerName, data) {
   const now = getTime();
   const totalPrepay = data.openPrepays.reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
   return 'Ты — Томи, AI-партнер NANE PARIS. Ты — женщина, говоришь о себе в женском роде.\n' +
-    'Сегодня: ' + today + ', время: ' + now + '\n' +
-    'Владелец: ' + ownerName + '\n\n' +
+    'Сегодня: ' + today + ', время: ' + now + '\nВладелец: ' + ownerName + '\n\n' +
     'ХАРАКТЕР: Партнер на равных. Прямо, честно, с цифрами.\n' +
     'ВАЖНО: Никакого Markdown. Только обычный текст и эмодзи.\n\n' +
     'ДАННЫЕ:\nПоследние смены: ' + JSON.stringify(data.recentShifts) + '\n' +
@@ -504,21 +483,37 @@ async function handleSystemCommands(reply, userId, sellerName) {
     if (list.length === 0) {
       await sendTelegram(userId, type === 'open' ? '📋 Открытых предоплат нет.' : '📋 Закрытых предоплат нет.');
     } else {
-      // Краткий список в чат
       const totalDebt = list.filter(p => !p.status.includes('закрыт')).reduce((s,p) => s + (p.balance||0), 0);
       const header = (type === 'open' ? '📋 Открытые предоплаты: ' + list.length + ' шт' : '📋 Закрытые предоплаты: ' + list.length + ' шт') +
         (totalDebt > 0 ? '\n💰 Общий долг: ' + Number(totalDebt).toLocaleString() + ' тг' : '') + '\n\n';
 
-      for (let i = 0; i < list.length; i += 20) {
+      // Старый формат карточек в чат
+      for (let i = 0; i < list.length; i += 8) {
         let msg = i === 0 ? header : '📋 ...продолжение:\n\n';
-        list.slice(i, i + 20).forEach((p, idx) => { msg += formatPrepayShort(p, i + idx + 1) + '\n'; });
+        list.slice(i, i + 8).forEach((p, num) => {
+          const isClosed = p.status.includes('закрыт');
+          const icon = isClosed ? '✅' : '🟡';
+          const total = (p.amount||0) + (p.balance||0);
+          msg += icon + ' №' + (i + num + 1) + '\n';
+          msg += '👤 ' + p.client + '\n';
+          if (p.id) msg += '🆔 ' + p.id + ' · ' + p.date + '\n';
+          if (p.phone) msg += '📞 ' + p.phone + '\n';
+          if (p.items && p.items.length) msg += '👗 ' + p.items.join(', ') + '\n';
+          msg += '\n';
+          if (total > 0) msg += '💵 Цена товара:    ' + Number(total).toLocaleString() + ' тг\n';
+          msg += '💰 Аванс:          ' + Number(p.amount).toLocaleString() + ' тг\n';
+          if (p.balance > 0) msg += '⚠️ Долг к доплате: ' + Number(p.balance).toLocaleString() + ' тг\n';
+          else msg += '✅ Оплачено полностью\n';
+          msg += '💳 ' + p.channel + '\n';
+          msg += '─────────────────────\n';
+        });
         await sendTelegram(userId, msg);
       }
 
-      // HTML файл с красивыми карточками
+      // HTML файл дополнительно
       const htmlContent = generatePrepaysHTML(list, type);
       const filename = (type === 'open' ? 'prepays_open' : 'prepays_closed') + '_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
-      await sendTelegramDocument(userId, filename, htmlContent, '📋 Полные карточки — открой файл в браузере');
+      await sendTelegramDocument(userId, filename, htmlContent, '📋 Красивые карточки — открой в браузере');
     }
     if (!cleanReply) return '';
   }
@@ -800,7 +795,7 @@ app.post('/webhook', async (req, res) => {
   } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.6' }));
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.7' }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
