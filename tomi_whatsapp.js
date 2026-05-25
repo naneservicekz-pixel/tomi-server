@@ -752,16 +752,32 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'После "да" — выдай SHIFT_OPEN с суммой кассы из шага 2:\n' +
     '=> SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":0,"time":"' + now + '"}\n\n' +
 
-    'ЗАКРЫТИЕ СМЕНЫ:\n' +
-    'ШАГ 1 — Z-ОТЧЕТ: попроси фото экрана ROSTA\n' +
-    'ШАГ 2 — ТЕРМИНАЛЫ: фото Kaspi, потом фото Halyk\n' +
-    'ШАГ 3 — НАЛИЧНЫЕ: сколько в кассе на конец?\n' +
-    'ШАГ 4 — ЛИЧНАЯ КАРТА: сумма из ROSTA (не с терминала)\n' +
-    'ШАГ 5 — ИНКАССАЦИЯ: была ли? => INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}\n' +
-    'ШАГ 6 — ЗАЛ: товар убран, ценники на месте?\n' +
-    'ШАГ 7 — ГОСТЕВАЯ: посуда вымыта, стол чистый?\n' +
-    'ШАГ 8 — ГЕОЛОКАЦИЯ: "Пришли геолокацию для закрытия."\n' +
-    'После "Геолокация принята (закрытие)" => SHIFT_CLOSE\n\n' +
+    'ЗАКРЫТИЕ СМЕНЫ — ЖЁСТКИЙ КОНТРОЛЬ:\n' +
+    'ШАГ 1 — Z-ОТЧЕТ: попроси фото экрана ROSTA. Считай все суммы по каналам.\n' +
+    'ШАГ 2 — KASPI ТЕРМИНАЛ: попроси фото. Считай брутто и возвраты.\n' +
+    '   Сравни: ROSTA Kaspi (QR + Онлайн) vs ФАКТ терминал.\n' +
+    '   Если разница >500 тг — СТОП. Спроси: "По Kaspi расхождение X тг. Причина?"\n' +
+    '   Не переходи дальше пока не получишь объяснение.\n' +
+    'ШАГ 3 — HALYK ТЕРМИНАЛ: попроси фото. Считай брутто и возвраты.\n' +
+    '   Сравни: ROSTA Halyk (QR + Онлайн) vs ФАКТ терминал.\n' +
+    '   Если разница >500 тг — СТОП. Спроси: "По Halyk расхождение X тг. Причина?"\n' +
+    '   Не переходи дальше пока не получишь объяснение.\n' +
+    'ШАГ 4 — НАЛИЧНЫЕ: спроси сколько в кассе на конец.\n' +
+    '   Считай: продажи нал = касса конец - касса начало + расходы + инкассация.\n' +
+    '   Сравни с ROSTA наличными.\n' +
+    '   Если разница >500 тг — СТОП. Спроси: "По наличным расхождение X тг. Причина?"\n' +
+    '   Варианты: выдача сдачи? расходы из кассы? забрали раньше? ошибка счёта?\n' +
+    '   Не переходи дальше пока не получишь объяснение.\n' +
+    'ШАГ 5 — ЛИЧНАЯ КАРТА: сумма из ROSTA (не с терминала).\n' +
+    'ШАГ 6 — ИНКАССАЦИЯ: была ли? => INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}\n' +
+    'ШАГ 7 — ЗАЛ: товар убран, ценники на месте?\n' +
+    'ШАГ 8 — ГОСТЕВАЯ: посуда вымыта, стол чистый?\n' +
+    'ШАГ 9 — ГЕОЛОКАЦИЯ: "Пришли геолокацию для закрытия."\n' +
+    'После "Геолокация принята (закрытие)" — передай все данные включая объяснения расхождений в notes:\n' +
+    '=> SHIFT_CLOSE:{...,"notes":"объяснение расхождений если были"}\n\n' +
+    'КРИТИЧНО: система сама заблокирует закрытие если в notes нет объяснения при расхождении >500 тг.\n' +
+    'Ты как AI должна САМА провести анализ — не просто принять цифры, а проверить логику.\n' +
+    'Если продавец говорит "не знаю" — это не объяснение. Дожимай до конкретной причины.\n\n' +
     'rKaspi=QR Kaspi ROSTA, rOnline=Онлайн Kaspi ROSTA, rHalyk=QR Halyk ROSTA, rHalykOnline=Онлайн Halyk ROSTA\n' +
     'rCash=Наличные, rPersonal=Личная карта ROSTA, rBonus=Бонусы\n' +
     'tKaspi=Kaspi ФАКТ, tKaspiRet=возврат Kaspi, tHalyk=Halyk ФАКТ, tHalykRet=возврат Halyk\n' +
@@ -967,14 +983,51 @@ async function handleSystemCommands(reply, userId, sellerName) {
         const factTotal = kaspiNet + halykNet + cashSales + (s.rPersonal||0) + (s.rBonus||0);
         const diff = factTotal - rostaTotal;
         const totalRet = (s.rRetKaspi||0)+(s.rRetHalyk||0)+(s.rRetCash||0);
+
+        // ── Жёсткая проверка по каждому каналу ──────────────────────
         const channelDiffs = [];
         const kaspiDiff = kaspiNet - ((s.rKaspi||0)+(s.rOnline||0));
-        if (Math.abs(kaspiDiff) > 500) channelDiffs.push({ channel: 'Kaspi', diff: kaspiDiff });
         const halykDiff = halykNet - ((s.rHalyk||0)+(s.rHalykOnline||0));
-        if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff });
         const cashDiff = cashSales - (s.rCash||0);
-        if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff });
 
+        if (Math.abs(kaspiDiff) > 500) channelDiffs.push({ channel: 'Kaspi', diff: kaspiDiff, rosta: (s.rKaspi||0)+(s.rOnline||0), fact: kaspiNet });
+        if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff, rosta: (s.rHalyk||0)+(s.rHalykOnline||0), fact: halykNet });
+        if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff, rosta: s.rCash||0, fact: cashSales });
+
+        // Если есть необъяснённые расхождения — БЛОКИРУЕМ закрытие
+        const hasNotes = s.notes && s.notes.trim().length > 10;
+        if (channelDiffs.length > 0 && !hasNotes) {
+          // Формируем детальное сообщение с требованием объяснения
+          let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — есть необъяснённые расхождения!\n\n';
+          channelDiffs.forEach(cd => {
+            const sign = cd.diff > 0 ? '+' : '';
+            const direction = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
+            blockMsg += '❌ ' + cd.channel + ': ' + direction + ' ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
+            blockMsg += '   ROSTA: ' + Number(cd.rosta).toLocaleString() + ' тг\n';
+            blockMsg += '   ФАКТ: ' + Number(cd.fact).toLocaleString() + ' тг\n\n';
+          });
+          blockMsg += 'Объясни причину каждого расхождения:\n';
+          blockMsg += '• Наличные — была выдача? расходы? сдача? забрали раньше?\n';
+          blockMsg += '• Kaspi/Halyk — отмена операции? задержка зачисления?\n\n';
+          blockMsg += 'Пока не объяснишь — смену не закрою. Пиши объяснение.';
+
+          await sendTelegram(userId, blockMsg);
+
+          // Алерт владельцу о расхождении
+          let ownerAlert = '⚠️ РАСХОЖДЕНИЕ при закрытии смены!\n👤 ' + (shift.seller || sellerName) + ' · ' + today + '\n\n';
+          channelDiffs.forEach(cd => {
+            const sign = cd.diff > 0 ? '+' : '';
+            ownerAlert += cd.channel + ': ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
+          });
+          ownerAlert += '\nОбщее расхождение: ' + (diff > 0 ? '+' : '') + Number(diff).toLocaleString() + ' тг\nЖду объяснения от продавца.';
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, ownerAlert);
+
+          // Не закрываем смену — выходим
+          cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+          return cleanReply || '';
+        }
+
+        // ── Всё ок или есть объяснение — закрываем ──────────────────
         const sellerFinal = shift.seller || sellerName;
 
         await appendSheet('Смены!A:Y', [
@@ -985,7 +1038,7 @@ async function handleSystemCommands(reply, userId, sellerName) {
           s.inkasso||0, s.cashPayouts||0, s.cashOpen||0, s.cashActual||0,
           s.tKaspi||0, s.tHalyk||0, s.rPersonal||0,
           rostaTotal, factTotal, diff,
-          diff===0 ? 'Корректно' : Math.abs(diff)<500 ? 'Незначительное' : 'Расхождение',
+          diff===0 ? 'Корректно' : Math.abs(diff)<500 ? 'Незначительное' : 'Расхождение (объяснено)',
           s.notes||'', getNow()
         ]);
 
