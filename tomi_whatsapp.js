@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
-// Версия 3.0 — Telegram + Supabase память
+// Версия 3.1 — Telegram + Supabase + геолокация
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -165,7 +165,7 @@ async function sendTelegram(chatId, text) {
     await new Promise((resolve, reject) => {
       const req = https.request({
         hostname: 'api.telegram.org',
-        path: `/bot${TELEGRAM_TOKEN}/sendMessage`,
+        path: '/bot' + TELEGRAM_TOKEN + '/sendMessage',
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
       }, res => {
@@ -277,7 +277,8 @@ function getSellerPrompt(sellerName, shopName) {
     'ШАГ 5 — ЗАЛ: убрано?\n' +
     'ШАГ 6 — ГОСТЕВАЯ ЗОНА: посуда вымыта?\n' +
     'ШАГ 7 — ОБОРУДОВАНИЕ: ROSTA закрыта? Телефон на зарядке?\n' +
-    'ШАГ 8 — ГЕОЛОКАЦИЯ: пришли геолокацию\n\n' +
+    'ШАГ 8 — ГЕОЛОКАЦИЯ: попроси продавца отправить геолокацию через скрепку в Telegram.\n' +
+    'Когда получишь сообщение "Геолокация получена" — смена закрыта.\n\n' +
     'После сверки => SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}\n\n' +
     'ЗАКОННЫЕ РАСХОЖДЕНИЯ:\n' +
     'Больше Z — получена предоплата\n' +
@@ -679,12 +680,21 @@ app.post('/webhook', async (req, res) => {
     const userId = message.chat.id;
     const messageText = message.text || message.caption || '';
     const photoFileId = message.photo ? message.photo[message.photo.length - 1].file_id : null;
+
+    // Обработка геолокации
+    if (message.location) {
+      const loc = message.location;
+      const geoText = 'Геолокация получена. Координаты: ' + loc.latitude + ', ' + loc.longitude + '. Продавец подтверждает нахождение в магазине.';
+      await handleMessage(userId, geoText, null);
+      return;
+    }
+
     if (!messageText && !photoFileId) return;
     await handleMessage(userId, messageText, photoFileId);
   } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.0' }));
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.1' }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
