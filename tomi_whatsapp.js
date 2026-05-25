@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
-// Версия 3.9 — HTML дашборд + запись в Учёт по дням
+// Версия 4.0 — исправлен дашборд: данные, ФОТ с разбивкой, светлый дизайн
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -181,86 +181,219 @@ async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
   } catch(e) { console.error('writeToUchetPoDnyam error:', e.message); return false; }
 }
 
-// ── Читаем дашборд и генерируем HTML ─────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════
+// ДАШБОРД — версия 4.0
+// Читает:
+//   Дашборд!A1:H25  — оборот (строки 19,20,22), план (строка 6)
+//   Итоги месяца!A1:H18 — ФОТ с разбивкой (строки 14,15,16)
+// ══════════════════════════════════════════════════════════════════════
 async function generateDashboardHTML() {
   try {
-    const dash = await readSheet('Дашборд!A1:H45', DASHBOARD_ID);
-    const settings = await readSheet('Настройки!A1:B35', DASHBOARD_ID);
+    // Читаем два листа параллельно
+    const [dash, itogi] = await Promise.all([
+      readSheet("'Дашборд'!A1:H25", DASHBOARD_ID),
+      readSheet("'Итоги месяца'!A1:H18", DASHBOARD_ID)
+    ]);
 
-    // Парсим данные дашборда
-    const getVal = (rows, rowIdx, colIdx) => {
-      try { return rows[rowIdx] && rows[rowIdx][colIdx] ? rows[rowIdx][colIdx] : ''; } catch(e) { return ''; }
+    // Вспомогательная функция — безопасно достать значение и распарсить число
+    const num = (rows, rowIdx, colIdx) => {
+      try {
+        const v = rows[rowIdx] && rows[rowIdx][colIdx] != null ? rows[rowIdx][colIdx] : '';
+        return parseFloat(String(v).replace(/[^0-9.,-]/g, '').replace(',', '.')) || 0;
+      } catch(e) { return 0; }
     };
 
-    const plan = parseFloat(String(getVal(dash, 5, 1)).replace(/[^0-9.]/g,'')) || 27000000;
-    const aselFact = parseFloat(String(getVal(dash, 18, 1)).replace(/[^0-9.]/g,'')) || 0;
-    const zarinaFact = parseFloat(String(getVal(dash, 18, 2)).replace(/[^0-9.]/g,'')) || 0;
-    const luizaFact = parseFloat(String(getVal(dash, 18, 3)).replace(/[^0-9.]/g,'')) || 0;
-    const totalFact = parseFloat(String(getVal(dash, 18, 4)).replace(/[^0-9.]/g,'')) || (aselFact + zarinaFact + luizaFact);
+    // ── Лист "Дашборд" ────────────────────────────────────────────
+    // Строка 6  (индекс 5)  — план магазина, колонка B (индекс 1)
+    // Строка 19 (индекс 18) — оборот факт: B=Асель, C=Зарина, D=Луиза, E=Итого
+    // Строка 14 (индекс 13) — личный план: B=Асель, C=Зарина, D=Луиза
+    // Строка 22 (индекс 21) — осталось до плана: B=Асель, C=Зарина, D=Луиза, E=Итого
 
-    const aselPlan = parseFloat(String(getVal(dash, 13, 1)).replace(/[^0-9.]/g,'')) || 0;
-    const zarinaPlan = parseFloat(String(getVal(dash, 13, 2)).replace(/[^0-9.]/g,'')) || 0;
-    const luizaPlan = parseFloat(String(getVal(dash, 13, 3)).replace(/[^0-9.]/g,'')) || 0;
+    const plan       = num(dash, 5, 1) || 27000000;
 
-    const aselPct = aselPlan > 0 ? Math.round(aselFact / aselPlan * 100) : 0;
-    const zarinaPct = zarinaPlan > 0 ? Math.round(zarinaFact / zarinaPlan * 100) : 0;
-    const luizaPct = luizaPlan > 0 ? Math.round(luizaFact / luizaPlan * 100) : 0;
-    const totalPct = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
-    const remains = plan - totalFact;
+    const aselFact   = num(dash, 18, 1);
+    const zarinaFact = num(dash, 18, 2);
+    const luizaFact  = num(dash, 18, 3);
+    const totalFact  = num(dash, 18, 4) || (aselFact + zarinaFact + luizaFact);
 
-    // ФОТ
-    const aselFot = parseFloat(String(getVal(dash, 28, 1)).replace(/[^0-9.]/g,'')) || 0;
-    const zarinaFot = parseFloat(String(getVal(dash, 28, 2)).replace(/[^0-9.]/g,'')) || 0;
-    const luizaFot = parseFloat(String(getVal(dash, 28, 3)).replace(/[^0-9.]/g,'')) || 0;
-    const totalFot = parseFloat(String(getVal(dash, 28, 4)).replace(/[^0-9.]/g,'')) || (aselFot + zarinaFot + luizaFot);
+    const aselPlan   = num(dash, 13, 1);
+    const zarinaPlan = num(dash, 13, 2);
+    const luizaPlan  = num(dash, 13, 3);
 
-    const fmt = n => Number(n||0).toLocaleString('ru-RU');
-    const pctColor = pct => pct >= 100 ? '#1D9E75' : pct >= 80 ? '#BA7517' : '#E24B4A';
-    const barColor = pct => pct >= 100 ? '#1D9E75' : pct >= 80 ? '#F5A623' : '#E24B4A';
-    const barW = pct => Math.min(pct, 100);
+    const aselLeft   = num(dash, 21, 1);
+    const zarinaLeft = num(dash, 21, 2);
+    const luizaLeft  = num(dash, 21, 3);
+    const totalLeft  = num(dash, 21, 4) || Math.max(0, plan - totalFact);
 
+    const aselPct    = aselPlan  > 0 ? Math.round(aselFact  / aselPlan  * 100) : 0;
+    const zarinaPct  = zarinaPlan > 0 ? Math.round(zarinaFact / zarinaPlan * 100) : 0;
+    const luizaPct   = luizaPlan  > 0 ? Math.round(luizaFact  / luizaPlan  * 100) : 0;
+    const totalPct   = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
+
+    // ── Лист "Итоги месяца" ───────────────────────────────────────
+    // Строка 14 (индекс 13) — Асель:  B=Выход, C=%прод, D=БонусХорДень, E=Рекорд, F=БонусПлан, G=KPI, H=ИТОГО
+    // Строка 15 (индекс 14) — Зарина
+    // Строка 16 (индекс 15) — Луиза
+    // Строка 18 (индекс 17) — ИТОГО ФОТ
+
+    const aselFix     = num(itogi, 13, 1);
+    const aselProcent = num(itogi, 13, 2);
+    const aselBonus   = num(itogi, 13, 3);
+    const aselRekord  = num(itogi, 13, 4);
+    const aselPlanB   = num(itogi, 13, 5);
+    const aselTotal   = num(itogi, 13, 7);
+
+    const zarinaFix     = num(itogi, 14, 1);
+    const zarinaProcent = num(itogi, 14, 2);
+    const zarinaBonus   = num(itogi, 14, 3);
+    const zarinaRekord  = num(itogi, 14, 4);
+    const zarinaPlanB   = num(itogi, 14, 5);
+    const zarinaTotal   = num(itogi, 14, 7);
+
+    const luizaFix     = num(itogi, 15, 1);
+    const luizaProcent = num(itogi, 15, 2);
+    const luizaBonus   = num(itogi, 15, 3);
+    const luizaRekord  = num(itogi, 15, 4);
+    const luizaPlanB   = num(itogi, 15, 5);
+    const luizaTotal   = num(itogi, 15, 7);
+
+    const totalFot = num(itogi, 17, 7) || (aselTotal + zarinaTotal + luizaTotal);
+
+    // ── Форматирование ────────────────────────────────────────────
+    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
+    const pctColor = p => p >= 100 ? '#1a8a5a' : p >= 80 ? '#b06a10' : '#c0392b';
+    const barColor = p => p >= 100 ? '#27ae60' : p >= 80 ? '#e67e22' : '#e74c3c';
+    const barW = p => Math.min(p, 100);
     const now = getNow();
 
-    return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANÉ PARIS — Дашборд</title>
+    const sellers = [
+      { name: 'Асель',  emoji: '💙', fact: aselFact,   plan: aselPlan,   pct: aselPct,   left: aselLeft,
+        fix: aselFix,   procent: aselProcent, bonus: aselBonus, rekord: aselRekord, planB: aselPlanB, total: aselTotal },
+      { name: 'Зарина', emoji: '💙', fact: zarinaFact, plan: zarinaPlan, pct: zarinaPct, left: zarinaLeft,
+        fix: zarinaFix, procent: zarinaProcent, bonus: zarinaBonus, rekord: zarinaRekord, planB: zarinaPlanB, total: zarinaTotal },
+      { name: 'Луиза',  emoji: '💚', fact: luizaFact,  plan: luizaPlan,  pct: luizaPct,  left: luizaLeft,
+        fix: luizaFix,  procent: luizaProcent, bonus: luizaBonus, rekord: luizaRekord, planB: luizaPlanB, total: luizaTotal },
+    ];
+
+    return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NANÉ PARIS — Дашборд</title>
 <style>
 * { box-sizing:border-box; margin:0; padding:0; }
-body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#0f0f14; color:#e8e8e8; padding:20px 16px; }
-.container { max-width:680px; margin:0 auto; }
-.header { margin-bottom:24px; }
-.brand { font-size:22px; font-weight:700; letter-spacing:0.06em; color:#fff; }
-.brand-sub { font-size:11px; color:#666; text-transform:uppercase; letter-spacing:0.1em; margin-top:3px; }
-.updated { font-size:11px; color:#444; margin-top:4px; }
-.section-title { font-size:11px; color:#555; text-transform:uppercase; letter-spacing:0.1em; margin-bottom:10px; margin-top:20px; }
-.grid2 { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:10px; }
-.grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:10px; }
-.card { background:#1a1a22; border:1px solid #2a2a35; border-radius:12px; padding:14px; }
-.card-label { font-size:11px; color:#555; margin-bottom:6px; }
-.card-value { font-size:22px; font-weight:700; color:#fff; }
-.card-sub { font-size:12px; color:#555; margin-top:4px; }
-.seller-card { background:#1a1a22; border:1px solid #2a2a35; border-radius:12px; padding:14px; margin-bottom:10px; }
-.seller-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
-.seller-name { font-size:14px; font-weight:600; color:#fff; }
-.seller-pct { font-size:18px; font-weight:700; }
-.seller-fact { font-size:13px; color:#888; margin-bottom:8px; }
-.bar-bg { background:#2a2a35; border-radius:20px; height:6px; overflow:hidden; }
-.bar-fill { height:6px; border-radius:20px; transition:width 0.3s; }
-.seller-details { display:grid; grid-template-columns:repeat(2,1fr); gap:6px; margin-top:10px; }
-.detail { background:#111118; border-radius:8px; padding:8px 10px; }
-.detail-label { font-size:10px; color:#444; margin-bottom:2px; }
-.detail-value { font-size:13px; font-weight:500; color:#ccc; }
-.fot-card { background:#1a1a22; border:1px solid #2a2a35; border-radius:12px; padding:14px; }
-.fot-row { display:flex; justify-content:space-between; font-size:13px; padding:6px 0; border-bottom:1px solid #2a2a35; }
-.fot-row:last-child { border-bottom:none; font-weight:600; font-size:14px; color:#fff; }
-.fot-label { color:#666; }
-.fot-value { color:#ccc; }
-</style></head>
-<body><div class="container">
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #f0ede8;
+  color: #1a1a1a;
+  padding: 20px 16px;
+}
+.container { max-width: 680px; margin: 0 auto; }
+
+/* ШАПКА */
+.header { margin-bottom: 22px; }
+.brand { font-size: 21px; font-weight: 700; letter-spacing: 0.07em; color: #1a1a1a; }
+.brand-sub { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.12em; margin-top: 2px; }
+.updated { font-size: 11px; color: #aaa; margin-top: 3px; }
+
+/* СЕКЦИЯ */
+.section-title {
+  font-size: 10px; color: #999; text-transform: uppercase;
+  letter-spacing: 0.12em; margin: 18px 0 8px;
+}
+
+/* КАРТОЧКИ */
+.grid2 { display: grid; grid-template-columns: repeat(2,1fr); gap: 10px; margin-bottom: 10px; }
+.card {
+  background: #fff;
+  border: 1px solid #e8e4de;
+  border-radius: 12px;
+  padding: 14px;
+}
+.card-label { font-size: 11px; color: #999; margin-bottom: 5px; }
+.card-value { font-size: 22px; font-weight: 700; color: #1a1a1a; }
+.card-sub { font-size: 12px; color: #aaa; margin-top: 4px; }
+
+/* ПРОГРЕСС-БАР */
+.bar-wrap { background: #ebe8e2; border-radius: 20px; height: 7px; overflow: hidden; margin: 8px 0 4px; }
+.bar-fill { height: 7px; border-radius: 20px; }
+.bar-labels { display: flex; justify-content: space-between; font-size: 10px; color: #bbb; }
+
+/* КАРТОЧКА ПРОДАВЦА */
+.seller-card {
+  background: #fff;
+  border: 1px solid #e8e4de;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 10px;
+}
+.seller-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.seller-name { font-size: 14px; font-weight: 600; }
+.seller-pct { font-size: 19px; font-weight: 700; }
+.seller-fact { font-size: 12px; color: #999; margin-bottom: 8px; }
+.seller-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.meta-box {
+  background: #f7f4ef;
+  border-radius: 8px;
+  padding: 9px 11px;
+}
+.meta-label { font-size: 10px; color: #aaa; margin-bottom: 3px; }
+.meta-value { font-size: 13px; font-weight: 500; color: #1a1a1a; }
+
+/* ЗАРПЛАТА */
+.fot-card {
+  background: #fff;
+  border: 1px solid #e8e4de;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.fot-seller-block { border-bottom: 1px solid #f0ece6; padding: 12px 14px; }
+.fot-seller-block:last-child { border-bottom: none; }
+.fot-seller-name { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.fot-row {
+  display: flex; justify-content: space-between;
+  font-size: 12px; padding: 3px 0;
+  border-bottom: 1px solid #f7f4ef;
+}
+.fot-row:last-child { border-bottom: none; }
+.fot-row-label { color: #aaa; }
+.fot-row-value { color: #555; font-weight: 500; }
+.fot-total-row {
+  display: flex; justify-content: space-between;
+  font-size: 13px; font-weight: 700;
+  padding: 6px 0 0;
+  margin-top: 4px;
+  border-top: 1px solid #ebe8e2;
+}
+.fot-total-value { color: #1a8a5a; }
+
+/* ИТОГО ФОТ */
+.fot-summary {
+  background: #1a1a1a;
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 4px;
+}
+.fot-summary-label { font-size: 13px; color: #888; }
+.fot-summary-value { font-size: 20px; font-weight: 700; color: #fff; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ШАПКА -->
   <div class="header">
     <div class="brand">NANÉ PARIS</div>
     <div class="brand-sub">Дашборд продаж — Май 2026</div>
     <div class="updated">Обновлено: ${now}</div>
   </div>
 
+  <!-- МАГАЗИН ИТОГО -->
   <div class="section-title">Магазин итого</div>
   <div class="grid2">
     <div class="card">
@@ -271,48 +404,70 @@ body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; backg
     <div class="card">
       <div class="card-label">Выполнение плана</div>
       <div class="card-value" style="color:${pctColor(totalPct)}">${totalPct}%</div>
-      <div class="card-sub">осталось ${fmt(remains > 0 ? remains : 0)} ₸</div>
+      <div class="card-sub">осталось ${fmt(totalLeft > 0 ? totalLeft : 0)} ₸</div>
     </div>
   </div>
-  <div class="card" style="margin-bottom:10px;">
+  <div class="card" style="margin-bottom:4px;">
     <div class="card-label">Прогресс к плану</div>
-    <div class="bar-bg" style="margin-top:8px;">
+    <div class="bar-wrap">
       <div class="bar-fill" style="width:${barW(totalPct)}%; background:${barColor(totalPct)};"></div>
     </div>
-    <div style="display:flex; justify-content:space-between; margin-top:6px; font-size:11px; color:#444;">
+    <div class="bar-labels">
       <span>0</span><span>${fmt(plan/2)} ₸</span><span>${fmt(plan)} ₸</span>
     </div>
   </div>
 
+  <!-- ПРОДАВЦЫ -->
   <div class="section-title">Продавцы</div>
-
-  ${[
-    {name:'Асель', fact:aselFact, plan:aselPlan, pct:aselPct, fot:aselFot, emoji:'💙'},
-    {name:'Зарина', fact:zarinaFact, plan:zarinaPlan, pct:zarinaPct, fot:zarinaFot, emoji:'💙'},
-    {name:'Луиза', fact:luizaFact, plan:luizaPlan, pct:luizaPct, fot:luizaFot, emoji:'💚'}
-  ].map(s => `
+  ${sellers.map(s => `
   <div class="seller-card">
     <div class="seller-top">
       <div class="seller-name">${s.emoji} ${s.name}</div>
       <div class="seller-pct" style="color:${pctColor(s.pct)}">${s.pct}%</div>
     </div>
     <div class="seller-fact">${fmt(s.fact)} ₸ из ${fmt(s.plan)} ₸</div>
-    <div class="bar-bg"><div class="bar-fill" style="width:${barW(s.pct)}%; background:${barColor(s.pct)};"></div></div>
-    <div class="seller-details">
-      <div class="detail"><div class="detail-label">Осталось</div><div class="detail-value">${fmt(Math.max(0,s.plan-s.fact))} ₸</div></div>
-      <div class="detail"><div class="detail-label">ФОТ к выплате</div><div class="detail-value">${fmt(s.fot)} ₸</div></div>
+    <div class="bar-wrap">
+      <div class="bar-fill" style="width:${barW(s.pct)}%; background:${barColor(s.pct)};"></div>
+    </div>
+    <div class="seller-meta">
+      <div class="meta-box">
+        <div class="meta-label">Осталось до плана</div>
+        <div class="meta-value">${fmt(Math.max(0, s.left || (s.plan - s.fact)))} ₸</div>
+      </div>
+      <div class="meta-box">
+        <div class="meta-label">К выплате</div>
+        <div class="meta-value" style="color:#1a8a5a">${fmt(s.total)} ₸</div>
+      </div>
     </div>
   </div>`).join('')}
 
+  <!-- ЗАРПЛАТА -->
   <div class="section-title">Зарплата к выплате</div>
   <div class="fot-card">
-    <div class="fot-row"><span class="fot-label">💙 Асель</span><span class="fot-value">${fmt(aselFot)} ₸</span></div>
-    <div class="fot-row"><span class="fot-label">💙 Зарина</span><span class="fot-value">${fmt(zarinaFot)} ₸</span></div>
-    <div class="fot-row"><span class="fot-label">💚 Луиза</span><span class="fot-value">${fmt(luizaFot)} ₸</span></div>
-    <div class="fot-row"><span class="fot-label">Итого ФОТ</span><span class="fot-value">${fmt(totalFot)} ₸</span></div>
+    ${sellers.map(s => `
+    <div class="fot-seller-block">
+      <div class="fot-seller-name">${s.emoji} ${s.name}</div>
+      <div class="fot-row"><span class="fot-row-label">Выход (фикс)</span><span class="fot-row-value">${fmt(s.fix)} ₸</span></div>
+      <div class="fot-row"><span class="fot-row-label">% от продаж</span><span class="fot-row-value">${fmt(s.procent)} ₸</span></div>
+      ${s.bonus > 0 ? `<div class="fot-row"><span class="fot-row-label">Бонус хор. день</span><span class="fot-row-value">${fmt(s.bonus)} ₸</span></div>` : ''}
+      ${s.rekord > 0 ? `<div class="fot-row"><span class="fot-row-label">Рекорд ≥2 млн</span><span class="fot-row-value">${fmt(s.rekord)} ₸</span></div>` : ''}
+      ${s.planB > 0 ? `<div class="fot-row"><span class="fot-row-label">Бонус план мес.</span><span class="fot-row-value">${fmt(s.planB)} ₸</span></div>` : ''}
+      <div class="fot-total-row">
+        <span>ИТОГО</span>
+        <span class="fot-total-value">${fmt(s.total)} ₸</span>
+      </div>
+    </div>`).join('')}
   </div>
 
-</div></body></html>`;
+  <div class="fot-summary">
+    <span class="fot-summary-label">Итого ФОТ</span>
+    <span class="fot-summary-value">${fmt(totalFot)} ₸</span>
+  </div>
+
+</div>
+</body>
+</html>`;
+
   } catch(e) {
     console.error('generateDashboardHTML error:', e.message);
     return null;
@@ -633,7 +788,6 @@ function detectPhotoType(conversation) {
 async function handleSystemCommands(reply, userId, sellerName) {
   let cleanReply = reply;
 
-  // ── Дашборд HTML ──────────────────────────────────────────────────
   if (reply.includes('DASHBOARD_HTML')) {
     cleanReply = reply.replace(/DASHBOARD_HTML/g, '').trim();
     await sendTelegram(userId, '📊 Читаю дашборд...');
@@ -780,7 +934,6 @@ async function handleSystemCommands(reply, userId, sellerName) {
           s.notes||'', getNow()
         ]);
 
-        // Записываем в дашборд "Учёт по дням"
         await writeToUchetPoDnyam(today, rostaTotal, sellerFinal, '');
 
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
@@ -970,7 +1123,7 @@ app.post('/webhook', async (req, res) => {
   } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '3.9' }));
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '4.0' }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
