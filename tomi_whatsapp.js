@@ -1439,10 +1439,13 @@ app.post('/webhook', async (req, res) => {
 
         // Проверяем — есть ли уже открытая смена СЕГОДНЯ у этого продавца
         let existingShift = openShifts[String(userId)];
+        console.log('REOPEN CHECK: userId=', userId, 'openShifts key=', String(userId), 'inMemory=', !!existingShift);
         if (!existingShift) {
           const dbShift = await loadOpenShift(userId);
+          console.log('REOPEN CHECK: dbShift=', JSON.stringify(dbShift));
           if (dbShift) existingShift = dbShift;
         }
+        console.log('REOPEN CHECK: existingShift=', JSON.stringify(existingShift));
 
         if (existingShift) {
           const sellerNameLocal = ALLOWED_MAP[String(userId)] || 'Продавец';
