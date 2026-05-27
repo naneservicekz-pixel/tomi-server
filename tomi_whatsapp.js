@@ -1399,11 +1399,93 @@ app.post('/webhook', async (req, res) => {
 
     if (messageText) {
       const lower = messageText.toLowerCase();
+
+      // ── Владелец отвечает ДА/НЕТ на запрос повторного открытия ──
+      if (OWNER_IDS.includes(String(userId))) {
+        for (const [sellerUserId, approval] of Object.entries(pendingReopenApprovals)) {
+          if (approval.waitingForOwner) {
+            if (lower === 'да' || lower === 'yes') {
+              approval.waitingForOwner = false;
+              // Очищаем смену и историю продавца
+              delete openShifts[sellerUserId];
+              await deleteOpenShift(sellerUserId);
+              delete conversations[sellerUserId];
+              await supabase.from('conversations').delete().eq('phone', String(sellerUserId));
+              clearChecklistTimer(sellerUserId);
+              delete pendingReopenApprovals[sellerUserId];
+              await sendTelegram(sellerUserId, '✅ Руководитель разрешил повторное открытие смены.\nНапиши "Начала смену" чтобы начать.');
+              await sendTelegram(userId, '✅ Разрешение выдано. Смена и история ' + approval.sellerName + ' очищены.');
+              return;
+            } else if (lower === 'нет' || lower === 'no') {
+              approval.waitingForOwner = false;
+              delete pendingReopenApprovals[sellerUserId];
+              await sendTelegram(sellerUserId, '❌ Руководитель не разрешил повторное открытие смены.\nЕсли есть вопросы — свяжись с руководителем.');
+              await sendTelegram(userId, '❌ Отказ отправлен продавцу.');
+              return;
+            }
+          }
+        }
+      }
+
       if (lower.includes('начала смену') || lower.includes('открываю смену') || lower.includes('начинаю смену')) {
+
+        // Проверяем — есть ли уже открытая смена СЕГОДНЯ у этого продавца
+        let existingShift = openShifts[String(userId)];
+        if (!existingShift) {
+          const dbShift = await loadOpenShift(userId);
+          if (dbShift) existingShift = dbShift;
+        }
+
+        if (existingShift && existingShift.start_time) {
+          const shiftDate = new Date(existingShift.start_time);
+          const todayStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+          const shiftDateStr = shiftDate.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+          const sellerNameLocal = ALLOWED_MAP[String(userId)] || 'Продавец';
+
+          if (shiftDateStr === todayStr) {
+            // Смена уже открыта сегодня — запрашиваем согласование владельца
+            pendingReopenApprovals[String(userId)] = {
+              sellerName: sellerNameLocal,
+              openedAt: existingShift.time || shiftDateStr,
+              waitingForOwner: true,
+              timestamp: Date.now()
+            };
+
+            // Продавцу
+            await sendTelegram(userId, '⚠️ Смена уже открыта сегодня в ' + (existingShift.time || 'неизвестно') + '.\nПовторное открытие требует разрешения руководителя.\nОжидай — я уже отправила запрос.');
+
+            // Владельцу
+            for (const ownerId of OWNER_IDS) {
+              await sendTelegram(ownerId,
+                '🔐 ЗАПРОС ПОВТОРНОГО ОТКРЫТИЯ СМЕНЫ\n\n' +
+                '👤 ' + sellerNameLocal + '\n' +
+                '🕐 Смена открыта сегодня в ' + (existingShift.time || 'неизвестно') + '\n\n' +
+                'Продавец запрашивает повторное открытие.\n\n' +
+                'Ответь:\n✅ ДА — разрешить (смена и история будут сброшены)\n❌ НЕТ — отказать\n\n' +
+                '⏰ Если не ответишь в течение 10 минут — смена не откроется автоматически.'
+              );
+            }
+
+            // Таймаут 10 минут — если владелец не ответил
+            setTimeout(async () => {
+              if (pendingReopenApprovals[String(userId)] && pendingReopenApprovals[String(userId)].waitingForOwner) {
+                delete pendingReopenApprovals[String(userId)];
+                await sendTelegram(userId, '⏰ Руководитель не ответил в течение 10 минут.\nПовторное открытие отклонено. Свяжись с руководителем напрямую.');
+                for (const ownerId of OWNER_IDS) {
+                  await sendTelegram(ownerId, '⏰ Запрос ' + sellerNameLocal + ' на повторное открытие истёк (10 мин без ответа).');
+                }
+              }
+            }, 10 * 60 * 1000);
+
+            return; // Не продолжаем — ждём ответа владельца
+          }
+        }
+
         pendingGeoAction[userId] = 'open_shift';
         // Запускаем таймер чек-листа 15 минут
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
+
       } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены')) {
         pendingGeoAction[userId] = 'close_shift';
       }
@@ -1421,6 +1503,7 @@ app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Te
 // ══════════════════════════════════════════════════════════════════════
 // ── Таймер чек-листа — запускается при написании "Начала смену" ──────
 const checklistTimers = {};
+const pendingReopenApprovals = {}; // userId продавца → данные запроса
 
 function startChecklistTimer(userId, sellerName, startTime) {
   // Очищаем старый таймер если есть
