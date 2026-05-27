@@ -743,6 +743,7 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'Проверяй историю диалога перед каждым вопросом — если ответ уже есть, переходи к следующему шагу.\n\n' +
     'ШАГ 0 — ВНЕШНИЙ ВИД\n' +
     'Спроси: макияж готов? одежда в порядке?\n' +
+    'ВАЖНО: смена должна быть открыта до 11:00. Если уже 11:00+ — это опоздание.\n' +
     'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n\n' +
     'ШАГ 1 — ГЕОЛОКАЦИЯ\n' +
     'Спроси: "Пришли геолокацию через скрепку."\n' +
@@ -1019,10 +1020,11 @@ async function handleSystemCommands(reply, userId, sellerName) {
         const shiftData = { seller: s.seller, shop: s.shop, cashOpen: s.cashOpen, time: s.time, start_time: new Date().toISOString() };
         openShifts[String(userId)] = shiftData;
         await saveOpenShift(userId, shiftData);
+        clearChecklistTimer(userId); // Чек-лист закрыт — таймер отменяем
         const timeStr = getTime();
         const hour = parseInt(timeStr.split(':')[0]);
         const min = parseInt(timeStr.split(':')[1]);
-        if (hour > 11 || (hour === 11 && min > 15)) {
+        if (hour > 11 || (hour === 11 && min > 0)) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + s.seller + '\n🕐 ' + timeStr);
         }
         if ((s.cashOpen||0) >= CASH_ALERT_LIMIT) {
@@ -1142,10 +1144,57 @@ async function handleSystemCommands(reply, userId, sellerName) {
       const jsonStr = reply.match(/LATE_ALERT:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + a.seller + '\n🕐 ' + (a.time || getTime()));
+        const timeStr = a.time || getTime();
+
+        // Записываем опоздание в лист "Дисциплина"
+        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+        await appendSheet('Дисциплина!A:E', [today, a.seller, 'Опоздание', timeStr, 'Открытие смены позже 11:00'], SPREADSHEET_ID);
+
+        // Считаем опоздания за текущий месяц
+        const monthStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: '2-digit', year: 'numeric' });
+        const discRows = await readSheet('Дисциплина!A:E', SPREADSHEET_ID);
+        const lateCount = discRows.filter(r =>
+          r[1] === a.seller &&
+          r[2] === 'Опоздание' &&
+          String(r[0]||'').includes(monthStr.split('.')[0] + '.' + monthStr.split('.')[1])
+        ).length;
+
+        // Алерт владельцу
+        let alertMsg = '⚠️ Опоздание!\n👤 ' + a.seller + '\n🕐 ' + timeStr + '\n📅 ' + today;
+        alertMsg += '\n\nОпозданий за месяц: ' + lateCount;
+
+        // При 3-м опоздании — расширенный алерт
+        if (lateCount >= 3) {
+          const history = discRows.filter(r =>
+            r[1] === a.seller &&
+            r[2] === 'Опоздание' &&
+            String(r[0]||'').includes(monthStr.split('.')[0] + '.' + monthStr.split('.')[1])
+          ).slice(-5);
+          alertMsg = '🚨 ' + a.seller + ' — ' + lateCount + '-е опоздание за месяц!\n\n';
+          alertMsg += 'История опозданий:\n';
+          history.forEach(r => { alertMsg += '• ' + r[0] + ' в ' + r[3] + '\n'; });
+          alertMsg += '\nРекомендую провести разговор с продавцом.';
+        }
+
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, alertMsg);
+      }
+    } catch(e) { console.error('LATE_ALERT error:', e.message); }
+    cleanReply = reply.replace(/LATE_ALERT:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('CHECKLIST_TIMEOUT:')) {
+    try {
+      const jsonStr = reply.match(/CHECKLIST_TIMEOUT:(\{.*?\})/s)?.[1];
+      if (jsonStr) {
+        const a = JSON.parse(jsonStr);
+        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+        await appendSheet('Дисциплина!A:E', [today, a.seller, 'Таймаут чек-листа', getTime(), 'Чек-лист не закрыт за 15 минут'], SPREADSHEET_ID);
+        for (const ownerId of OWNER_IDS) {
+          await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт!\n👤 ' + a.seller + '\n🕐 Начала в ' + a.startTime + ', прошло 15 минут\n📋 Незакрыто: ' + (a.remaining || 'неизвестно'));
+        }
       }
     } catch(e) {}
-    cleanReply = reply.replace(/LATE_ALERT:\{.*?\}/s, '').trim();
+    cleanReply = reply.replace(/CHECKLIST_TIMEOUT:\{.*?\}/s, '').trim();
   }
 
   if (reply.includes('TERMINAL_ALERT:')) {
@@ -1352,6 +1401,9 @@ app.post('/webhook', async (req, res) => {
       const lower = messageText.toLowerCase();
       if (lower.includes('начала смену') || lower.includes('открываю смену') || lower.includes('начинаю смену')) {
         pendingGeoAction[userId] = 'open_shift';
+        // Запускаем таймер чек-листа 15 минут
+        const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
+        startChecklistTimer(userId, sellerName, getTime());
       } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены')) {
         pendingGeoAction[userId] = 'close_shift';
       }
@@ -1367,6 +1419,118 @@ app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Te
 // ══════════════════════════════════════════════════════════════════════
 // УТРЕННИЙ ДАЙДЖЕСТ — каждый день в 09:00 по Алматы
 // ══════════════════════════════════════════════════════════════════════
+// ── Таймер чек-листа — запускается при написании "Начала смену" ──────
+const checklistTimers = {};
+
+function startChecklistTimer(userId, sellerName, startTime) {
+  // Очищаем старый таймер если есть
+  if (checklistTimers[userId]) {
+    clearTimeout(checklistTimers[userId].timeout15);
+    clearTimeout(checklistTimers[userId].timeout20);
+  }
+
+  const startTimeStr = startTime || getTime();
+
+  // Через 15 минут — первый алерт
+  const timeout15 = setTimeout(async () => {
+    // Проверяем — смена уже открыта (SHIFT_OPEN выполнен) — значит чек-лист закрыт
+    if (openShifts[String(userId)] && openShifts[String(userId)].start_time) {
+      const shiftStart = new Date(openShifts[String(userId)].start_time);
+      const now = new Date();
+      const diffMin = (now - shiftStart) / 60000;
+      if (diffMin < 20) return; // смена открылась нормально
+    }
+
+    console.log('Таймаут чек-листа 15 мин:', sellerName);
+    await sendTelegram(userId, '⏰ ' + sellerName + ', прошло 15 минут — чек-лист ещё не закрыт!\nЗакрой немедленно, иначе уведомлю руководителя.');
+
+    const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+    await appendSheet('Дисциплина!A:E', [today, sellerName, 'Таймаут чек-листа', getTime(), 'Не закрыт за 15 минут'], SPREADSHEET_ID);
+    for (const ownerId of OWNER_IDS) {
+      await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт за 15 минут!\n👤 ' + sellerName + '\n🕐 Начала в ' + startTimeStr + '\nПродавец получила напоминание.');
+    }
+
+    // Через ещё 5 минут — повторный алерт владельцу
+    checklistTimers[userId].timeout20 = setTimeout(async () => {
+      if (openShifts[String(userId)]) return; // успела закрыть
+      for (const ownerId of OWNER_IDS) {
+        await sendTelegram(ownerId, '🚨 Чек-лист до сих пор не закрыт!\n👤 ' + sellerName + '\n🕐 Прошло 20 минут с начала смены. Требуется вмешательство.');
+      }
+    }, 5 * 60 * 1000);
+
+  }, 15 * 60 * 1000);
+
+  checklistTimers[userId] = { timeout15, timeout20: null };
+}
+
+function clearChecklistTimer(userId) {
+  if (checklistTimers[userId]) {
+    if (checklistTimers[userId].timeout15) clearTimeout(checklistTimers[userId].timeout15);
+    if (checklistTimers[userId].timeout20) clearTimeout(checklistTimers[userId].timeout20);
+    delete checklistTimers[userId];
+  }
+}
+
+// ── Еженедельная сводка по дисциплине (понедельник 09:00) ─────────────
+async function sendWeeklyDisciplineReport() {
+  try {
+    const discRows = await readSheet('Дисциплина!A:E', SPREADSHEET_ID);
+    if (!discRows || discRows.length < 2) return;
+
+    // Данные за последние 7 дней
+    const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const weekRows = discRows.slice(1).filter(r => {
+      if (!r[0]) return false;
+      const parts = String(r[0]).split('.');
+      if (parts.length < 3) return false;
+      const d = new Date(parts[2], parts[1]-1, parts[0]);
+      return d >= weekAgo;
+    });
+
+    if (weekRows.length === 0) {
+      for (const ownerId of OWNER_IDS) {
+        await sendTelegram(ownerId, '📋 ДИСЦИПЛИНА — неделя\n\n✅ Нарушений за неделю нет. Команда работает чисто.');
+      }
+      return;
+    }
+
+    // Группируем по продавцу
+    const byName = {};
+    weekRows.forEach(r => {
+      const name = r[1] || 'Неизвестно';
+      const type = r[2] || '';
+      if (!byName[name]) byName[name] = { late: 0, timeout: 0, other: 0 };
+      if (type === 'Опоздание') byName[name].late++;
+      else if (type === 'Таймаут чек-листа') byName[name].timeout++;
+      else byName[name].other++;
+    });
+
+    let msg = '📋 ДИСЦИПЛИНА — неделя\n\n';
+    let hasIssues = false;
+
+    Object.entries(byName).forEach(([name, stats]) => {
+      const total = stats.late + stats.timeout + stats.other;
+      if (total > 0) {
+        hasIssues = true;
+        msg += '👤 ' + name + '\n';
+        if (stats.late > 0) msg += '  ⏰ Опозданий: ' + stats.late + '\n';
+        if (stats.timeout > 0) msg += '  📋 Таймаут чек-листа: ' + stats.timeout + '\n';
+        if (stats.other > 0) msg += '  ⚠️ Другие: ' + stats.other + '\n';
+        msg += '\n';
+      }
+    });
+
+    if (!hasIssues) msg += '✅ Нарушений нет\n';
+
+    msg += 'Итого нарушений за неделю: ' + weekRows.length;
+
+    for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, msg);
+    console.log('Еженедельная сводка по дисциплине отправлена');
+  } catch(e) { console.error('Ошибка еженедельной сводки:', e.message); }
+}
+
 async function sendMorningDigest() {
   try {
     console.log('Отправляю утренний дайджест...');
@@ -1507,6 +1671,10 @@ function startDailyScheduler() {
       if (startDailyScheduler.lastRun !== todayKey) {
         startDailyScheduler.lastRun = todayKey;
         sendMorningDigest();
+        // По понедельникам — сводка по дисциплине (0 = воскресенье, 1 = понедельник)
+        if (almatyTime.getDay() === 1) {
+          sendWeeklyDisciplineReport();
+        }
       }
     }
   }, 30000); // проверяем каждые 30 секунд
