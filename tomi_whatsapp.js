@@ -750,8 +750,12 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'ШАГ 2 — КАССА\n' +
     'Спроси: сколько наличных в кассе на начало смены?\n' +
     'Запомни сумму — она войдёт в SHIFT_OPEN как cashOpen.\n' +
-    'ВАЖНО: система автоматически сравнит эту сумму с остатком предыдущей смены.\n' +
-    'Если продавец сообщила расхождение кассы — потребуй объяснение до продолжения чек-листа.\n\n' +
+    'ВАЖНО: в cashOpen подставь РЕАЛЬНУЮ сумму которую назвала продавец, НЕ 0!\n' +
+    'После SHIFT_OPEN система автоматически сравнит с остатком предыдущей смены.\n' +
+    'Если система сообщила о расхождении кассы — ты ОБЯЗАНА дожать объяснение:\n' +
+    '  Спроси: "Откуда разница? Была инкассация? Расходы из кассы? Ошибка счёта?"\n' +
+    '  Не переходи к следующим шагам пока не получишь внятный ответ.\n' +
+    '  "Не знаю" — не принимается. Дожимай.\n\n' +
     'ШАГ 3 — ТЕРМИНАЛЫ\n' +
     'Спроси: пришли фото экрана Kaspi терминала.\n' +
     'Потом: пришли фото экрана Halyk терминала.\n' +
@@ -984,15 +988,6 @@ async function handleSystemCommands(reply, userId, sellerName) {
             const direction = cashDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
             const sign = cashDiff > 0 ? '+' : '';
 
-            // Алерт продавцу
-            await sendTelegram(userId,
-              '⚠️ РАСХОЖДЕНИЕ КАССЫ при открытии!\n\n' +
-              '💰 Остаток прошлой смены: ' + Number(lastCash).toLocaleString() + ' тг\n' +
-              '💰 Ты пересчитала: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
-              '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг\n\n' +
-              'Пересчитай кассу ещё раз и объясни причину расхождения.'
-            );
-
             // Алерт владельцу
             for (const ownerId of OWNER_IDS) {
               await sendTelegram(ownerId,
@@ -1000,9 +995,20 @@ async function handleSystemCommands(reply, userId, sellerName) {
                 '👤 ' + s.seller + ' · ' + getTime() + '\n\n' +
                 '💰 Закрыли прошлый раз: ' + Number(lastCash).toLocaleString() + ' тг\n' +
                 '💰 Открыли сейчас: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
-                '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг'
+                '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг\n\n' +
+                'Ожидаю объяснение от продавца.'
               );
             }
+
+            // Продавцу — смена открыта НО нужно объяснение
+            await sendTelegram(userId,
+              '⚠️ РАСХОЖДЕНИЕ КАССЫ!\n\n' +
+              '💰 Остаток прошлой смены: ' + Number(lastCash).toLocaleString() + ' тг\n' +
+              '💰 Ты пересчитала: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
+              '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг\n\n' +
+              'Смена открыта, но объясни причину расхождения — откуда разница?\n' +
+              'Варианты: инкассация была? расходы из кассы? ошибка счёта?'
+            );
           } else {
             console.log('Касса в норме, расхождение в пределах 500 тг');
           }
@@ -1227,6 +1233,23 @@ async function handleMessage(userId, messageText, photoFileId) {
     const dbShift = await loadOpenShift(userId);
     if (dbShift) openShifts[userKey] = dbShift;
   }
+
+  // ── Проверка: смена открыта вчера или раньше — автоматически сбрасываем ──
+  if (openShifts[userKey] && openShifts[userKey].start_time) {
+    const shiftDate = new Date(openShifts[userKey].start_time);
+    const todayStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+    const shiftDateStr = shiftDate.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+    if (shiftDateStr !== todayStr) {
+      console.log('Смена устарела — открыта', shiftDateStr, ', сегодня', todayStr, '— сбрасываем');
+      delete openShifts[userKey];
+      await deleteOpenShift(userId);
+      // Уведомляем владельца
+      for (const ownerId of OWNER_IDS) {
+        await sendTelegram(ownerId, '⚠️ Смена ' + senderName + ' от ' + shiftDateStr + ' не была закрыта!\nАвтоматически сброшена. Проверь данные.');
+      }
+    }
+  }
+
   const hasOpenShift = !!openShifts[userKey];
 
   // Определяем: второй продавец — если у него нет своей смены,
