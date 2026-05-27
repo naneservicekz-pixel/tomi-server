@@ -1444,49 +1444,42 @@ app.post('/webhook', async (req, res) => {
           if (dbShift) existingShift = dbShift;
         }
 
-        if (existingShift && existingShift.start_time) {
-          const shiftDate = new Date(existingShift.start_time);
-          const todayStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-          const shiftDateStr = shiftDate.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+        if (existingShift) {
           const sellerNameLocal = ALLOWED_MAP[String(userId)] || 'Продавец';
+          const openedAt = existingShift.time || existingShift.start_time || 'неизвестно';
 
-          if (shiftDateStr === todayStr) {
-            // Смена уже открыта сегодня — запрашиваем согласование владельца
-            pendingReopenApprovals[String(userId)] = {
-              sellerName: sellerNameLocal,
-              openedAt: existingShift.time || shiftDateStr,
-              waitingForOwner: true,
-              timestamp: Date.now()
-            };
+          // Смена уже открыта — запрашиваем согласование владельца
+          pendingReopenApprovals[String(userId)] = {
+            sellerName: sellerNameLocal,
+            openedAt,
+            waitingForOwner: true,
+            timestamp: Date.now()
+          };
 
-            // Продавцу
-            await sendTelegram(userId, '⚠️ Смена уже открыта сегодня в ' + (existingShift.time || 'неизвестно') + '.\nПовторное открытие требует разрешения руководителя.\nОжидай — я уже отправила запрос.');
+          await sendTelegram(userId, '⚠️ Смена уже открыта сегодня в ' + openedAt + '.\nПовторное открытие требует разрешения руководителя.\nОжидай — я уже отправила запрос.');
 
-            // Владельцу
-            for (const ownerId of OWNER_IDS) {
-              await sendTelegram(ownerId,
-                '🔐 ЗАПРОС ПОВТОРНОГО ОТКРЫТИЯ СМЕНЫ\n\n' +
-                '👤 ' + sellerNameLocal + '\n' +
-                '🕐 Смена открыта сегодня в ' + (existingShift.time || 'неизвестно') + '\n\n' +
-                'Продавец запрашивает повторное открытие.\n\n' +
-                'Ответь:\n✅ ДА — разрешить (смена и история будут сброшены)\n❌ НЕТ — отказать\n\n' +
-                '⏰ Если не ответишь в течение 10 минут — смена не откроется автоматически.'
-              );
-            }
-
-            // Таймаут 10 минут — если владелец не ответил
-            setTimeout(async () => {
-              if (pendingReopenApprovals[String(userId)] && pendingReopenApprovals[String(userId)].waitingForOwner) {
-                delete pendingReopenApprovals[String(userId)];
-                await sendTelegram(userId, '⏰ Руководитель не ответил в течение 10 минут.\nПовторное открытие отклонено. Свяжись с руководителем напрямую.');
-                for (const ownerId of OWNER_IDS) {
-                  await sendTelegram(ownerId, '⏰ Запрос ' + sellerNameLocal + ' на повторное открытие истёк (10 мин без ответа).');
-                }
-              }
-            }, 10 * 60 * 1000);
-
-            return; // Не продолжаем — ждём ответа владельца
+          for (const ownerId of OWNER_IDS) {
+            await sendTelegram(ownerId,
+              '🔐 ЗАПРОС ПОВТОРНОГО ОТКРЫТИЯ СМЕНЫ\n\n' +
+              '👤 ' + sellerNameLocal + '\n' +
+              '🕐 Смена открыта в ' + openedAt + '\n\n' +
+              'Продавец запрашивает повторное открытие.\n\n' +
+              'Ответь:\n✅ ДА — разрешить (смена и история будут сброшены)\n❌ НЕТ — отказать\n\n' +
+              '⏰ Если не ответишь в течение 10 минут — смена не откроется автоматически.'
+            );
           }
+
+          setTimeout(async () => {
+            if (pendingReopenApprovals[String(userId)] && pendingReopenApprovals[String(userId)].waitingForOwner) {
+              delete pendingReopenApprovals[String(userId)];
+              await sendTelegram(userId, '⏰ Руководитель не ответил в течение 10 минут.\nПовторное открытие отклонено. Свяжись с руководителем напрямую.');
+              for (const ownerId of OWNER_IDS) {
+                await sendTelegram(ownerId, '⏰ Запрос ' + sellerNameLocal + ' на повторное открытие истёк (10 мин без ответа).');
+              }
+            }
+          }, 10 * 60 * 1000);
+
+          return; // СТОП — не передаём в handleMessage
         }
 
         pendingGeoAction[userId] = 'open_shift';
