@@ -37,6 +37,8 @@ const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 const conversations = {};
 const openShifts = {};
 const pendingGeoAction = {};
+const checklistTimers = {};
+const pendingReopenApprovals = {};
 
 function getNow() { return new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }); }
 function getTime() { return new Date().toLocaleTimeString('ru-RU', { timeZone: 'Asia/Almaty', hour: '2-digit', minute: '2-digit' }); }
@@ -1429,6 +1431,12 @@ app.post('/webhook', async (req, res) => {
 
       if (lower.includes('начала смену') || lower.includes('открываю смену') || lower.includes('начинаю смену')) {
 
+        // Если уже ждём ответа владельца — не дублируем запрос
+        if (pendingReopenApprovals[String(userId)] && pendingReopenApprovals[String(userId)].waitingForOwner) {
+          await sendTelegram(userId, '⏳ Запрос уже отправлен руководителю. Ожидай ответа.');
+          return;
+        }
+
         // Проверяем — есть ли уже открытая смена СЕГОДНЯ у этого продавца
         let existingShift = openShifts[String(userId)];
         if (!existingShift) {
@@ -1502,8 +1510,6 @@ app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Te
 // УТРЕННИЙ ДАЙДЖЕСТ — каждый день в 09:00 по Алматы
 // ══════════════════════════════════════════════════════════════════════
 // ── Таймер чек-листа — запускается при написании "Начала смену" ──────
-const checklistTimers = {};
-const pendingReopenApprovals = {}; // userId продавца → данные запроса
 
 function startChecklistTimer(userId, sellerName, startTime) {
   // Очищаем старый таймер если есть
