@@ -1437,13 +1437,27 @@ app.post('/webhook', async (req, res) => {
           return;
         }
 
-        // Проверяем — есть ли уже открытая смена СЕГОДНЯ у этого продавца
+        // Проверяем — есть ли уже открытая смена у этого продавца
+        // Источники: память, Supabase open_shifts, история диалога
         let existingShift = openShifts[String(userId)];
-        console.log('REOPEN CHECK: userId=', userId, 'openShifts key=', String(userId), 'inMemory=', !!existingShift);
+        console.log('REOPEN CHECK: userId=', userId, 'inMemory=', !!existingShift);
         if (!existingShift) {
           const dbShift = await loadOpenShift(userId);
           console.log('REOPEN CHECK: dbShift=', JSON.stringify(dbShift));
           if (dbShift) existingShift = dbShift;
+        }
+        // Дополнительно: проверяем историю диалога — если есть сообщения сегодня, смена может быть открыта
+        if (!existingShift) {
+          const history = await loadConversation(userId);
+          if (history && history.length > 0) {
+            // Есть история — значит продавец уже общалась с Томи сегодня
+            // Проверяем последнее сообщение ассистента на признак открытой смены
+            const lastMessages = history.slice(-10).map(m => String(m.content || '').toLowerCase()).join(' ');
+            if (lastMessages.includes('смена открыта') || lastMessages.includes('shift_open') || lastMessages.includes('удачной работы') || lastMessages.includes('хорошей смены')) {
+              existingShift = { time: 'ранее сегодня', fromHistory: true };
+              console.log('REOPEN CHECK: found open shift in conversation history');
+            }
+          }
         }
         console.log('REOPEN CHECK: existingShift=', JSON.stringify(existingShift));
 
