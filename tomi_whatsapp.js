@@ -1503,6 +1503,8 @@ app.post('/webhook', async (req, res) => {
         // Запускаем таймер чек-листа 15 минут
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
+        // Сохраняем факт начала чек-листа в Supabase сразу
+        await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cashOpen: 0, time: getTime(), start_time: new Date().toISOString(), status: 'checklist_started' });
 
       } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены')) {
         pendingGeoAction[userId] = 'close_shift';
