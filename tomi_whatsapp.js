@@ -1507,8 +1507,17 @@ app.post('/webhook', async (req, res) => {
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
         await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cashOpen: 0, time: getTime(), start_time: new Date().toISOString(), status: 'checklist_started' });
-        // Не передаём "Начала смену" в Claude — он сам начнёт чек-лист после геолокации
-        await sendTelegram(userId, 'Отлично! Начинаем чек-лист открытия.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?');
+
+        // Записываем начало чек-листа в историю — чтобы Claude знал контекст
+        const checklistStartMsg = 'Продавец начинает смену. Начинаем чек-лист открытия с шага 0.';
+        const checklistFirstQ = 'Отлично! Начинаем чек-лист открытия.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?';
+        conversations[String(userId)] = [
+          { role: 'user', content: checklistStartMsg },
+          { role: 'assistant', content: checklistFirstQ }
+        ];
+        await saveMessages(userId, checklistStartMsg, checklistFirstQ);
+
+        await sendTelegram(userId, checklistFirstQ);
         return;
 
       } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены')) {
