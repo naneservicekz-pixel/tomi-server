@@ -1149,7 +1149,7 @@ async function handleSystemCommands(reply, userId, sellerName) {
   }
 
   // Обработка ДА/НЕТ от владельца на запрос повторной отправки отчёта
-  if (isOwner && pendingResendApprovals[String(userId)]) {
+  if (OWNER_IDS.includes(String(userId)) && pendingResendApprovals[String(userId)]) {
     const msgLower = (messageText||'').toLowerCase().trim();
     if (msgLower === 'да' || msgLower === 'yes') {
       const { sellerId, sellerName: sName } = pendingResendApprovals[String(userId)];
