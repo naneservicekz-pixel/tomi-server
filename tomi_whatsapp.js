@@ -499,7 +499,7 @@ body {
 // ── Командный отчёт дня для продавцов ────────────────────────────────
 function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs }) {
   const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
-  const isOk = Math.abs(diff) < 500;
+  const isOk = channelDiffs.length === 0;
   const statusBg = isOk ? '#eaf3de' : '#fcebeb';
   const statusBorder = isOk ? '#c0dd97' : '#F7C1C1';
   const statusDot = isOk ? '#639922' : '#E24B4A';
@@ -511,16 +511,30 @@ function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, 
   const personalTotal = s.rPersonal || 0;
   const cashTotal = s.rCash || 0;
 
-  const kaspiOk = Math.abs(kaspiNet - kaspiTotal) <= 500;
-  const halykOk = Math.abs(halykNet - halykTotal) <= 500;
+  // Считаем расхождение по каждому каналу — так же как в отчёте владельца
+  const kaspiDiff = kaspiNet - kaspiTotal;
+  const halykDiff = halykNet - halykTotal;
+  const cashSales = (s.cashActual||0)-(s.cashOpen||0)+(s.cashPayouts||0)+(s.inkasso||0)+(s.rRetCash||0);
+  const cashDiff = cashSales - cashTotal;
+
+  const getChannelStatus = (diff) => {
+    if (Math.abs(diff) <= 500) return { text: 'Сходится', bg: '#eaf3de', color: '#3B6D11' };
+    const sign = diff > 0 ? '+' : '';
+    const dir = diff > 0 ? 'излишек' : 'недостача';
+    return { text: sign + Number(diff).toLocaleString('ru-RU') + ' ₸ (' + dir + ')', bg: '#fcebeb', color: '#A32D2D' };
+  };
+
+  const kaspiStatus = getChannelStatus(kaspiDiff);
+  const halykStatus = getChannelStatus(halykDiff);
+  const cashStatus = getChannelStatus(cashDiff);
 
   const channels = [
-    { name: 'Kaspi (QR + Онлайн)', amount: kaspiTotal, color: '#378ADD', ok: kaspiOk },
-    { name: 'Halyk (QR + Онлайн)', amount: halykTotal, color: '#7F77DD', ok: halykOk },
-    { name: 'Наличные', amount: cashTotal, color: '#1D9E75', ok: true },
+    { name: 'Kaspi (QR + Онлайн)', amount: kaspiTotal, color: '#378ADD', status: kaspiStatus },
+    { name: 'Halyk (QR + Онлайн)', amount: halykTotal, color: '#7F77DD', status: halykStatus },
+    { name: 'Наличные', amount: cashTotal, color: '#1D9E75', status: cashStatus },
   ];
-  if (personalTotal > 0) channels.push({ name: 'Личная карта Айнур', amount: personalTotal, color: '#BA7517', ok: null });
-  if ((s.rBonus||0) > 0) channels.push({ name: 'Бонусы', amount: s.rBonus||0, color: '#888', ok: null });
+  if (personalTotal > 0) channels.push({ name: 'Личная карта Айнур', amount: personalTotal, color: '#BA7517', status: null });
+  if ((s.rBonus||0) > 0) channels.push({ name: 'Бонусы', amount: s.rBonus||0, color: '#888', status: null });
 
   const channelRows = channels.map(ch => `
     <div style="padding:11px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;align-items:center;font-size:13px;">
@@ -530,7 +544,7 @@ function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, 
       </div>
       <div style="display:flex;align-items:center;gap:10px;">
         <span style="font-weight:500;">${fmt(ch.amount)}</span>
-        ${ch.ok !== null ? `<span style="font-size:11px;background:${ch.ok ? '#eaf3de' : '#fcebeb'};color:${ch.ok ? '#3B6D11' : '#A32D2D'};padding:2px 8px;border-radius:20px;">${ch.ok ? 'Сходится' : 'Расхождение'}</span>` : ''}
+        ${ch.status ? `<span style="font-size:11px;background:${ch.status.bg};color:${ch.status.color};padding:2px 8px;border-radius:20px;">${ch.status.text}</span>` : ''}
       </div>
     </div>`).join('');
 
@@ -555,15 +569,9 @@ function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, 
   </div>
 
   <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:0 0 8px;">Оборот дня</div>
-  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
-    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
-      <div style="font-size:11px;color:#999;margin-bottom:5px;">Продажи за день</div>
-      <div style="font-size:22px;font-weight:700;color:#1a1a1a;">${fmt(rostaTotal)}</div>
-    </div>
-    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
-      <div style="font-size:11px;color:#999;margin-bottom:5px;">Расхождение</div>
-      <div style="font-size:22px;font-weight:700;color:${isOk ? '#1a8a5a' : '#E24B4A'}">${diff === 0 ? '0 ₸' : (diff > 0 ? '+' : '') + fmt(diff)}</div>
-    </div>
+  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px;">
+    <div style="font-size:22px;font-weight:700;color:#1a1a1a;margin-bottom:4px;">${fmt(rostaTotal)}</div>
+    <div style="font-size:12px;color:#aaa;">итого по ROSTA</div>
   </div>
 
   <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Каналы продаж</div>
