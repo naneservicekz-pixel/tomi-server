@@ -927,6 +927,9 @@ function getOwnerPrompt(ownerName, data) {
     '"Дашборд" => DASHBOARD_HTML\n' +
     '"Дайджест" — утренняя сводка прямо сейчас => DIGEST_NOW\n' +
     '"Отчёт недели" — еженедельный HTML отчёт прямо сейчас => WEEKLY_REPORT\n' +
+    '"P&L" — финансовый отчёт месяца => PL_REPORT\n' +
+    'Расходы: если пишет "Аренда 500000" или "Закупка 12000000 корея" и т.д — распознай категорию и сумму => EXPENSE_SAVE:{"date":"","category":"","amount":0,"note":""}\n' +
+    'Категории расходов: Аренда, Закупка товара, Коммунальные, Зарплата персонала, Реклама, Транспорт, Прочее\n\n' +
     '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n\n' +
     'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
     'Бонусы: от 700к +5000 тг/чел, от 2млн +40000 тг/чел\nФикс: Асель 14000, Зарина 14000, Луиза 14000\n\nПо-русски. Прямо, с цифрами.';
@@ -974,6 +977,35 @@ function detectPhotoType(conversation) {
 
 async function handleSystemCommands(reply, userId, sellerName) {
   let cleanReply = reply;
+
+  if (reply.includes('EXPENSE_SAVE:')) {
+    try {
+      const jsonStr = reply.match(/EXPENSE_SAVE:(\{.*?\})/s)?.[1];
+      if (jsonStr) {
+        const e = JSON.parse(jsonStr);
+        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+        const month = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long' });
+        const year = new Date().getFullYear();
+        const date = e.date || today;
+        await appendSheet('Расходы!A:F', [date, e.category||'Прочее', e.amount||0, e.note||'', month, year], DASHBOARD_ID);
+        console.log('Расход записан:', e.category, e.amount);
+      }
+    } catch(e) { console.error('EXPENSE_SAVE error:', e.message); }
+    cleanReply = reply.replace(/EXPENSE_SAVE:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('PL_REPORT')) {
+    cleanReply = reply.replace(/PL_REPORT/g, '').trim();
+    await sendTelegram(userId, '📊 Формирую P&L...');
+    const html = await generatePLReport();
+    if (html) {
+      const filename = 'pl_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
+      await sendTelegramDocument(userId, filename, html, '📊 P&L отчёт — открой в браузере');
+    } else {
+      await sendTelegram(userId, '❌ Не удалось сформировать P&L.');
+    }
+    if (!cleanReply) return '';
+  }
 
   if (reply.includes('WEEKLY_REPORT')) {
     cleanReply = reply.replace(/WEEKLY_REPORT/g, '').trim();
@@ -1756,6 +1788,133 @@ async function sendWeeklyDisciplineReport() {
 }
 
 // ── Еженедельный отчёт по продажам (HTML) ────────────────────────────
+// ── P&L Отчёт месяца ─────────────────────────────────────────────────
+async function generatePLReport() {
+  try {
+    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
+    const now = getNow();
+    const monthName = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long', year: 'numeric' });
+
+    // Данные из Итоги месяца
+    const itogi = await readSheet("'Итоги месяца'!A1:H18", DASHBOARD_ID);
+    const getNum = (rows, ri, ci) => {
+      try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
+    };
+
+    const revenue = getNum(itogi, 4, 1); // Оборот
+    const fotTotal = getNum(itogi, 17, 7); // ФОТ итого
+    const tax = getNum(itogi, 'R' in itogi ? 15 : 15, 1) || Math.round(revenue * 0.03); // Налог 3%
+
+    // Читаем дашборд для оборота
+    const dash = await readSheet("'Дашборд'!A1:H25", DASHBOARD_ID);
+    const totalFact = getNum(dash, 18, 6) || (getNum(dash,18,2)+getNum(dash,18,3)+getNum(dash,18,4));
+
+    // Расходы из листа Расходы
+    const expRows = await readSheet('Расходы!A:F', DASHBOARD_ID);
+    const currentMonth = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long' });
+
+    const expenses = {};
+    let totalExpenses = 0;
+    expRows.slice(2).forEach(r => {
+      if (!r[0] || !r[1] || !r[2]) return;
+      if (String(r[4]||'').toLowerCase() !== currentMonth.toLowerCase()) return;
+      const cat = String(r[1]).trim();
+      const amount = parseFloat(String(r[2]).replace(/[^0-9.]/g,'')) || 0;
+      if (!expenses[cat]) expenses[cat] = 0;
+      expenses[cat] += amount;
+      totalExpenses += amount;
+    });
+
+    const taxCalc = Math.round(totalFact * 0.03);
+    const grossProfit = totalFact - fotTotal - taxCalc - totalExpenses;
+
+    // Цвета
+    const profitColor = grossProfit >= 0 ? '#1a8a5a' : '#c0392b';
+    const profitBg = grossProfit >= 0 ? '#eaf3de' : '#fcebeb';
+    const profitBorder = grossProfit >= 0 ? '#c0dd97' : '#F7C1C1';
+
+    // Строки расходов
+    const expenseRows = Object.entries(expenses).map(([cat, amount]) => `
+      <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
+        <span style="color:#555;">${cat}</span>
+        <span style="font-weight:500;color:#c0392b;">-${fmt(amount)} ₸</span>
+      </div>`).join('');
+
+    return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>P&L — ${monthName}</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px;margin:0;">
+<div style="max-width:680px;margin:0 auto;">
+
+  <div style="margin-bottom:20px;">
+    <div style="font-size:21px;font-weight:700;letter-spacing:0.07em;color:#1a1a1a;">NANÉ PARIS</div>
+    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.12em;margin-top:2px;">P&L — ${monthName}</div>
+    <div style="font-size:11px;color:#aaa;margin-top:3px;">Сформирован: ${now}</div>
+  </div>
+
+  <!-- Итог -->
+  <div style="background:${profitBg};border:1px solid ${profitBorder};border-radius:12px;padding:16px;margin-bottom:16px;text-align:center;">
+    <div style="font-size:12px;color:#888;margin-bottom:6px;">Чистая прибыль</div>
+    <div style="font-size:32px;font-weight:700;color:${profitColor};">${grossProfit >= 0 ? '+' : ''}${fmt(grossProfit)} ₸</div>
+  </div>
+
+  <!-- Доходы -->
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:0 0 8px;">Доходы</div>
+  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">
+    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
+      <span style="color:#555;">Оборот магазина</span>
+      <span style="font-weight:500;color:#1a8a5a;">+${fmt(totalFact)} ₸</span>
+    </div>
+    <div style="padding:10px 14px;display:flex;justify-content:space-between;font-size:13px;font-weight:600;">
+      <span>Итого доходы</span>
+      <span style="color:#1a8a5a;">+${fmt(totalFact)} ₸</span>
+    </div>
+  </div>
+
+  <!-- Расходы фиксированные -->
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Расходы</div>
+  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">
+    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
+      <span style="color:#555;">ФОТ (зарплата команды)</span>
+      <span style="font-weight:500;color:#c0392b;">-${fmt(fotTotal)} ₸</span>
+    </div>
+    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
+      <span style="color:#555;">Налог 3%</span>
+      <span style="font-weight:500;color:#c0392b;">-${fmt(taxCalc)} ₸</span>
+    </div>
+    ${expenseRows || '<div style="padding:12px 14px;font-size:13px;color:#aaa;">Расходы не внесены</div>'}
+    <div style="padding:10px 14px;display:flex;justify-content:space-between;font-size:13px;font-weight:600;">
+      <span>Итого расходы</span>
+      <span style="color:#c0392b;">-${fmt(fotTotal + taxCalc + totalExpenses)} ₸</span>
+    </div>
+  </div>
+
+  <!-- Детализация -->
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Детализация</div>
+  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;">
+    <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:12px;">
+      <span style="color:#aaa;">Оборот</span><span>+${fmt(totalFact)} ₸</span>
+    </div>
+    <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:12px;">
+      <span style="color:#aaa;">ФОТ</span><span>-${fmt(fotTotal)} ₸</span>
+    </div>
+    <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:12px;">
+      <span style="color:#aaa;">Налог 3%</span><span>-${fmt(taxCalc)} ₸</span>
+    </div>
+    <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:12px;">
+      <span style="color:#aaa;">Прочие расходы</span><span>-${fmt(totalExpenses)} ₸</span>
+    </div>
+    <div style="padding:12px 14px;display:flex;justify-content:space-between;font-size:14px;font-weight:700;border-top:2px solid #e8e4de;">
+      <span>Чистая прибыль</span>
+      <span style="color:${profitColor};">${grossProfit >= 0 ? '+' : ''}${fmt(grossProfit)} ₸</span>
+    </div>
+  </div>
+
+</div></body></html>`;
+  } catch(e) {
+    console.error('generatePLReport error:', e.message);
+    return null;
+  }
+}
+
 async function sendWeeklySalesReport() {
   try {
     console.log('Формирую еженедельный отчёт по продажам...');
