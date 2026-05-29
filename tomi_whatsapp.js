@@ -188,17 +188,35 @@ async function updateSheetCell(range, value, spreadsheetId) {
 async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
   if (!DASHBOARD_ID) return false;
   try {
-    const rows = await readSheet("'Учёт по дням'!B6:B200", DASHBOARD_ID);
-    const nextRow = 6 + (rows ? rows.filter(r => r[0]).length : 0);
-    const num = nextRow - 5;
+    const rows = await readSheet("Учёт по дням!A6:E200", DASHBOARD_ID);
+    if (!rows) return false;
+
+    // Ищем строку с нужной датой
+    let targetRow = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const cellDate = String(rows[i][1]||'').trim(); // колонка B = дата
+      if (cellDate === date) { targetRow = 6 + i; break; }
+    }
+
+    // Если не нашли по дате — пишем в первую пустую строку по колонке C
+    if (targetRow < 0) {
+      for (let i = 0; i < rows.length; i++) {
+        const cellC = String(rows[i][2]||'').trim();
+        if (!cellC || cellC === '0') { targetRow = 6 + i; break; }
+      }
+    }
+
+    // Если совсем не нашли — добавляем после последней строки
+    if (targetRow < 0) targetRow = 6 + rows.filter(r => r[0] || r[1]).length;
+
     const { api } = getSheets(DASHBOARD_ID);
     await api.spreadsheets.values.update({
       spreadsheetId: DASHBOARD_ID,
-      range: "'Учёт по дням'!A" + nextRow + ":E" + nextRow,
+      range: "Учёт по дням!C" + targetRow + ":E" + targetRow,
       valueInputOption: 'USER_ENTERED',
-      resource: { values: [[num, date, rostaTotal, seller1 || '', seller2 || '']] }
+      resource: { values: [[rostaTotal, seller1 || '', seller2 || '']] }
     });
-    console.log('Записано в Учёт по дням строка', nextRow);
+    console.log('Записано в Учёт по дням строка', targetRow, 'дата', date, 'оборот', rostaTotal);
     return true;
   } catch(e) { console.error('writeToUchetPoDnyam error:', e.message); return false; }
 }
