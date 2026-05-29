@@ -780,7 +780,7 @@ function generateShiftHTML(data) {
   ${notesSection}
 
   <div class="sec">Каналы продаж</div>
-  <div class="grid3">
+  <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
     <div class="card"><div class="card-title"><div class="dot" style="background:#378ADD"></div>Kaspi</div>
       <div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rOnline)}</span></div>
       <div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rKaspi)}</span></div>
