@@ -517,7 +517,7 @@ body {
 }
 
 // ── Командный отчёт дня для продавцов ────────────────────────────────
-function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs }) {
+function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs, prepayExplanations }) {
   const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
   const isOk = channelDiffs.length === 0;
   const statusBg = isOk ? '#eaf3de' : '#fcebeb';
@@ -568,6 +568,27 @@ function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, 
       </div>
     </div>`).join('');
 
+  // Блок предоплат если есть
+  let teamPrepaySection = '';
+  if (prepayExplanations && prepayExplanations.length > 0) {
+    teamPrepaySection = `
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Предоплаты закрыты сегодня</div>
+  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">`;
+    prepayExplanations.forEach(pe => {
+      pe.prepays.forEach(p => {
+        teamPrepaySection += `
+    <div style="padding:11px 14px;border-bottom:1px solid #f0ece6;font-size:13px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:#555;">👤 ${p.client}</span>
+        <span style="font-weight:500;color:#1a8a5a;">+${Number(p.amount).toLocaleString()} ₸</span>
+      </div>
+      <div style="font-size:11px;color:#aaa;margin-top:3px;">${pe.channel} · объясняет расхождение</div>
+    </div>`;
+      });
+    });
+    teamPrepaySection += `</div>`;
+  }
+
   return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Итоги дня — ${today}</title></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px;margin:0;">
 <div style="max-width:680px;margin:0 auto;">
@@ -602,6 +623,8 @@ function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, 
       <span>${fmt(rostaTotal)}</span>
     </div>
   </div>
+
+  ${teamPrepaySection}
 
 </div></body></html>`;
 }
@@ -692,7 +715,7 @@ function generatePrepaysHTML(list, type) {
 }
 
 function generateShiftHTML(data) {
-  const { sellerName, date, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs } = data;
+  const { sellerName, date, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations } = data;
   const isOk = diff === 0;
   const isDanger = !isOk && Math.abs(diff) >= 500;
   const statusBg = isOk ? '#eaf3de' : isDanger ? '#fcebeb' : '#faeeda';
@@ -713,6 +736,18 @@ function generateShiftHTML(data) {
       diffDetails += '<div style="display:flex; justify-content:space-between; font-size:12px; padding:5px 0; border-bottom:1px solid #fde8e8;"><span style="color:#555;">' + cd.channel + '</span><span style="color:' + color + '; font-weight:600;">' + sign + fmt(cd.diff) + ' (' + direction + ')</span></div>';
     });
     diffDetails += '</div>';
+  }
+  let prepaySection = '';
+  if (prepayExplanations && prepayExplanations.length > 0) {
+    prepaySection = '<div style="background:#eaf3de; border:1px solid #c0dd97; border-radius:8px; padding:14px; margin-bottom:16px;"><div style="font-size:13px; font-weight:600; color:#3B6D11; margin-bottom:10px;">✅ Расхождение объяснено предоплатами</div>';
+    prepayExplanations.forEach(pe => {
+      const sign = pe.diff > 0 ? '+' : '';
+      prepaySection += '<div style="font-size:12px; padding:5px 0; border-bottom:1px solid #c0dd97;"><span style="color:#555; font-weight:600;">' + pe.channel + ': ' + sign + Number(pe.diff).toLocaleString() + ' ₸</span></div>';
+      pe.prepays.forEach(p => {
+        prepaySection += '<div style="font-size:12px; padding:4px 0 4px 12px; color:#3B6D11;">→ ' + p.client + ' — ' + Number(p.amount).toLocaleString() + ' ₸</div>';
+      });
+    });
+    prepaySection += '</div>';
   }
   return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Отчёт смены — ${sellerName}</title>
 <style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f0; color:#1a1a1a; padding:24px 16px; } .container { max-width:680px; margin:0 auto; } .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; } .brand { font-size:22px; font-weight:600; letter-spacing:0.04em; } .brand-sub { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; } .header-right { text-align:right; font-size:13px; color:#555; } .header-right strong { color:#1a1a1a; display:block; font-size:14px; } .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; } .grid2 { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:16px; } .metric { background:#efefea; border-radius:8px; padding:14px; } .metric-label { font-size:11px; color:#888; margin-bottom:6px; } .metric-value { font-size:20px; font-weight:600; } .card { background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; } .card-title { display:flex; align-items:center; gap:7px; margin-bottom:12px; font-size:13px; font-weight:600; } .dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; } .row { display:flex; justify-content:space-between; font-size:12px; padding:5px 0; border-bottom:1px solid #f0f0ec; } .row-label { color:#888; } .row-value { font-weight:500; } .row-total { display:flex; justify-content:space-between; font-size:13px; font-weight:600; padding:8px 0 0; } .sverka-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }</style></head>
@@ -1243,12 +1278,60 @@ async function handleSystemCommands(reply, userId, sellerName) {
         if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff, rosta: (s.rHalyk||0)+(s.rHalykOnline||0), fact: halykNet });
         if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff, rosta: s.rCash||0, fact: cashSales });
 
+        // ── Проверяем закрытые сегодня предоплаты ───────────────────
+        const todayShort = today; // формат DD.MM.YYYY
+        const allPrepays = await readSheet('Предоплаты!A:K');
+        const todayClosedPrepays = allPrepays.slice(1).filter(r => {
+          const closeDate = String(r[9]||'').trim();
+          const status = String(r[8]||'').toLowerCase();
+          return status.includes('закрыт') && (closeDate === todayShort || closeDate === new Date().toISOString().split('T')[0]);
+        }).map(r => ({
+          id: String(r[0]||''),
+          client: String(r[2]||''),
+          amount: parseFloat(String(r[6]||'0').replace(/[^0-9.]/g,'')) || 0,
+          channel: String(r[5]||''),
+          note: String(r[10]||'')
+        }));
+
+        // Сопоставляем предоплаты с расхождениями
+        const prepayExplanations = [];
+        const explainedDiffs = new Set();
+
+        channelDiffs.forEach(cd => {
+          if (cd.diff > 0) { // излишек — ищем предоплату на эту сумму
+            const matching = todayClosedPrepays.filter(p => {
+              const channelMatch =
+                (cd.channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi') || p.channel.toLowerCase().includes('каспи'))) ||
+                (cd.channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk') || p.channel.toLowerCase().includes('халык'))) ||
+                (cd.channel === 'Наличные' && (p.channel.toLowerCase().includes('нал') || p.channel.toLowerCase().includes('cash')));
+              const amountMatch = Math.abs(p.amount - Math.abs(cd.diff)) < 1000;
+              return channelMatch || amountMatch;
+            });
+            if (matching.length > 0) {
+              prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching });
+              explainedDiffs.add(cd.channel);
+            }
+          }
+        });
+
         // Если есть необъяснённые расхождения — БЛОКИРУЕМ закрытие
+        const unexplainedDiffs = channelDiffs.filter(cd => !explainedDiffs.has(cd.channel));
         const hasNotes = s.notes && s.notes.trim().length > 10;
-        if (channelDiffs.length > 0 && !hasNotes) {
+        const hasAutoExplanation = prepayExplanations.length > 0;
+
+        // Формируем автообъяснение через предоплаты
+        let autoNotes = s.notes || '';
+        if (hasAutoExplanation) {
+          prepayExplanations.forEach(pe => {
+            const prepayNames = pe.prepays.map(p => p.client + ' ' + Number(p.amount).toLocaleString() + ' тг').join(', ');
+            autoNotes += (autoNotes ? '; ' : '') + pe.channel + ': предоплата ' + prepayNames;
+          });
+        }
+
+        if (unexplainedDiffs.length > 0 && !hasNotes && !hasAutoExplanation) {
           // Формируем детальное сообщение с требованием объяснения
           let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — есть необъяснённые расхождения!\n\n';
-          channelDiffs.forEach(cd => {
+          unexplainedDiffs.forEach(cd => {
             const sign = cd.diff > 0 ? '+' : '';
             const direction = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
             blockMsg += '❌ ' + cd.channel + ': ' + direction + ' ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
@@ -1262,9 +1345,8 @@ async function handleSystemCommands(reply, userId, sellerName) {
 
           await sendTelegram(userId, blockMsg);
 
-          // Алерт владельцу о расхождении
           let ownerAlert = '⚠️ РАСХОЖДЕНИЕ при закрытии смены!\n👤 ' + (shift.seller || sellerName) + ' · ' + today + '\n\n';
-          channelDiffs.forEach(cd => {
+          unexplainedDiffs.forEach(cd => {
             const sign = cd.diff > 0 ? '+' : '';
             ownerAlert += cd.channel + ': ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
           });
@@ -1278,6 +1360,21 @@ async function handleSystemCommands(reply, userId, sellerName) {
 
         // ── Всё ок или есть объяснение — закрываем ──────────────────
         const sellerFinal = shift.seller || sellerName;
+        const finalNotes = autoNotes || s.notes || '';
+
+        // Алерт владельцу если есть предоплаты объясняющие расхождение
+        if (hasAutoExplanation) {
+          for (const ownerId of OWNER_IDS) {
+            let prepayMsg = '✅ Расхождение при закрытии объяснено предоплатами:\n👤 ' + sellerFinal + ' · ' + today + '\n\n';
+            prepayExplanations.forEach(pe => {
+              prepayMsg += '💳 ' + pe.channel + ': ' + (pe.diff > 0 ? '+' : '') + Number(pe.diff).toLocaleString() + ' тг\n';
+              pe.prepays.forEach(p => {
+                prepayMsg += '   → Предоплата: ' + p.client + ' — ' + Number(p.amount).toLocaleString() + ' тг\n';
+              });
+            });
+            await sendTelegram(ownerId, prepayMsg);
+          }
+        }
 
         await appendSheet('Смены!A:Y', [
           today, sellerFinal, shift.shop||'',
@@ -1287,8 +1384,8 @@ async function handleSystemCommands(reply, userId, sellerName) {
           s.inkasso||0, s.cashPayouts||0, s.cashOpen||0, s.cashActual||0,
           s.tKaspi||0, s.tHalyk||0, s.rPersonal||0,
           rostaTotal, factTotal, diff,
-          diff===0 ? 'Корректно' : Math.abs(diff)<500 ? 'Незначительное' : 'Расхождение (объяснено)',
-          s.notes||'', getNow()
+          diff===0 ? 'Корректно' : Math.abs(diff)<500 ? 'Незначительное' : (hasAutoExplanation ? 'Предоплата' : 'Расхождение (объяснено)'),
+          finalNotes, getNow()
         ]);
 
         console.log('Вызываю writeToUchetPoDnyam: дата=', today, 'оборот=', rostaTotal, 'продавец=', sellerFinal);
@@ -1299,14 +1396,14 @@ async function handleSystemCommands(reply, userId, sellerName) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
         }
 
-        const htmlReport = generateShiftHTML({ sellerName: sellerFinal, date: today, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs });
+        const htmlReport = generateShiftHTML({ sellerName: sellerFinal, date: today, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations });
         const filename = 'otchet_' + today.replace(/\./g,'_') + '_' + sellerFinal + '.html';
         for (const ownerId of OWNER_IDS) {
           await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
         }
 
         // ── Командный отчёт дня — отправляем всем продавцам ──────────
-        const teamHTML = generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs });
+        const teamHTML = generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs, prepayExplanations });
         const teamFilename = 'den_' + today.replace(/\./g,'_') + '.html';
         for (const [sellerId, sellerName2] of Object.entries(ALLOWED_MAP)) {
           if (!OWNER_IDS.includes(sellerId)) {
