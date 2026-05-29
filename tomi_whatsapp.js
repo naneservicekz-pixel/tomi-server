@@ -1873,6 +1873,8 @@ async function sendWeeklySalesReport() {
     console.log('Еженедельный отчёт по продажам отправлен');
   } catch(e) { console.error('Ошибка еженедельного отчёта:', e.message); }
 }
+
+async function sendMorningDigest() {
   try {
     console.log('Отправляю утренний дайджест...');
 
