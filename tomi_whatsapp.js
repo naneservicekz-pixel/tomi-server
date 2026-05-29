@@ -1667,7 +1667,23 @@ async function handleMessage(userId, messageText, photoFileId) {
 
   const hasOpenShift = !!openShifts[userKey];
 
-  // Определяем: второй продавец — если у него нет своей смены,
+  // ── Перехват запроса повторной отправки отчёта ───────────────────
+  if (!isOwner && !hasOpenShift && messageText) {
+    const msgLow = messageText.toLowerCase();
+    if (msgLow.includes('повторно') || msgLow.includes('вышли отчёт') || msgLow.includes('вышли html') || msgLow.includes('html файл')) {
+      const report = lastShiftReports[userKey];
+      if (!report) {
+        await sendTelegram(userId, '📋 Отчёт закрытия не найден — смена ещё не закрывалась сегодня.');
+      } else {
+        for (const ownerId of OWNER_IDS) {
+          pendingResendApprovals[String(ownerId)] = { sellerId: userKey, sellerName: senderName };
+          await sendTelegram(ownerId, '📋 ' + senderName + ' запрашивает повторную отправку отчёта закрытия смены.\n\nОтветь ДА чтобы отправить или НЕТ чтобы отказать.');
+        }
+        await sendTelegram(userId, '⏳ Запрос отправлен руководителю. Ожидай разрешения.');
+      }
+      return;
+    }
+  }
   // но у ДРУГОГО продавца смена уже открыта сегодня
   let isSecondSeller = false;
   let firstSellerName = '';
