@@ -986,7 +986,8 @@ async function handleSystemCommands(reply, userId, sellerName) {
       const jsonStr = reply.match(/REMINDER_SAVE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const r = JSON.parse(jsonStr);
-        await saveReminder(r.user_id || userId, r.text, r.remind_at);
+        // Всегда используем реальный userId из webhook, игнорируем user_id из JSON
+        await saveReminder(userId, r.text, r.remind_at);
       }
     } catch(e) { console.error('REMINDER_SAVE error:', e.message); }
     cleanReply = reply.replace(/REMINDER_SAVE:\{.*?\}/s, '').trim();
