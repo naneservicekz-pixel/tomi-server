@@ -749,60 +749,93 @@ function generateShiftHTML(data) {
     });
     prepaySection += '</div>';
   }
+  // Валовые продажи и возвраты
+  const grossSales = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0);
+  const totalRetAll = (s.rRetKaspi||0)+(s.rRetHalyk||0)+(s.rRetCash||0);
+
+  // Пояснения к расхождениям
+  let notesSection = '';
+  if (s.notes && s.notes.trim().length > 0) {
+    notesSection = '<div style="background:#fffbe6;border:1px solid #FAC775;border-radius:8px;padding:14px;margin-bottom:16px;">' +
+      '<div style="font-size:13px;font-weight:600;color:#854F0B;margin-bottom:8px;">📝 Пояснения к расхождениям</div>' +
+      '<div style="font-size:12px;color:#555;line-height:1.6;">' + s.notes.replace(/;/g, '<br>') + '</div></div>';
+  }
+
   return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Отчёт смены — ${sellerName}</title>
-<style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f0; color:#1a1a1a; padding:24px 16px; } .container { max-width:680px; margin:0 auto; } .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; } .brand { font-size:22px; font-weight:600; letter-spacing:0.04em; } .brand-sub { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; } .header-right { text-align:right; font-size:13px; color:#555; } .header-right strong { color:#1a1a1a; display:block; font-size:14px; } .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; } .grid2 { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:16px; } .metric { background:#efefea; border-radius:8px; padding:14px; } .metric-label { font-size:11px; color:#888; margin-bottom:6px; } .metric-value { font-size:20px; font-weight:600; } .card { background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; } .card-title { display:flex; align-items:center; gap:7px; margin-bottom:12px; font-size:13px; font-weight:600; } .dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; } .row { display:flex; justify-content:space-between; font-size:12px; padding:5px 0; border-bottom:1px solid #f0f0ec; } .row-label { color:#888; } .row-value { font-weight:500; } .row-total { display:flex; justify-content:space-between; font-size:13px; font-weight:600; padding:8px 0 0; } .sverka-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }</style></head>
+<style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f0; color:#1a1a1a; padding:24px 16px; } .container { max-width:680px; margin:0 auto; } .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; } .brand { font-size:22px; font-weight:600; letter-spacing:0.04em; } .brand-sub { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; } .header-right { text-align:right; font-size:13px; color:#555; } .header-right strong { color:#1a1a1a; display:block; font-size:14px; } .grid4 { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:16px; } .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; } .grid2 { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:16px; } .metric { background:#efefea; border-radius:8px; padding:12px; } .metric-label { font-size:10px; color:#888; margin-bottom:4px; } .metric-value { font-size:16px; font-weight:600; } .card { background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; } .card-title { display:flex; align-items:center; gap:7px; margin-bottom:12px; font-size:13px; font-weight:600; } .dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; } .row { display:flex; justify-content:space-between; font-size:12px; padding:5px 0; border-bottom:1px solid #f0f0ec; } .row-label { color:#888; } .row-value { font-weight:500; } .row-total { display:flex; justify-content:space-between; font-size:13px; font-weight:600; padding:8px 0 0; } .sverka-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; } .sec { font-size:10px; color:#999; text-transform:uppercase; letter-spacing:0.12em; margin:18px 0 8px; }</style></head>
 <body><div class="container">
   <div class="header"><div><div class="brand">NANÉ PARIS</div><div class="brand-sub">Отчёт смены</div></div><div class="header-right"><strong>${date}</strong>${sellerName} · закрыто в ${closeTime}</div></div>
-  <div style="background:${statusBg}; border:1px solid ${statusBorder}; border-radius:8px; padding:10px 14px; display:flex; align-items:center; gap:8px; margin-bottom:20px;"><div style="width:8px; height:8px; border-radius:50%; background:${statusDot}; flex-shrink:0;"></div><span style="font-size:13px; font-weight:600; color:${statusColor};">${statusText}</span></div>
-  <div class="grid3">
-    <div class="metric"><div class="metric-label">Продажи (ROSTA)</div><div class="metric-value">${fmt(rostaTotal)}</div></div>
-    <div class="metric"><div class="metric-label">Получено деньгами</div><div class="metric-value">${fmt(factTotal)}</div></div>
-    <div class="metric"><div class="metric-label">Расхождение</div><div class="metric-value" style="color:${diffColor};">${diffSign}${fmt(diff)}</div></div>
+  <div style="background:${statusBg};border:1px solid ${statusBorder};border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:20px;"><div style="width:8px;height:8px;border-radius:50%;background:${statusDot};flex-shrink:0;"></div><span style="font-size:13px;font-weight:600;color:${statusColor};">${statusText}</span></div>
+
+  <div class="sec">Эффективность дня</div>
+  <div class="grid4">
+    <div class="metric"><div class="metric-label">Валовые продажи</div><div class="metric-value">${fmt(grossSales)}</div></div>
+    <div class="metric"><div class="metric-label">Возвраты</div><div class="metric-value" style="color:#E24B4A;">${totalRetAll > 0 ? '-'+fmt(totalRetAll) : fmt(0)}</div></div>
+    <div class="metric"><div class="metric-label">Чистые продажи</div><div class="metric-value">${fmt(rostaTotal)}</div></div>
+    <div class="metric"><div class="metric-label">Получено денег</div><div class="metric-value">${fmt(factTotal)}</div></div>
   </div>
+
   ${diffDetails}
+  ${prepaySection}
+  ${notesSection}
+
+  <div class="sec">Каналы продаж</div>
   <div class="grid3">
     <div class="card"><div class="card-title"><div class="dot" style="background:#378ADD"></div>Kaspi</div>
-      <div class="row"><span class="row-label">Онлайн <small>(ROSTA)</small></span><span class="row-value">${fmt(s.rOnline)}</span></div>
-      <div class="row"><span class="row-label">QR <small>(ROSTA)</small></span><span class="row-value">${fmt(s.rKaspi)}</span></div>
-      <div class="row"><span class="row-label">Терминал <small>(ФАКТ)</small></span><span class="row-value">${fmt(s.tKaspi)}</span></div>
-      ${(s.tKaspiRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tKaspiRet)+'</span></div>':''}
+      <div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rOnline)}</span></div>
+      <div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rKaspi)}</span></div>
+      <div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tKaspi)}</span></div>
+      ${(s.tKaspiRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tKaspiRet)+'</span></div>':''} 
       <div class="row-total"><span>Итого (ФАКТ)</span><span>${fmt(kaspiNet)}</span></div>
     </div>
     <div class="card"><div class="card-title"><div class="dot" style="background:#7F77DD"></div>Halyk</div>
-      <div class="row"><span class="row-label">Онлайн <small>(ROSTA)</small></span><span class="row-value">${fmt(s.rHalykOnline)}</span></div>
-      <div class="row"><span class="row-label">QR <small>(ROSTA)</small></span><span class="row-value">${fmt(s.rHalyk)}</span></div>
-      <div class="row"><span class="row-label">Терминал <small>(ФАКТ)</small></span><span class="row-value">${fmt(s.tHalyk)}</span></div>
-      ${(s.tHalykRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tHalykRet)+'</span></div>':''}
+      <div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rHalykOnline)}</span></div>
+      <div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rHalyk)}</span></div>
+      <div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tHalyk)}</span></div>
+      ${(s.tHalykRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tHalykRet)+'</span></div>':''} 
       <div class="row-total"><span>Итого (ФАКТ)</span><span>${fmt(halykNet)}</span></div>
     </div>
     <div class="card"><div class="card-title"><div class="dot" style="background:#1D9E75"></div>Прочие</div>
       <div class="row"><span class="row-label">Наличные</span><span class="row-value">${fmt(s.rCash)}</span></div>
-      ${(s.rPersonal||0)>0?'<div class="row"><span class="row-label">Личная карта <small>(ROSTA)</small></span><span class="row-value">'+fmt(s.rPersonal)+'</span></div>':''}
-      ${(s.rBonus||0)>0?'<div class="row"><span class="row-label">Бонусы</span><span class="row-value">'+fmt(s.rBonus)+'</span></div>':''}
-      ${totalRet>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возвраты</span><span class="row-value" style="color:#E24B4A">-'+fmt(totalRet)+'</span></div>':''}
+      ${(s.rPersonal||0)>0?'<div class="row"><span class="row-label">Личная карта Айнур</span><span class="row-value">'+fmt(s.rPersonal)+'</span></div>':''} 
+      ${(s.rBonus||0)>0?'<div class="row"><span class="row-label">Бонусы</span><span class="row-value">'+fmt(s.rBonus)+'</span></div>':''} 
+      ${totalRetAll>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возвраты всего</span><span class="row-value" style="color:#E24B4A">-'+fmt(totalRetAll)+'</span></div>':''} 
       <div class="row-total"><span>Итого</span><span>${fmt((s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0))}</span></div>
     </div>
   </div>
+
+  <div class="sec">Касса и сверка</div>
   <div class="grid2">
     <div class="card"><div class="card-title">💵 Касса</div>
       <div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div>
       <div class="row"><span class="row-label">Закрытие</span><span class="row-value">${fmt(s.cashActual)}</span></div>
       <div class="row"><span class="row-label">Продажи нал</span><span class="row-value">${fmt(cashSales)}</span></div>
-      ${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}
-      ${(s.cashPayouts||0)>0?'<div class="row"><span class="row-label">Расходы</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.cashPayouts)+'</span></div>':''}
+      ${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''} 
+      ${(s.cashPayouts||0)>0?'<div class="row"><span class="row-label">Расходы из кассы</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.cashPayouts)+'</span></div>':''} 
     </div>
     <div class="card"><div class="card-title">🔍 Сверка</div>
       <div class="row"><span class="row-label">ROSTA</span><span class="row-value">${fmt(rostaTotal)}</span></div>
       <div class="row"><span class="row-label">ФАКТ</span><span class="row-value">${fmt(factTotal)}</span></div>
-      <div class="row"><span class="row-label">Разница</span><span class="row-value" style="color:${diffColor}; font-weight:600;">${diffSign}${fmt(diff)}</span></div>
+      <div class="row"><span class="row-label">Разница</span><span class="row-value" style="color:${diffColor};font-weight:600;">${diffSign}${fmt(diff)}</span></div>
     </div>
   </div>
-  <div class="sverka-grid">
-    ${[{label:'Kaspi',diff:Math.abs(kaspiNet-((s.rKaspi||0)+(s.rOnline||0)))},{label:'Halyk',diff:Math.abs(halykNet-((s.rHalyk||0)+(s.rHalykOnline||0)))},{label:'Наличные',diff:0}].map(item => {
-      const ok = item.diff <= 500;
-      return '<div style="background:'+(ok?'#eaf3de':'#fcebeb')+'; border:1px solid '+(ok?'#c0dd97':'#F7C1C1')+'; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#888; margin-bottom:4px;">'+item.label+'</div><div style="font-size:13px; font-weight:600; color:'+(ok?'#3B6D11':'#A32D2D')+';">'+(ok?'Сходится':'Расхождение')+'</div></div>';
+
+  <div class="sverka-grid" style="margin-bottom:24px;">
+    ${[
+      {label:'Kaspi', d: Math.abs(kaspiNet-((s.rKaspi||0)+(s.rOnline||0)))},
+      {label:'Halyk', d: Math.abs(halykNet-((s.rHalyk||0)+(s.rHalykOnline||0)))},
+      {label:'Наличные', d: 0}
+    ].map(item => {
+      const ok = item.d <= 500;
+      return '<div style="background:'+(ok?'#eaf3de':'#fcebeb')+';border:1px solid '+(ok?'#c0dd97':'#F7C1C1')+';border-radius:8px;padding:10px;text-align:center;"><div style="font-size:11px;color:#888;margin-bottom:4px;">'+item.label+'</div><div style="font-size:13px;font-weight:600;color:'+(ok?'#3B6D11':'#A32D2D')+';">'+(ok?'Сходится':'Расхождение')+'</div></div>';
     }).join('')}
   </div>
+
+  <div style="border-top:1px solid #e8e8e4;padding-top:16px;display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+    <div style="font-size:12px;color:#aaa;">Подпись продавца: ${sellerName}</div>
+    <div style="border-bottom:1px solid #1a1a1a;width:180px;height:24px;"></div>
+  </div>
+
 </div></body></html>`;
 }
 
