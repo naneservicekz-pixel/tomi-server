@@ -1289,7 +1289,9 @@ async function handleSystemCommands(reply, userId, sellerName) {
           s.notes||'', getNow()
         ]);
 
+        console.log('Вызываю writeToUchetPoDnyam: дата=', today, 'оборот=', rostaTotal, 'продавец=', sellerFinal);
         await writeToUchetPoDnyam(today, rostaTotal, sellerFinal, '');
+        console.log('writeToUchetPoDnyam завершена');
 
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
