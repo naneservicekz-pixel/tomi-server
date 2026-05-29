@@ -39,6 +39,8 @@ const openShifts = {};
 const pendingGeoAction = {};
 const checklistTimers = {};
 const pendingReopenApprovals = {};
+const lastShiftReports = {}; // userId -> { html, filename, caption }
+const pendingResendApprovals = {}; // ownerId -> { sellerId, sellerName }
 
 function getNow() { return new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }); }
 function getTime() { return new Date().toLocaleTimeString('ru-RU', { timeZone: 'Asia/Almaty', hour: '2-digit', minute: '2-digit' }); }
@@ -1013,7 +1015,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Команда" — сводка по продавцам\n' +
     '"Зарплата" — расчет ФОТ\n' +
     '"Дашборд" => DASHBOARD_HTML\n' +
-    '"Дайджест" — утренняя сводка прямо сейчас => DIGEST_NOW\n' +
+    '"Повторно вышли отчёт" или "вышли html" — запрос на повторную отправку отчёта закрытия => RESEND_REPORT\n' +
     '"Отчёт недели" — еженедельный HTML отчёт прямо сейчас => WEEKLY_REPORT\n' +
     '"P&L" — финансовый отчёт месяца => PL_REPORT\n' +
     'Расходы: если пишет "Аренда 500000" или "Закупка 12000000 корея" и т.д — распознай категорию и сумму => EXPENSE_SAVE:{"date":"","category":"","amount":0,"note":""}\n' +
@@ -1127,6 +1129,45 @@ async function handleSystemCommands(reply, userId, sellerName) {
     cleanReply = reply.replace(/WEEKLY_REPORT/g, '').trim();
     await sendWeeklySalesReport();
     if (!cleanReply) return '';
+  }
+
+  if (reply.includes('RESEND_REPORT')) {
+    cleanReply = reply.replace(/RESEND_REPORT/g, '').trim();
+    const report = lastShiftReports[String(userId)];
+    if (!report) {
+      await sendTelegram(userId, '📋 Отчёт закрытия не найден — смена ещё не закрывалась сегодня.');
+    } else {
+      const sellerNameLocal = ALLOWED_MAP[String(userId)] || 'Продавец';
+      // Отправляем запрос владельцу
+      for (const ownerId of OWNER_IDS) {
+        pendingResendApprovals[String(ownerId)] = { sellerId: String(userId), sellerName: sellerNameLocal };
+        await sendTelegram(ownerId, '📋 ' + sellerNameLocal + ' запрашивает повторную отправку отчёта закрытия смены.\n\nОтветь ДА чтобы отправить или НЕТ чтобы отказать.');
+      }
+      await sendTelegram(userId, '⏳ Запрос отправлен руководителю. Ожидай разрешения.');
+    }
+    if (!cleanReply) return '';
+  }
+
+  // Обработка ДА/НЕТ от владельца на запрос повторной отправки отчёта
+  if (isOwner && pendingResendApprovals[String(userId)]) {
+    const msgLower = (messageText||'').toLowerCase().trim();
+    if (msgLower === 'да' || msgLower === 'yes') {
+      const { sellerId, sellerName: sName } = pendingResendApprovals[String(userId)];
+      delete pendingResendApprovals[String(userId)];
+      const report = lastShiftReports[sellerId];
+      if (report) {
+        await sendTelegramDocument(sellerId, report.filename, report.html, report.caption);
+        await sendTelegram(userId, '✅ Отчёт повторно отправлен ' + sName + '.');
+        await sendTelegram(sellerId, '✅ Руководитель разрешил — отчёт отправлен повторно.');
+      }
+      return '';
+    } else if (msgLower === 'нет' || msgLower === 'no') {
+      const { sellerId, sellerName: sName } = pendingResendApprovals[String(userId)];
+      delete pendingResendApprovals[String(userId)];
+      await sendTelegram(sellerId, '❌ Руководитель не разрешил повторную отправку отчёта.');
+      await sendTelegram(userId, '❌ Отказано в повторной отправке для ' + sName + '.');
+      return '';
+    }
   }
 
   if (reply.includes('DIGEST_NOW')) {
@@ -1431,6 +1472,9 @@ async function handleSystemCommands(reply, userId, sellerName) {
 
         const htmlReport = generateShiftHTML({ sellerName: sellerFinal, date: today, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations });
         const filename = 'otchet_' + today.replace(/\./g,'_') + '_' + sellerFinal + '.html';
+
+        // Сохраняем последний отчёт для возможной повторной отправки
+        lastShiftReports[String(userId)] = { html: htmlReport, filename, caption: '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime };
         for (const ownerId of OWNER_IDS) {
           await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
         }
