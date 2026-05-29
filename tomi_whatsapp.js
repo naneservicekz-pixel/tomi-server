@@ -1022,7 +1022,7 @@ async function handleSystemCommands(reply, userId, sellerName) {
           console.log('lastCash null или 0 — пропускаем проверку');
         }
 
-        const shiftData = { seller: s.seller, shop: s.shop, cashOpen: s.cashOpen, time: s.time, start_time: new Date().toISOString() };
+        const shiftData = { seller: s.seller, shop: s.shop, cash_open: s.cashOpen, start_time: new Date().toISOString() };
         openShifts[String(userId)] = shiftData;
         await saveOpenShift(userId, shiftData);
         clearChecklistTimer(userId); // Чек-лист закрыт — таймер отменяем
@@ -1509,7 +1509,7 @@ app.post('/webhook', async (req, res) => {
         pendingGeoAction[userId] = 'open_shift';
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
-        await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cashOpen: 0, time: getTime(), start_time: new Date().toISOString(), status: 'checklist_started' });
+        await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString() });
 
         // Записываем начало чек-листа в историю — чтобы Claude знал контекст
         const checklistStartMsg = 'Продавец начинает смену. Начинаем чек-лист открытия с шага 0.';
