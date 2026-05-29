@@ -929,6 +929,9 @@ function getOwnerPrompt(ownerName, data) {
     '"Отчёт недели" — еженедельный HTML отчёт прямо сейчас => WEEKLY_REPORT\n' +
     '"P&L" — финансовый отчёт месяца => PL_REPORT\n' +
     'Расходы: если пишет "Аренда 500000" или "Закупка 12000000 корея" и т.д — распознай категорию и сумму => EXPENSE_SAVE:{"date":"","category":"","amount":0,"note":""}\n' +
+    'Удаление расхода: "удали последний расход" или "удали аренду" => EXPENSE_DELETE:{"note":"что удалить"}\n' +
+    'Напоминания: "напомни завтра в 10:00 позвонить поставщику" => REMINDER_SAVE:{"text":"","remind_at":"ISO datetime","user_id":""}\n' +
+    'Для remind_at используй реальную дату и время по Алматы в ISO формате. Сегодня: ' + getNow() + '\n' +
     'Категории расходов: Аренда, Закупка товара, Коммунальные, Зарплата персонала, Реклама, Транспорт, Прочее\n\n' +
     '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n\n' +
     'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
@@ -977,6 +980,30 @@ function detectPhotoType(conversation) {
 
 async function handleSystemCommands(reply, userId, sellerName) {
   let cleanReply = reply;
+
+  if (reply.includes('REMINDER_SAVE:')) {
+    try {
+      const jsonStr = reply.match(/REMINDER_SAVE:(\{.*?\})/s)?.[1];
+      if (jsonStr) {
+        const r = JSON.parse(jsonStr);
+        await saveReminder(r.user_id || userId, r.text, r.remind_at);
+      }
+    } catch(e) { console.error('REMINDER_SAVE error:', e.message); }
+    cleanReply = reply.replace(/REMINDER_SAVE:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('EXPENSE_DELETE:')) {
+    try {
+      const deleted = await deleteLastExpense(userId);
+      if (deleted) {
+        await sendTelegram(userId, '🗑 Удалена запись:\n' + (deleted[0]||'') + ' · ' + (deleted[1]||'') + ' · ' + Number(deleted[2]||0).toLocaleString() + ' тг');
+      } else {
+        await sendTelegram(userId, '❌ Нет записей для удаления.');
+      }
+    } catch(e) { console.error('EXPENSE_DELETE error:', e.message); }
+    cleanReply = reply.replace(/EXPENSE_DELETE:\{.*?\}/s, '').trim();
+    if (!cleanReply) return '';
+  }
 
   if (reply.includes('EXPENSE_SAVE:')) {
     try {
@@ -1788,7 +1815,45 @@ async function sendWeeklyDisciplineReport() {
 }
 
 // ── Еженедельный отчёт по продажам (HTML) ────────────────────────────
-// ── P&L Отчёт месяца ─────────────────────────────────────────────────
+// ── Напоминания ───────────────────────────────────────────────────────
+async function saveReminder(userId, text, remindAt) {
+  try {
+    await supabase.from('reminders').insert({ user_id: String(userId), text, remind_at: remindAt, done: false });
+    console.log('Напоминание сохранено:', text, remindAt);
+  } catch(e) { console.error('saveReminder error:', e.message); }
+}
+
+async function checkReminders() {
+  try {
+    const now = new Date().toISOString();
+    const { data } = await supabase.from('reminders').select('*').eq('done', false).lte('remind_at', now);
+    if (!data || data.length === 0) return;
+    for (const r of data) {
+      await sendTelegram(r.user_id, '⏰ Напоминание: ' + r.text);
+      await supabase.from('reminders').update({ done: true }).eq('id', r.id);
+      console.log('Напоминание отправлено:', r.text);
+    }
+  } catch(e) { console.error('checkReminders error:', e.message); }
+}
+
+async function deleteLastExpense(userId) {
+  try {
+    const rows = await readSheet('Расходы!A:F', DASHBOARD_ID);
+    // Ищем последнюю непустую строку с данными (с строки 3)
+    let lastRow = -1;
+    for (let i = rows.length - 1; i >= 2; i--) {
+      if (rows[i] && rows[i][0] && rows[i][2]) { lastRow = i + 1; break; }
+    }
+    if (lastRow < 0) return null;
+    const { api } = getSheets(DASHBOARD_ID);
+    // Очищаем строку
+    await api.spreadsheets.values.clear({
+      spreadsheetId: DASHBOARD_ID,
+      range: 'Расходы!A' + lastRow + ':F' + lastRow
+    });
+    return rows[lastRow - 1];
+  } catch(e) { console.error('deleteLastExpense error:', e.message); return null; }
+}
 async function generatePLReport() {
   try {
     const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
@@ -2260,6 +2325,9 @@ async function sendMorningDigest() {
 
 // Планировщик — каждую минуту проверяем время
 function startDailyScheduler() {
+  // Проверяем напоминания каждую минуту
+  setInterval(() => { checkReminders(); }, 60000);
+
   setInterval(() => {
     const now = new Date();
     const almatyTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
