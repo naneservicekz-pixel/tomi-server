@@ -77,7 +77,10 @@ async function loadOpenShift(userId) {
 }
 
 async function saveOpenShift(userId, shiftData) {
-  try { await supabase.from('open_shifts').upsert({ phone: String(userId), ...shiftData }, { onConflict: 'phone' }); } catch(e) {}
+  try {
+    const result = await supabase.from('open_shifts').upsert({ phone: String(userId), ...shiftData }, { onConflict: 'phone' });
+    console.log('saveOpenShift result:', JSON.stringify(result?.error || 'ok'), 'userId:', userId);
+  } catch(e) { console.error('saveOpenShift ERROR:', e.message); }
 }
 
 async function deleteOpenShift(userId) {
