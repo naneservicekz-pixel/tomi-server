@@ -1436,11 +1436,10 @@ async function handleSystemCommands(reply, userId, sellerName) {
         }
 
         // ── Командный отчёт дня — отправляем всем продавцам ──────────
-        const teamHTML = generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs, prepayExplanations });
         const teamFilename = 'den_' + today.replace(/\./g,'_') + '.html';
         for (const [sellerId, sellerName2] of Object.entries(ALLOWED_MAP)) {
           if (!OWNER_IDS.includes(sellerId)) {
-            await sendTelegramDocument(sellerId, teamFilename, teamHTML, '📊 Итоги дня ' + today + ' — открой в браузере');
+            await sendTelegramDocument(sellerId, teamFilename, htmlReport, '📊 Итоги дня ' + today + ' — открой в браузере');
           }
         }
 
