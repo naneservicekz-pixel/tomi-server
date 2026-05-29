@@ -1773,7 +1773,7 @@ async function sendWeeklySalesReport() {
         <div style="font-size:14px;font-weight:600;color:#1a1a1a;">${emoji} ${name}</div>
         <div style="font-size:16px;font-weight:700;color:${pctColor(pct)}">${pct}%</div>
       </div>
-      <div style="font-size:12px;color:#999;margin-bottom:8px;">${fmt(monthFact)} ₸ из ${fmt(monthPlan)} ₸ (месяц)</div>
+      <div style="font-size:12px;color:#999;margin-bottom:8px;">${fmt(monthFact)} ₸ из ${fmt(monthPlan)} ₸ (месяц) · Осталось: ${fmt(Math.max(0, monthPlan - monthFact))} ₸</div>
       <div style="background:#ebe8e2;border-radius:20px;height:6px;overflow:hidden;margin-bottom:8px;">
         <div style="width:${Math.min(pct,100)}%;height:6px;border-radius:20px;background:${barColor(pct)};"></div>
       </div>
