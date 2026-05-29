@@ -496,6 +496,88 @@ body {
   }
 }
 
+// ── Командный отчёт дня для продавцов ────────────────────────────────
+function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs }) {
+  const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
+  const isOk = Math.abs(diff) < 500;
+  const statusBg = isOk ? '#eaf3de' : '#fcebeb';
+  const statusBorder = isOk ? '#c0dd97' : '#F7C1C1';
+  const statusDot = isOk ? '#639922' : '#E24B4A';
+  const statusText = isOk ? 'Смена закрыта корректно — все каналы сходятся' : 'Расхождение — руководитель уведомлён';
+  const statusColor = isOk ? '#3B6D11' : '#A32D2D';
+
+  const kaspiTotal = (s.rKaspi||0) + (s.rOnline||0);
+  const halykTotal = (s.rHalyk||0) + (s.rHalykOnline||0);
+  const personalTotal = s.rPersonal || 0;
+  const cashTotal = s.rCash || 0;
+
+  const kaspiOk = Math.abs(kaspiNet - kaspiTotal) <= 500;
+  const halykOk = Math.abs(halykNet - halykTotal) <= 500;
+
+  const channels = [
+    { name: 'Kaspi (QR + Онлайн)', amount: kaspiTotal, color: '#378ADD', ok: kaspiOk },
+    { name: 'Halyk (QR + Онлайн)', amount: halykTotal, color: '#7F77DD', ok: halykOk },
+    { name: 'Наличные', amount: cashTotal, color: '#1D9E75', ok: true },
+  ];
+  if (personalTotal > 0) channels.push({ name: 'Личная карта Айнур', amount: personalTotal, color: '#BA7517', ok: null });
+  if ((s.rBonus||0) > 0) channels.push({ name: 'Бонусы', amount: s.rBonus||0, color: '#888', ok: null });
+
+  const channelRows = channels.map(ch => `
+    <div style="padding:11px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;align-items:center;font-size:13px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div style="width:8px;height:8px;border-radius:50%;background:${ch.color};flex-shrink:0;"></div>
+        <span style="color:#555;">${ch.name}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span style="font-weight:500;">${fmt(ch.amount)}</span>
+        ${ch.ok !== null ? `<span style="font-size:11px;background:${ch.ok ? '#eaf3de' : '#fcebeb'};color:${ch.ok ? '#3B6D11' : '#A32D2D'};padding:2px 8px;border-radius:20px;">${ch.ok ? 'Сходится' : 'Расхождение'}</span>` : ''}
+      </div>
+    </div>`).join('');
+
+  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Итоги дня — ${today}</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px;margin:0;">
+<div style="max-width:680px;margin:0 auto;">
+
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;">
+    <div>
+      <div style="font-size:21px;font-weight:700;letter-spacing:0.07em;color:#1a1a1a;">NANÉ PARIS</div>
+      <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.12em;margin-top:2px;">Итоги дня</div>
+    </div>
+    <div style="text-align:right;font-size:13px;color:#555;">
+      <strong style="color:#1a1a1a;display:block;font-size:14px;">${today}</strong>
+      закрыто в ${closeTime}
+    </div>
+  </div>
+
+  <div style="background:${statusBg};border:1px solid ${statusBorder};border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:20px;">
+    <div style="width:8px;height:8px;border-radius:50%;background:${statusDot};flex-shrink:0;"></div>
+    <span style="font-size:13px;font-weight:500;color:${statusColor};">${statusText}</span>
+  </div>
+
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:0 0 8px;">Оборот дня</div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
+    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
+      <div style="font-size:11px;color:#999;margin-bottom:5px;">Продажи за день</div>
+      <div style="font-size:22px;font-weight:700;color:#1a1a1a;">${fmt(rostaTotal)}</div>
+    </div>
+    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
+      <div style="font-size:11px;color:#999;margin-bottom:5px;">Расхождение</div>
+      <div style="font-size:22px;font-weight:700;color:${isOk ? '#1a8a5a' : '#E24B4A'}">${diff === 0 ? '0 ₸' : (diff > 0 ? '+' : '') + fmt(diff)}</div>
+    </div>
+  </div>
+
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Каналы продаж</div>
+  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">
+    ${channelRows}
+    <div style="padding:11px 14px;display:flex;justify-content:space-between;font-size:13px;font-weight:600;">
+      <span>Итого</span>
+      <span>${fmt(rostaTotal)}</span>
+    </div>
+  </div>
+
+</div></body></html>`;
+}
+
 async function sendTelegram(chatId, text) {
   const chunks = [];
   for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
@@ -1131,6 +1213,15 @@ async function handleSystemCommands(reply, userId, sellerName) {
         const filename = 'otchet_' + today.replace(/\./g,'_') + '_' + sellerFinal + '.html';
         for (const ownerId of OWNER_IDS) {
           await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
+        }
+
+        // ── Командный отчёт дня — отправляем всем продавцам ──────────
+        const teamHTML = generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs });
+        const teamFilename = 'den_' + today.replace(/\./g,'_') + '.html';
+        for (const [sellerId, sellerName2] of Object.entries(ALLOWED_MAP)) {
+          if (!OWNER_IDS.includes(sellerId)) {
+            await sendTelegramDocument(sellerId, teamFilename, teamHTML, '📊 Итоги дня ' + today + ' — открой в браузере');
+          }
         }
 
         delete openShifts[String(userId)];
