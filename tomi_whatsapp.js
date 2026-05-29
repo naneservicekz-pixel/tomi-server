@@ -836,6 +836,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Зарплата" — расчет ФОТ\n' +
     '"Дашборд" => DASHBOARD_HTML\n' +
     '"Дайджест" — утренняя сводка прямо сейчас => DIGEST_NOW\n' +
+    '"Отчёт недели" — еженедельный HTML отчёт прямо сейчас => WEEKLY_REPORT\n' +
     '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n\n' +
     'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
     'Бонусы: от 700к +5000 тг/чел, от 2млн +40000 тг/чел\nФикс: Асель 14000, Зарина 14000, Луиза 14000\n\nПо-русски. Прямо, с цифрами.';
@@ -883,6 +884,12 @@ function detectPhotoType(conversation) {
 
 async function handleSystemCommands(reply, userId, sellerName) {
   let cleanReply = reply;
+
+  if (reply.includes('WEEKLY_REPORT')) {
+    cleanReply = reply.replace(/WEEKLY_REPORT/g, '').trim();
+    await sendWeeklySalesReport();
+    if (!cleanReply) return '';
+  }
 
   if (reply.includes('DIGEST_NOW')) {
     cleanReply = reply.replace(/DIGEST_NOW/g, '').trim();
@@ -1649,7 +1656,223 @@ async function sendWeeklyDisciplineReport() {
   } catch(e) { console.error('Ошибка еженедельной сводки:', e.message); }
 }
 
-async function sendMorningDigest() {
+// ── Еженедельный отчёт по продажам (HTML) ────────────────────────────
+async function sendWeeklySalesReport() {
+  try {
+    console.log('Формирую еженедельный отчёт по продажам...');
+    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
+    const pctColor = p => p >= 100 ? '#1a8a5a' : p >= 80 ? '#b06a10' : '#c0392b';
+    const barColor = p => p >= 100 ? '#27ae60' : p >= 80 ? '#e67e22' : '#e74c3c';
+
+    // Даты недели
+    const now = new Date();
+    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const weekStart = weekAgo.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: 'long' });
+    const weekEnd = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: 'long', year: 'numeric' });
+
+    // Читаем смены за неделю
+    const shifts = await readSheet('Смены!A:Y', SPREADSHEET_ID);
+    const weekShifts = shifts.slice(1).filter(r => {
+      if (!r[0]) return false;
+      const parts = String(r[0]).split('.');
+      if (parts.length < 3) return false;
+      const d = new Date(parts[2], parts[1]-1, parts[0]);
+      return d >= weekAgo && d <= now;
+    });
+
+    // Итоги по дням
+    const byDay = {};
+    weekShifts.forEach(r => {
+      const date = r[0];
+      const rostaTotal = parseFloat(String(r[19]||'0').replace(/[^0-9.]/g,'')) || 0;
+      if (!byDay[date]) byDay[date] = 0;
+      byDay[date] += rostaTotal;
+    });
+
+    const dayTotals = Object.values(byDay);
+    const weekTotal = dayTotals.reduce((s, v) => s + v, 0);
+    const avgDay = dayTotals.length > 0 ? weekTotal / dayTotals.length : 0;
+    const bestDay = dayTotals.length > 0 ? Math.max(...dayTotals) : 0;
+    const worstDay = dayTotals.length > 0 ? Math.min(...dayTotals) : 0;
+    const bestDayDate = Object.keys(byDay).find(k => byDay[k] === bestDay) || '—';
+    const worstDayDate = Object.keys(byDay).find(k => byDay[k] === worstDay) || '—';
+
+    // Итоги по продавцам
+    const bySeller = {};
+    weekShifts.forEach(r => {
+      const seller = r[1];
+      if (!seller) return;
+      const rostaTotal = parseFloat(String(r[19]||'0').replace(/[^0-9.]/g,'')) || 0;
+      if (!bySeller[seller]) bySeller[seller] = { total: 0, shifts: 0 };
+      bySeller[seller].total += rostaTotal;
+      bySeller[seller].shifts++;
+    });
+
+    // Дисциплина за неделю
+    const discRows = await readSheet('Дисциплина!A:E', SPREADSHEET_ID);
+    const weekDisc = (discRows || []).slice(1).filter(r => {
+      if (!r[0]) return false;
+      const parts = String(r[0]).split('.');
+      if (parts.length < 3) return false;
+      const d = new Date(parts[2], parts[1]-1, parts[0]);
+      return d >= weekAgo && d <= now;
+    });
+    const lateCount = weekDisc.filter(r => r[2] === 'Опоздание').length;
+    const timeoutCount = weekDisc.filter(r => r[2] === 'Таймаут чек-листа').length;
+    const reopenCount = weekDisc.filter(r => r[2] === 'Повторное открытие').length;
+
+    // Дашборд — план месяца
+    const dash = await readSheet("'Дашборд'!A1:H25", DASHBOARD_ID);
+    const getNum = (rows, ri, ci) => {
+      try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
+    };
+    const plan = getNum(dash, 5, 2) || 27000000;
+    const totalFact = getNum(dash, 18, 6) || 0;
+    const totalPct = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
+    const remains = Math.max(0, plan - totalFact);
+    const today = new Date();
+    const daysInMonth = new Date(today.getFullYear(), today.getMonth()+1, 0).getDate();
+    const daysLeft = daysInMonth - today.getDate();
+    const dailyNeed = daysLeft > 0 ? Math.round(remains / daysLeft) : 0;
+
+    // Личные планы продавцов
+    const aselPlan = getNum(dash, 13, 2);
+    const zarinaPlan = getNum(dash, 13, 3);
+    const luizaPlan = getNum(dash, 13, 4);
+    const planMap = { 'Асель': aselPlan, 'Зарина': zarinaPlan, 'Луиза': luizaPlan };
+    const emojiMap = { 'Асель': '💙', 'Зарина': '💙', 'Луиза': '💚' };
+
+    // Факт по продавцам из дашборда
+    const aselFact = getNum(dash, 18, 2);
+    const zarinaFact = getNum(dash, 18, 3);
+    const luizaFact = getNum(dash, 18, 4);
+    const factMap = { 'Асель': aselFact, 'Зарина': zarinaFact, 'Луиза': luizaFact };
+
+    // Дисциплина по продавцам за неделю
+    const discBySeller = {};
+    weekDisc.forEach(r => {
+      const name = r[1];
+      if (!name) return;
+      if (!discBySeller[name]) discBySeller[name] = 0;
+      if (r[2] === 'Опоздание') discBySeller[name]++;
+    });
+
+    const sellers = ['Асель', 'Зарина', 'Луиза'];
+
+    const sellerBlocks = sellers.map(name => {
+      const weekData = bySeller[name] || { total: 0, shifts: 0 };
+      const monthFact = factMap[name] || 0;
+      const monthPlan = planMap[name] || 1;
+      const pct = Math.round(monthFact / monthPlan * 100);
+      const avgSellerDay = weekData.shifts > 0 ? Math.round(weekData.total / weekData.shifts) : 0;
+      const late = discBySeller[name] || 0;
+      const emoji = emojiMap[name] || '💙';
+      return `
+    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="font-size:14px;font-weight:600;color:#1a1a1a;">${emoji} ${name}</div>
+        <div style="font-size:16px;font-weight:700;color:${pctColor(pct)}">${pct}%</div>
+      </div>
+      <div style="font-size:12px;color:#999;margin-bottom:8px;">${fmt(monthFact)} ₸ из ${fmt(monthPlan)} ₸ (месяц)</div>
+      <div style="background:#ebe8e2;border-radius:20px;height:6px;overflow:hidden;margin-bottom:8px;">
+        <div style="width:${Math.min(pct,100)}%;height:6px;border-radius:20px;background:${barColor(pct)};"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
+        <div style="background:#f7f4ef;border-radius:8px;padding:8px;">
+          <div style="font-size:10px;color:#aaa;margin-bottom:2px;">Смен за неделю</div>
+          <div style="font-size:13px;font-weight:500;">${weekData.shifts}</div>
+        </div>
+        <div style="background:#f7f4ef;border-radius:8px;padding:8px;">
+          <div style="font-size:10px;color:#aaa;margin-bottom:2px;">Средний день</div>
+          <div style="font-size:13px;font-weight:500;">${fmt(avgSellerDay)} ₸</div>
+        </div>
+        <div style="background:#f7f4ef;border-radius:8px;padding:8px;">
+          <div style="font-size:10px;color:#aaa;margin-bottom:2px;">Опозданий</div>
+          <div style="font-size:13px;font-weight:500;color:${late > 0 ? '#c0392b' : '#1a8a5a'}">${late}</div>
+        </div>
+      </div>
+    </div>`;
+    }).join('');
+
+    const nowStr = getNow();
+    const html = `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANÉ PARIS — Еженедельный отчёт</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px;margin:0;">
+<div style="max-width:680px;margin:0 auto;">
+
+  <div style="margin-bottom:20px;">
+    <div style="font-size:21px;font-weight:700;letter-spacing:0.07em;color:#1a1a1a;">NANÉ PARIS</div>
+    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.12em;margin-top:2px;">Еженедельный отчёт — ${weekStart} — ${weekEnd}</div>
+    <div style="font-size:11px;color:#aaa;margin-top:3px;">Сформирован: ${nowStr}</div>
+  </div>
+
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:0 0 8px;">Итоги недели</div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
+    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
+      <div style="font-size:11px;color:#999;margin-bottom:5px;">Оборот за неделю</div>
+      <div style="font-size:22px;font-weight:700;color:#1a1a1a;">${fmt(weekTotal)} ₸</div>
+      <div style="font-size:12px;color:#aaa;margin-top:4px;">${dayTotals.length} рабочих дней</div>
+    </div>
+    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
+      <div style="font-size:11px;color:#999;margin-bottom:5px;">Средний день</div>
+      <div style="font-size:22px;font-weight:700;color:#1a1a1a;">${fmt(avgDay)} ₸</div>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
+    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
+      <div style="font-size:11px;color:#999;margin-bottom:5px;">Лучший день</div>
+      <div style="font-size:18px;font-weight:700;color:#1a8a5a;">${fmt(bestDay)} ₸</div>
+      <div style="font-size:12px;color:#aaa;margin-top:4px;">${bestDayDate}</div>
+    </div>
+    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
+      <div style="font-size:11px;color:#999;margin-bottom:5px;">Худший день</div>
+      <div style="font-size:18px;font-weight:700;color:#c0392b;">${fmt(worstDay)} ₸</div>
+      <div style="font-size:12px;color:#aaa;margin-top:4px;">${worstDayDate}</div>
+    </div>
+  </div>
+
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">План месяца</div>
+  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px;">
+    <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+      <div style="font-size:13px;color:#1a1a1a;font-weight:500;">Выполнено: ${fmt(totalFact)} ₸</div>
+      <div style="font-size:18px;font-weight:700;color:${pctColor(totalPct)}">${totalPct}%</div>
+    </div>
+    <div style="background:#ebe8e2;border-radius:20px;height:8px;overflow:hidden;margin-bottom:6px;">
+      <div style="width:${Math.min(totalPct,100)}%;height:8px;border-radius:20px;background:${barColor(totalPct)};"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:11px;color:#bbb;">
+      <span>0</span><span>${fmt(plan/2)} ₸</span><span>${fmt(plan)} ₸</span>
+    </div>
+    <div style="margin-top:10px;font-size:12px;color:#888;">Осталось: ${fmt(remains)} ₸ · До конца месяца: ${daysLeft} дн · Нужно в день: ${fmt(dailyNeed)} ₸</div>
+  </div>
+
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Продавцы за неделю</div>
+  ${sellerBlocks}
+
+  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Дисциплина за неделю</div>
+  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">
+    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
+      <span style="color:#aaa;">Опозданий</span>
+      <span style="font-weight:500;color:${lateCount > 0 ? '#c0392b' : '#1a8a5a'}">${lateCount}</span>
+    </div>
+    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
+      <span style="color:#aaa;">Таймаут чек-листа</span>
+      <span style="font-weight:500;color:${timeoutCount > 0 ? '#c0392b' : '#1a8a5a'}">${timeoutCount}</span>
+    </div>
+    <div style="padding:12px 14px;display:flex;justify-content:space-between;font-size:13px;">
+      <span style="color:#aaa;">Повторных открытий смены</span>
+      <span style="font-weight:500;color:${reopenCount > 0 ? '#b06a10' : '#1a8a5a'}">${reopenCount}</span>
+    </div>
+  </div>
+
+</div></body></html>`;
+
+    const filename = 'weekly_' + now.toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
+    for (const ownerId of OWNER_IDS) {
+      await sendTelegramDocument(ownerId, filename, html, '📊 Еженедельный отчёт NANÉ PARIS — открой в браузере');
+    }
+    console.log('Еженедельный отчёт по продажам отправлен');
+  } catch(e) { console.error('Ошибка еженедельного отчёта:', e.message); }
+}
   try {
     console.log('Отправляю утренний дайджест...');
 
@@ -1792,6 +2015,7 @@ function startDailyScheduler() {
         // По понедельникам — сводка по дисциплине (0 = воскресенье, 1 = понедельник)
         if (almatyTime.getDay() === 1) {
           sendWeeklyDisciplineReport();
+          sendWeeklySalesReport();
         }
       }
     }
