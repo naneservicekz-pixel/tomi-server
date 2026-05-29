@@ -191,11 +191,13 @@ async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
     const rows = await readSheet("Учёт по дням!A6:E200", DASHBOARD_ID);
     if (!rows) return false;
 
-    // Ищем строку с нужной датой
+    // Ищем строку с нужной датой — сравниваем только день.месяц (без года)
+    const dateShort = date.split('.').slice(0,2).join('.'); // "29.05" из "29.05.2026"
     let targetRow = -1;
     for (let i = 0; i < rows.length; i++) {
-      const cellDate = String(rows[i][1]||'').trim(); // колонка B = дата
-      if (cellDate === date) { targetRow = 6 + i; break; }
+      const cellDate = String(rows[i][1]||'').trim();
+      const cellDateShort = cellDate.split('.').slice(0,2).join('.');
+      if (cellDateShort === dateShort) { targetRow = 6 + i; break; }
     }
 
     // Если не нашли по дате — пишем в первую пустую строку по колонке C
