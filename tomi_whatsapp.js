@@ -1803,48 +1803,54 @@ app.post('/webhook', async (req, res) => {
         return;
       }
       // ── Определяем действие по геолокации ──
-      const existingShiftForGeo = openShifts[String(userId)] || await loadOpenShift(userId);
-      const shiftIsSecond = !!(existingShiftForGeo && existingShiftForGeo.is_second);
-      const action = pendingGeoAction[userId] || ((existingShiftForGeo && !shiftIsSecond) ? 'close_shift' : 'open_shift');
-      console.log('GEO DEBUG userId:', userId, 'pendingGeo:', pendingGeoAction[userId], 'existingShift:', JSON.stringify(existingShiftForGeo), 'shiftIsSecond:', shiftIsSecond, 'action:', action);
-      delete pendingGeoAction[userId];
-      if (action === 'open_shift') {
-        // Проверяем — второй продавец или первый
-        let geoIsSecond = false;
-        let geoFirstSeller = '';
-        for (const [otherId, sd] of Object.entries(openShifts)) {
-          if (otherId !== String(userId) && sd && sd.seller) { geoIsSecond = true; geoFirstSeller = sd.seller; break; }
-        }
-        if (!geoIsSecond) {
-          try {
-            const { data: oth } = await supabase.from('open_shifts').select('*').neq('phone', String(userId));
-            if (oth && oth.length > 0) { geoIsSecond = true; geoFirstSeller = oth[0].seller || ''; }
-          } catch(e) {}
-        }
+      // Проверяем есть ли ДРУГИЕ открытые смены (не наша)
+      let geoOtherShift = false;
+      for (const [otherId, sd] of Object.entries(openShifts)) {
+        if (otherId !== String(userId) && sd && sd.seller) { geoOtherShift = true; break; }
+      }
+      if (!geoOtherShift) {
+        try {
+          const { data: oth } = await supabase.from('open_shifts').select('*').neq('phone', String(userId));
+          if (oth && oth.length > 0) geoOtherShift = true;
+        } catch(e) {}
+      }
 
-        if (geoIsSecond) {
-          // ВТОРОЙ ПРОДАВЕЦ — только SECOND_ARRIVE, без кассы
-          const sName = ALLOWED_MAP[String(userId)] || 'Продавец';
-          const tStr = getTime();
-          // Отправляем алерт владельцу
-          for (const ownerId of OWNER_IDS) {
-            await sendTelegram(ownerId, '\u2705 Второй продавец на месте\n\u{1F464} ' + sName + '\n\u{1F550} ' + tStr);
-          }
-          await appendSheet('Логи!A:F', [getNow(), 'Приход', sName, String(userId), 'Второй продавец пришёл в ' + tStr, '']);
-          // Проверяем опоздание
-          const h = parseInt(tStr.split(':')[0]);
-          const m = parseInt(tStr.split(':')[1]);
-          if (h > 11 || (h === 11 && m > 15)) {
-            for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '\u26A0\uFE0F Опоздание!\n\u{1F464} ' + sName + '\n\u{1F550} ' + tStr);
-          }
-          await sendTelegram(userId, '\u2705 Геолокация принята. Добро пожаловать на смену, ' + sName + '! Хорошей работы!');
-        } else {
-          // ПЕРВЫЙ ПРОДАВЕЦ — обычный чек-лист
-          delete conversations[String(userId)];
-          await handleMessage(userId, '\u{1F4CD} ' + distance + ' м от магазина. ок', null);
-        }
+      // Если есть другая смена — это второй продавец (его смена уже открыта, геолокация = приход)
+      // Если нет других смен — это первый продавец или закрытие
+      const ownShift = openShifts[String(userId)] || await loadOpenShift(userId);
+      let action;
+      if (pendingGeoAction[userId]) {
+        action = pendingGeoAction[userId];
+      } else if (geoOtherShift && ownShift) {
+        // Есть наша смена И чужая — мы второй продавец, геолокация для прихода
+        action = 'second_arrive';
+      } else if (ownShift) {
+        // Есть только наша смена — закрытие
+        action = 'close_shift';
       } else {
-        await handleMessage(userId, '\u{1F4CD} ' + distance + ' м от магазина. закрытие ок', null);
+        action = 'open_shift';
+      }
+      console.log('GEO DEBUG userId:', userId, 'geoOtherShift:', geoOtherShift, 'ownShift:', !!ownShift, 'action:', action);
+      delete pendingGeoAction[userId];
+
+      if (action === 'second_arrive') {
+        // ВТОРОЙ ПРОДАВЕЦ — обрабатываем сами без Claude
+        const sName = ALLOWED_MAP[String(userId)] || 'Продавец';
+        const tStr = getTime();
+        for (const ownerId of OWNER_IDS) {
+          await sendTelegram(ownerId, '✅ Второй продавец на месте\n👤 ' + sName + '\n🕐 ' + tStr);
+        }
+        await appendSheet('Логи!A:F', [getNow(), 'Приход', sName, String(userId), 'Второй продавец пришёл в ' + tStr, '']);
+        const h = parseInt(tStr.split(':')[0]), m = parseInt(tStr.split(':')[1]);
+        if (h > 11 || (h === 11 && m > 15)) {
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + sName + '\n🕐 ' + tStr);
+        }
+        await sendTelegram(userId, '✅ Геолокация принята. Хорошей смены, ' + sName + '!');
+      } else if (action === 'open_shift') {
+        delete conversations[String(userId)];
+        await handleMessage(userId, '📍 ' + distance + ' м от магазина. ок', null);
+      } else {
+        await handleMessage(userId, '📍 ' + distance + ' м от магазина. закрытие ок', null);
       }
       return;
     }
