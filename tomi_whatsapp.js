@@ -85,6 +85,20 @@ async function saveOpenShift(userId, shiftData) {
   } catch(e) { console.error('saveOpenShift ERROR:', e.message); }
 }
 
+async function saveLastReport(userId, html, filename, caption) {
+  try {
+    await supabase.from('last_reports').upsert({ user_id: String(userId), html, filename, caption }, { onConflict: 'user_id' });
+    console.log('Отчёт сохранён в Supabase для', userId);
+  } catch(e) { console.error('saveLastReport error:', e.message); }
+}
+
+async function loadLastReport(userId) {
+  try {
+    const { data } = await supabase.from('last_reports').select('*').eq('user_id', String(userId)).maybeSingle();
+    return data || null;
+  } catch(e) { return null; }
+}
+
 async function deleteOpenShift(userId) {
   try { await supabase.from('open_shifts').delete().eq('phone', String(userId)); } catch(e) {}
 }
@@ -1154,7 +1168,8 @@ async function handleSystemCommands(reply, userId, sellerName) {
     if (msgLower === 'да' || msgLower === 'yes') {
       const { sellerId, sellerName: sName } = pendingResendApprovals[String(userId)];
       delete pendingResendApprovals[String(userId)];
-      const report = lastShiftReports[sellerId];
+      let report = lastShiftReports[sellerId];
+      if (!report) report = await loadLastReport(sellerId);
       if (report) {
         await sendTelegramDocument(sellerId, report.filename, report.html, report.caption);
         await sendTelegram(userId, '✅ Отчёт повторно отправлен ' + sName + '.');
@@ -1475,6 +1490,7 @@ async function handleSystemCommands(reply, userId, sellerName) {
 
         // Сохраняем последний отчёт для возможной повторной отправки
         lastShiftReports[String(userId)] = { html: htmlReport, filename, caption: '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime };
+        await saveLastReport(userId, htmlReport, filename, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
         for (const ownerId of OWNER_IDS) {
           await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
         }
@@ -1671,7 +1687,8 @@ async function handleMessage(userId, messageText, photoFileId) {
   if (!isOwner && !hasOpenShift && messageText) {
     const msgLow = messageText.toLowerCase();
     if (msgLow.includes('повторно') || msgLow.includes('вышли отчёт') || msgLow.includes('вышли html') || msgLow.includes('html файл')) {
-      const report = lastShiftReports[userKey];
+      let report = lastShiftReports[userKey];
+      if (!report) report = await loadLastReport(userId);
       if (!report) {
         await sendTelegram(userId, '📋 Отчёт закрытия не найден — смена ещё не закрывалась сегодня.');
       } else {
