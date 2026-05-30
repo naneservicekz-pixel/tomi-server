@@ -1684,6 +1684,9 @@ async function handleMessage(userId, messageText, photoFileId) {
   }
 
   const hasOpenShift = !!openShifts[userKey];
+  // Если смена открыта с флагом is_second — продавец является вторым
+  const isSecondSellerFromShift = !!(openShifts[userKey] && openShifts[userKey].is_second);
+  console.log('handleMessage:', senderName, 'hasOpenShift:', hasOpenShift, 'is_second:', isSecondSellerFromShift, 'shift:', JSON.stringify(openShifts[userKey]));
 
   // ── Перехват запроса повторной отправки отчёта ───────────────────
   if (!isOwner && !hasOpenShift && messageText) {
@@ -1704,7 +1707,7 @@ async function handleMessage(userId, messageText, photoFileId) {
     }
   }
   // но у ДРУГОГО продавца смена уже открыта сегодня
-  let isSecondSeller = false;
+  let isSecondSeller = isSecondSellerFromShift; // читаем из сохранённой смены
   let firstSellerName = '';
   if (!isOwner && !hasOpenShift) {
     // Проверяем память
@@ -1937,8 +1940,10 @@ app.post('/webhook', async (req, res) => {
           } catch(e) {}
         }
 
-        // Теперь сохраняем свою смену
-        await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString() });
+        // Теперь сохраняем свою смену с флагом второго продавца
+        await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString(), is_second: isSecondSellerCheck });
+        // Также сохраняем в памяти
+        openShifts[String(userId)] = { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString(), is_second: isSecondSellerCheck };
 
         let checklistFirstQ;
         if (isSecondSellerCheck) {
