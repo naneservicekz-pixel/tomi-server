@@ -948,7 +948,7 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n\n' +
     'ШАГ 1 — ГЕОЛОКАЦИЯ\n' +
     'Спроси: "Пришли геолокацию через скрепку."\n' +
-    'Когда система написала что геолокация получена — сразу спроси: "Сколько наличных в кассе на начало смены?". Никаких лишних комментариев.\n\n' +
+    'Когда получишь сообщение с числом метров и словом ок — это подтверждение геолокации. Сразу без лишних слов спроси шаг 2: "Сколько наличных в кассе?"\n\n' +
     'ШАГ 2 — КАССА\n' +
     'Спроси: сколько наличных в кассе на начало смены?\n' +
     'Запомни сумму — она войдёт в SHIFT_OPEN как cashOpen.\n' +
@@ -1000,7 +1000,7 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'ШАГ 7 — ЗАЛ: товар убран, ценники на месте?\n' +
     'ШАГ 8 — ГОСТЕВАЯ: посуда вымыта, стол чистый?\n' +
     'ШАГ 9 — ГЕОЛОКАЦИЯ: "Пришли геолокацию для закрытия."\n' +
-    'Когда система написала что геолокация получена — сразу выдай SHIFT_CLOSE со всеми данными.\n' +
+    'Когда получишь сообщение с числом метров и словом ок — это подтверждение геолокации. Сразу выдай SHIFT_CLOSE со всеми данными.\n' +
     '=> SHIFT_CLOSE:{...,"notes":"объяснение расхождений если были"}\n\n' +
     'КРИТИЧНО: система сама заблокирует закрытие если в notes нет объяснения при расхождении >500 тг.\n' +
     'Ты как AI должна САМА провести анализ — не просто принять цифры, а проверить логику.\n' +
@@ -1804,11 +1804,10 @@ app.post('/webhook', async (req, res) => {
       const action = pendingGeoAction[userId] || (existingShiftForGeo ? 'close_shift' : 'open_shift');
       delete pendingGeoAction[userId];
       if (action === 'open_shift') {
-        // Очищаем историю — Claude не должен видеть старый контекст
         delete conversations[String(userId)];
-        await handleMessage(userId, 'Система: геолокация получена, продавец в магазине (' + distance + ' м). Шаг 1 завершён. Переходи к шагу 2 — спроси наличные в кассе.', null);
+        await handleMessage(userId, '\u{1F4CD} ' + distance + ' м от магазина. ок', null);
       } else {
-        await handleMessage(userId, 'Система: геолокация получена, продавец в магазине (' + distance + ' м). Завершай закрытие смены — выдай SHIFT_CLOSE.', null);
+        await handleMessage(userId, '\u{1F4CD} ' + distance + ' м от магазина. закрытие ок', null);
       }
       return;
     }
