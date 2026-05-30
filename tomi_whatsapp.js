@@ -1802,9 +1802,11 @@ app.post('/webhook', async (req, res) => {
         }
         return;
       }
-      // ── ИСПРАВЛЕНИЕ: определяем действие по наличию открытой смены ──
+      // ── Определяем действие по геолокации ──
       const existingShiftForGeo = openShifts[String(userId)] || await loadOpenShift(userId);
-      const action = pendingGeoAction[userId] || (existingShiftForGeo ? 'close_shift' : 'open_shift');
+      // Если смена второго продавца (is_second=true) — геолокация для открытия, не закрытия
+      const shiftIsSecond = !!(existingShiftForGeo && existingShiftForGeo.is_second);
+      const action = pendingGeoAction[userId] || ((existingShiftForGeo && !shiftIsSecond) ? 'close_shift' : 'open_shift');
       delete pendingGeoAction[userId];
       if (action === 'open_shift') {
         // Проверяем — второй продавец или первый
