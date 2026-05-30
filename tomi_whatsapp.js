@@ -1102,7 +1102,9 @@ function getOwnerPrompt(ownerName, data) {
     'Категории расходов: Аренда, Закупка товара, Коммунальные, Зарплата персонала, Реклама, Транспорт, Прочее\n\n' +
     '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n' +
     '"Обучение команды" или "Статистика обучения" — покажи результаты тестов продавцов из листа Дисциплина => TRAINING_STATS\n' +
-    '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n\n' +
+    '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n' +
+    '"Останови обучение" или «Отмени обучение» — поставить на паузу => TRAINING_PAUSE\n' +
+    '"Возобнови обучение" — снять с паузы => TRAINING_RESUME\n\n' +
     'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
     'Бонусы: от 700к +5000 тг/чел, от 2млн +40000 тг/чел\nФикс: Асель 14000, Зарина 14000, Луиза 14000\n\nПо-русски. Прямо, с цифрами.';
 }
@@ -1817,6 +1819,24 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       }
     } catch(e) {}
     cleanReply = reply.replace(/SECOND_LEAVE:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('TRAINING_PAUSE')) {
+    trainingPaused = true;
+    cleanReply = reply.replace(/TRAINING_PAUSE/g, '').trim();
+    for (const ownerId of OWNER_IDS) {
+      await sendTelegram(ownerId, '⏸ Автоматическое обучение поставлено на паузу.\nПродавцы не получат уроки и тесты до возобновления.\nЧтобы возобновить — напиши «Возобнови обучение».');
+    }
+    if (!cleanReply) return '';
+  }
+
+  if (reply.includes('TRAINING_RESUME')) {
+    trainingPaused = false;
+    cleanReply = reply.replace(/TRAINING_RESUME/g, '').trim();
+    for (const ownerId of OWNER_IDS) {
+      await sendTelegram(ownerId, '▶️ Автоматическое обучение возобновлено.\nУроки будут отправляться по расписанию (пн 12:00) и тесты (пт 12:00).');
+    }
+    if (!cleanReply) return '';
   }
 
   if (reply.includes('LESSON_CONFIRMED')) {
@@ -2937,6 +2957,7 @@ let currentTrainingWeek = 0; // чётная = урок, нечётная = те
 
 // Хранилище кто прошёл урок/тест сегодня
 const trainingCompleted = {}; // userId -> { lesson: bool, test: bool, date: string }
+let trainingPaused = false; // флаг паузы обучения
 
 async function checkTrainingDeadline(type) {
   try {
@@ -2984,6 +3005,10 @@ async function checkTrainingDeadline(type) {
 
 async function sendWeeklyTraining(forceLesson) {
   try {
+    if (trainingPaused && !forceLesson) {
+      console.log('Обучение на паузе — пропускаем');
+      return;
+    }
     console.log('Запускаю еженедельное обучение...');
     const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
     if (sellers.length === 0) return;
