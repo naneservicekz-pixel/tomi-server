@@ -1916,9 +1916,24 @@ app.post('/webhook', async (req, res) => {
         startChecklistTimer(userId, sellerName, getTime());
         await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString() });
 
-        // Записываем начало чек-листа в историю — чтобы Claude знал контекст
-        const checklistStartMsg = 'Продавец начинает смену. Начинаем чек-лист открытия с шага 0.';
-        const checklistFirstQ = 'Отлично! Начинаем чек-лист открытия.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?';
+        // Проверяем — второй продавец или первый
+        let isSecondSellerCheck = false;
+        try {
+          const { data: otherShifts } = await supabase.from('open_shifts').select('*').neq('phone', String(userId));
+          if (otherShifts && otherShifts.length > 0) isSecondSellerCheck = true;
+        } catch(e) {}
+
+        let checklistFirstQ;
+        if (isSecondSellerCheck) {
+          checklistFirstQ = 'Привет! Ты второй продавец сегодня.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?';
+        } else {
+          checklistFirstQ = 'Отлично! Начинаем чек-лист открытия.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?';
+        }
+
+        const checklistStartMsg = isSecondSellerCheck
+          ? 'Второй продавец начинает смену. Упрощённый чек-лист: только внешний вид и геолокация. Кассу не спрашивай.'
+          : 'Продавец начинает смену. Начинаем чек-лист открытия с шага 0.';
+
         conversations[String(userId)] = [
           { role: 'user', content: checklistStartMsg },
           { role: 'assistant', content: checklistFirstQ }
