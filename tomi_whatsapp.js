@@ -1532,11 +1532,11 @@ async function handleSystemCommands(reply, userId, sellerName) {
 
         // Записываем опоздание в лист "Дисциплина"
         const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-        await appendSheet('Дисциплина!A:E', [today, a.seller, 'Опоздание', timeStr, 'Открытие смены позже 11:00'], SPREADSHEET_ID);
+        await appendSheet('Дисциплина!A:E', [today, a.seller, 'Опоздание', timeStr, 'Открытие смены позже 11:00'], DASHBOARD_ID);
 
         // Считаем опоздания за текущий месяц
         const monthStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: '2-digit', year: 'numeric' });
-        const discRows = await readSheet('Дисциплина!A:E', SPREADSHEET_ID);
+        const discRows = await readSheet('Дисциплина!A:E', DASHBOARD_ID);
         const lateCount = discRows.filter(r =>
           r[1] === a.seller &&
           r[2] === 'Опоздание' &&
@@ -1572,7 +1572,7 @@ async function handleSystemCommands(reply, userId, sellerName) {
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
         const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-        await appendSheet('Дисциплина!A:E', [today, a.seller, 'Таймаут чек-листа', getTime(), 'Чек-лист не закрыт за 15 минут'], SPREADSHEET_ID);
+        await appendSheet('Дисциплина!A:E', [today, a.seller, 'Таймаут чек-листа', getTime(), 'Чек-лист не закрыт за 15 минут'], DASHBOARD_ID);
         for (const ownerId of OWNER_IDS) {
           await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт!\n👤 ' + a.seller + '\n🕐 Начала в ' + a.startTime + ', прошло 15 минут\n📋 Незакрыто: ' + (a.remaining || 'неизвестно'));
         }
@@ -2005,7 +2005,7 @@ function startChecklistTimer(userId, sellerName, startTime) {
     await sendTelegram(userId, '⏰ ' + sellerName + ', прошло 15 минут — чек-лист ещё не закрыт!\nЗакрой немедленно, иначе уведомлю руководителя.');
 
     const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-    await appendSheet('Дисциплина!A:E', [today, sellerName, 'Таймаут чек-листа', getTime(), 'Не закрыт за 15 минут'], SPREADSHEET_ID);
+    await appendSheet('Дисциплина!A:E', [today, sellerName, 'Таймаут чек-листа', getTime(), 'Не закрыт за 15 минут'], DASHBOARD_ID);
     for (const ownerId of OWNER_IDS) {
       await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт за 15 минут!\n👤 ' + sellerName + '\n🕐 Начала в ' + startTimeStr + '\nПродавец получила напоминание.');
     }
@@ -2034,7 +2034,7 @@ function clearChecklistTimer(userId) {
 // ── Еженедельная сводка по дисциплине (понедельник 09:00) ─────────────
 async function sendWeeklyDisciplineReport() {
   try {
-    const discRows = await readSheet('Дисциплина!A:E', SPREADSHEET_ID);
+    const discRows = await readSheet('Дисциплина!A:E', DASHBOARD_ID);
     if (!discRows || discRows.length < 2) return;
 
     // Данные за последние 7 дней
@@ -2309,7 +2309,7 @@ async function sendWeeklySalesReport() {
     });
 
     // Дисциплина за неделю
-    const discRows = await readSheet('Дисциплина!A:E', SPREADSHEET_ID);
+    const discRows = await readSheet('Дисциплина!A:E', DASHBOARD_ID);
     const weekDisc = (discRows || []).slice(1).filter(r => {
       if (!r[0]) return false;
       const parts = String(r[0]).split('.');
