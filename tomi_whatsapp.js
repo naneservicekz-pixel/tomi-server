@@ -1919,14 +1919,26 @@ app.post('/webhook', async (req, res) => {
         pendingGeoAction[userId] = 'open_shift';
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
-        await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString() });
 
-        // Проверяем — второй продавец или первый
+        // Проверяем второго продавца ДО сохранения своей смены
         let isSecondSellerCheck = false;
-        try {
-          const { data: otherShifts } = await supabase.from('open_shifts').select('*').neq('phone', String(userId));
-          if (otherShifts && otherShifts.length > 0) isSecondSellerCheck = true;
-        } catch(e) {}
+        // Сначала смотрим в памяти
+        for (const [otherId, shiftData] of Object.entries(openShifts)) {
+          if (otherId !== String(userId) && shiftData && shiftData.seller) {
+            isSecondSellerCheck = true;
+            break;
+          }
+        }
+        // Если в памяти нет — проверяем Supabase
+        if (!isSecondSellerCheck) {
+          try {
+            const { data: otherShifts } = await supabase.from('open_shifts').select('*').neq('phone', String(userId));
+            if (otherShifts && otherShifts.length > 0) isSecondSellerCheck = true;
+          } catch(e) {}
+        }
+
+        // Теперь сохраняем свою смену
+        await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString() });
 
         let checklistFirstQ;
         if (isSecondSellerCheck) {
