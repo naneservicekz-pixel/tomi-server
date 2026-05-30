@@ -1705,12 +1705,23 @@ async function handleMessage(userId, messageText, photoFileId) {
   let isSecondSeller = false;
   let firstSellerName = '';
   if (!isOwner && !hasOpenShift) {
+    // Проверяем память
     for (const [otherId, shiftData] of Object.entries(openShifts)) {
       if (otherId !== userKey && shiftData && shiftData.seller) {
         isSecondSeller = true;
         firstSellerName = shiftData.seller;
         break;
       }
+    }
+    // Если в памяти нет — проверяем Supabase
+    if (!isSecondSeller) {
+      try {
+        const { data: allShifts } = await supabase.from('open_shifts').select('*').neq('phone', userKey);
+        if (allShifts && allShifts.length > 0) {
+          isSecondSeller = true;
+          firstSellerName = allShifts[0].seller || 'первый продавец';
+        }
+      } catch(e) {}
     }
   }
 
