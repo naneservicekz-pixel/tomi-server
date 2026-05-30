@@ -1089,7 +1089,7 @@ function detectPhotoType(conversation) {
   return 'unknown';
 }
 
-async function handleSystemCommands(reply, userId, sellerName) {
+async function handleSystemCommands(reply, userId, sellerName, messageText) {
   let cleanReply = reply;
 
   if (reply.includes('REMINDER_SAVE:')) {
@@ -1879,7 +1879,7 @@ async function handleMessage(userId, messageText, photoFileId) {
     conversations[userKey].push({ role: 'assistant', content: reply });
     await saveMessages(userId, userContent, reply);
 
-    const cleanReply = await handleSystemCommands(reply, userId, senderName);
+    const cleanReply = await handleSystemCommands(reply, userId, senderName, messageText);
     if (cleanReply && cleanReply.trim()) await sendTelegram(userId, cleanReply);
 
     await appendSheet('Логи!A:F', [getNow(), isOwner ? 'Руководитель' : 'Продавец', senderName, String(userId), messageText || '[фото]', cleanReply ? cleanReply.slice(0, 500) : '']);
