@@ -1058,6 +1058,14 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'КАК ПРОВОДИТЬ УРОК:\n' +
     'Теория (3-5 пунктов с примерами из fashion) → Диалог-пример продавец/покупатель → 3 вопроса для проверки → оценка ответов → итог\n' +
     'Итог фиксируй: => TRAINING_RESULT:{"seller":"","topic":"","score":0,"date":""}\n\n' +
+    'ПОДТВЕРЖДЕНИЕ УРОКА:\n' +
+    'Когда продавец пишет «Урок изучен», «Изучила», «Готово», «Прочитала» — подтверди и зафикисруй => LESSON_CONFIRMED\n' +
+    'Похвали за своевременное прохождение.\n\n' +
+    'ПОВТОРНЫЙ ДОСТУП К МАТЕРИАЛАМ:\n' +
+    'Если продавец пишет «Повтори урок», «Пришли материал», «Урок» — отправь команду LESSON_REPEAT\n' +
+    'Если пишет название темы (например «урок про возражения», «про допродажу») — сразу расскажи эту тему кратко\n' +
+    'Если пишет «Все темы» или «Список тем» — покажи список всех 5 тем обучения\n' +
+    '=> LESSON_REPEAT (без параметров — система пришлёт последний урок)\n\n' +
     'СТАНДАРТЫ NANE PARIS:\n' +
     'Бренд: корейская женская мода, премиум, Астана. Тон: тёплый, как личный стилист.\n' +
     'Запрещено говорить: «нет», «не знаю», «не можем». Приветствие: «Добро пожаловать в NANE PARIS!»\n' +
@@ -1093,7 +1101,8 @@ function getOwnerPrompt(ownerName, data) {
     'Для remind_at используй реальную дату и время по Алматы в ISO формате. Сегодня: ' + getNow() + '\n' +
     'Категории расходов: Аренда, Закупка товара, Коммунальные, Зарплата персонала, Реклама, Транспорт, Прочее\n\n' +
     '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n' +
-    '"Обучение команды" или "Статистика обучения" — покажи результаты тестов продавцов из листа Дисциплина\n\n' +
+    '"Обучение команды" или "Статистика обучения" — покажи результаты тестов продавцов из листа Дисциплина => TRAINING_STATS\n' +
+    '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n\n' +
     'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
     'Бонусы: от 700к +5000 тг/чел, от 2млн +40000 тг/чел\nФикс: Асель 14000, Зарина 14000, Луиза 14000\n\nПо-русски. Прямо, с цифрами.';
 }
@@ -1810,6 +1819,79 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
     cleanReply = reply.replace(/SECOND_LEAVE:\{.*?\}/s, '').trim();
   }
 
+  if (reply.includes('LESSON_CONFIRMED')) {
+    try {
+      const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+      const timeStr = getTime();
+      // Фиксируем прохождение урока
+      trainingCompleted[String(userId)] = {
+        ...(trainingCompleted[String(userId)] || {}),
+        lesson: true,
+        date: today
+      };
+      // Записываем в Дисциплина
+      await appendSheet('Дисциплина!A:E', [
+        today, sellerName, 'Урок изучен', timeStr, '✅ Выполнено в срок'
+      ], DASHBOARD_ID);
+      // Уведомляем владельца
+      for (const ownerId of OWNER_IDS) {
+        await sendTelegram(ownerId, '✅ ' + sellerName + ' подтвердила изучение урока · ' + timeStr);
+      }
+      console.log('LESSON_CONFIRMED:', sellerName, today, timeStr);
+    } catch(e) { console.error('LESSON_CONFIRMED error:', e.message); }
+    cleanReply = reply.replace(/LESSON_CONFIRMED/g, '').trim();
+  }
+
+  if (reply.includes('LESSON_REPEAT')) {
+    cleanReply = reply.replace(/LESSON_REPEAT/g, '').trim();
+    try {
+      const { data } = await supabase.from('last_reports')
+        .select('*').eq('user_id', 'training_last_lesson').maybeSingle();
+      if (data && data.html) {
+        const lesson = JSON.parse(data.html);
+        await sendTelegram(userId, lesson.lesson);
+      } else {
+        await sendTelegram(userId, '📚 Урок пока не проводился. Первый урок придёт в понедельник в 10:00.');
+      }
+    } catch(e) { console.error('LESSON_REPEAT error:', e.message); }
+    if (!cleanReply) return '';
+  }
+
+  if (reply.includes('TRAINING_NOW')) {
+    cleanReply = reply.replace(/TRAINING_NOW/g, '').trim();
+    await sendTelegram(userId, '📚 Запускаю обучение для продавцов...');
+    await sendWeeklyTraining(true);
+    if (!cleanReply) return '';
+  }
+
+  if (reply.includes('TRAINING_STATS')) {
+    cleanReply = reply.replace(/TRAINING_STATS/g, '').trim();
+    try {
+      const discRows = await readSheet('Дисциплина!A:E', DASHBOARD_ID);
+      const trainRows = (discRows || []).filter(r => r[2] && String(r[2]).startsWith('Обучение:'));
+      if (trainRows.length === 0) {
+        await sendTelegram(userId, '📚 Результатов обучения пока нет.');
+      } else {
+        let msg = '📚 СТАТИСТИКА ОБУЧЕНИЯ\n\n';
+        const bySeller = {};
+        trainRows.forEach(r => {
+          const name = r[1] || '?';
+          if (!bySeller[name]) bySeller[name] = [];
+          bySeller[name].push({ date: r[0], topic: String(r[2]).replace('Обучение: ', ''), result: r[4] });
+        });
+        Object.entries(bySeller).forEach(([name, results]) => {
+          msg += '👤 ' + name + '\n';
+          results.slice(-5).forEach(r => {
+            msg += '  📖 ' + r.topic + ' · ' + r.result + ' · ' + r.date + '\n';
+          });
+          msg += '\n';
+        });
+        await sendTelegram(userId, msg);
+      }
+    } catch(e) { console.error('TRAINING_STATS error:', e.message); }
+    if (!cleanReply) return '';
+  }
+
   if (reply.includes('TRAINING_RESULT:')) {
     try {
       const jsonStr = reply.match(/TRAINING_RESULT:(\{.*?\})/s)?.[1];
@@ -1819,6 +1901,13 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const timeStr = getTime();
         const score = parseInt(t.score) || 0;
         const emoji = score >= 3 ? '✅' : score >= 2 ? '⚠️' : '❌';
+
+        // Фиксируем прохождение теста
+        trainingCompleted[String(userId)] = {
+          ...(trainingCompleted[String(userId)] || {}),
+          test: true,
+          date: today
+        };
 
         // Записываем в лист Дисциплина (раздел обучения)
         await appendSheet('Дисциплина!A:E', [
@@ -2831,6 +2920,141 @@ async function sendMorningDigest() {
 }
 
 // Планировщик — каждую минуту проверяем время
+// ══════════════════════════════════════════════════════════════════════
+// АВТОМАТИЧЕСКОЕ ОБУЧЕНИЕ — каждую среду в 10:00
+// Неделя 1: урок → Неделя 2: тест по прошлой теме
+// ══════════════════════════════════════════════════════════════════════
+
+const TRAINING_TOPICS = [
+  { topic: 'Встреча покупателя', lesson: 'Сегодня изучаем первый контакт с покупателем — самый важный момент в продажах.\n\n📖 УРОК: Встреча покупателя\n\n3 правила первого контакта:\n1. Улыбка и зрительный контакт — покупатель должен почувствовать что его заметили\n2. Пауза 30-60 секунд — дай осмотреться, не набрасывайся сразу\n3. Открытое приветствие — «Добро пожаловать в NANE PARIS! Если понадоблюсь — я рядом»\n\n❌ Никогда не говори: «Вам помочь?» — ответ всегда «нет»\n✅ Говори: «Эта коллекция только что приехала из Кореи» или «Сегодня есть интересные новинки»\n\n💬 Пример диалога:\nПокупатель заходит → продавец улыбается, кивает → через 30 сек подходит:\nПродавец: «Добро пожаловать! Сегодня как раз пришли новые корейские платья, очень нежные фасоны»\nПокупатель: «Спасибо, я посмотрю»\nПродавец: «Конечно, если захотите примерить — я помогу с размером»\n\nЗапомни урок — в следующую среду будет тест!' },
+  { topic: 'Выявление потребности', lesson: 'Сегодня изучаем как понять что нужно покупателю — без этого продажи случайные.\n\n📖 УРОК: Выявление потребности\n\nМетод SPIN — 4 типа вопросов:\n1. Ситуационные: «На какой повод подбираете?»\n2. Проблемные: «Есть что-то чего не хватает в гардеробе?»\n3. Извлекающие: «Если найдём идеальное платье — как часто будете надевать?»\n4. Направляющие: «Значит вам нужно универсальное, которое и на работу и на выход?»\n\n✅ Правило: сначала 2-3 вопроса, потом предлагай — не наоборот\n\n💬 Пример:\nПродавец: «На какой повод смотрите?»\nПокупатель: «Просто так, для работы»\nПродавец: «Стиль ближе к строгому или casual?»\nПокупатель: «Скорее casual»\nПродавец: «Тогда покажу несколько вариантов — у нас есть корейские костюмы которые отлично работают в офисе»\n\nЗапомни — тест в следующую среду!' },
+  { topic: 'Презентация товара FAB', lesson: 'Сегодня изучаем технику презентации товара — как рассказать о вещи чтобы захотелось купить.\n\n📖 УРОК: Техника FAB\n\nF — Feature (Характеристика): что это такое\nA — Advantage (Преимущество): чем лучше других\nB — Benefit (Выгода): что получает конкретно этот покупатель\n\n❌ Без FAB: «Это платье из вискозы, 3 990 тг»\n✅ С FAB: «Это платье из корейской вискозы (F) — ткань не мнётся и дышит (A) — значит вы будете выглядеть свежо даже после долгого дня (B)»\n\n💬 Пример для NANE PARIS:\n«Этот костюм сшит по корейским лекалам (F) — они специально делают чуть свободный крой в плечах (A) — поэтому он сидит идеально даже если верх и низ разные размеры (B)»\n\nПрактикуй с каждым товаром который показываешь!' },
+  { topic: 'Работа с возражением Дорого', lesson: 'Сегодня изучаем самое частое возражение в продажах — «Дорого».\n\n📖 УРОК: Возражение «Дорого»\n\n«Дорого» почти никогда не означает нет денег — это значит «не вижу ценность»\n\n5 техник ответа:\n1. Согласись + обоснуй: «Да, цена выше среднего — потому что корейское качество, носится 3-4 сезона»\n2. Раздели на дни: «3 990 тг — это 11 тг в день если носить 1 год»\n3. Сравни: «Похожее платье в торговом центре стоит 5-6 тыс, здесь лучше качество»\n4. Переключи на ценность: «Сколько стоит выглядеть уверенно на важной встрече?»\n5. Предложи альтернативу: «Если бюджет ограничен — есть похожий фасон чуть доступнее»\n\n❌ Никогда не говори: «Ну это же качество!» — банально и не работает\n✅ Всегда конкретная причина цены\n\nЗапомни — тест в следующую среду!' },
+  { topic: 'Допродажа upsell cross-sell', lesson: 'Сегодня изучаем как увеличить сумму чека — это навык который прямо влияет на твою зарплату.\n\n📖 УРОК: Допродажа в fashion\n\nUpsell — предложи более дорогую версию:\n«Есть похожий фасон но с вышивкой — смотрится богаче, разница 800 тг»\n\nCross-sell — предложи дополнение:\n«К этому платью идеально подойдёт вот этот поясок — образ сразу законченный»\n\n3 правила допродажи:\n1. Предлагай после того как покупатель уже решил взять основной товар\n2. Максимум 1-2 дополнительных предложения — не перегружай\n3. Показывай физически — бери товар в руки, прикладывай\n\n💬 Пример:\n«Отличный выбор! Кстати, к этому платью у нас есть сумочка — специально подбирали под эту коллекцию» [берёт сумку, показывает рядом с платьем]\n\nЕсли каждый второй покупатель берёт доп.товар на 1 500 тг — при 10 продажах в день это +7 500 тг к обороту!' },
+];
+
+let currentTrainingWeek = 0; // чётная = урок, нечётная = тест
+
+// Хранилище кто прошёл урок/тест сегодня
+const trainingCompleted = {}; // userId -> { lesson: bool, test: bool, date: string }
+
+async function checkTrainingDeadline(type) {
+  try {
+    const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+    const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
+    const notDone = [];
+
+    for (const [sellerId, sellerName] of sellers) {
+      const done = trainingCompleted[sellerId];
+      const completed = done && done.date === today && done[type];
+      if (!completed) {
+        notDone.push({ sellerId, sellerName });
+        // Предупреждение продавцу
+        const typeLabel = type === 'lesson' ? 'урок' : 'тест';
+        await sendTelegram(sellerId,
+          '⚠️ ' + sellerName + ', ты ещё не прошла ' + typeLabel + ' сегодня!\n\n' +
+          '⏰ До 23:59 осталось меньше 30 минут.\n\n' +
+          '❗️ Если не пройдёшь — это будет зафиксировано как нарушение KPI.\n' +
+          'Это повлияет на расчёт твоей зарплаты в конце месяца.\n\n' +
+          (type === 'lesson' ? 'Напиши «Повтори урок» и подтверди «Урок изучен».' : 'Напиши «Тест» чтобы начать.')
+        );
+      }
+    }
+
+    // Алерт владельцу
+    if (notDone.length > 0) {
+      const typeLabel = type === 'lesson' ? 'урок' : 'тест';
+      let ownerMsg = '⚠️ Дедлайн через 30 минут — не прошли ' + typeLabel + ':\n\n';
+      notDone.forEach(s => { ownerMsg += '❌ ' + s.sellerName + '\n'; });
+      ownerMsg += '\nЗафиксировано в KPI.';
+      for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, ownerMsg);
+
+      // Фиксируем нарушение в Дисциплина
+      const today2 = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+      for (const s of notDone) {
+        await appendSheet('Дисциплина!A:E', [
+          today2, s.sellerName,
+          type === 'lesson' ? 'Пропуск урока' : 'Пропуск теста',
+          '23:30', 'Не выполнено до дедлайна — минус KPI'
+        ], DASHBOARD_ID);
+      }
+    }
+  } catch(e) { console.error('checkTrainingDeadline error:', e.message); }
+}
+
+async function sendWeeklyTraining(forceLesson) {
+  try {
+    console.log('Запускаю еженедельное обучение...');
+    const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
+    if (sellers.length === 0) return;
+
+    const almatyNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const dayOfWeek = almatyNow.getDay(); // 1=пн, 5=пт
+    // Понедельник = урок, Пятница = тест. Если вызвали вручную (forceLesson) — урок
+    const isTestWeek = !forceLesson && dayOfWeek === 5;
+
+    const topicIndex = currentTrainingWeek % TRAINING_TOPICS.length;
+    if (!isTestWeek) currentTrainingWeek++; // увеличиваем только после урока
+    const topic = TRAINING_TOPICS[topicIndex];
+
+    if (!isTestWeek) {
+      // НЕДЕЛЯ УРОКА — отправляем урок всем продавцам
+      const lessonMsg = '📚 ОБУЧЕНИЕ NANE PARIS\n\n' +
+        '🗓 Тема: ' + topic.topic + '\n' +
+        '⏰ Дедлайн: сегодня до 23:59\n' +
+        '━━━━━━━━━━━━━━━━━\n\n' +
+        topic.lesson + '\n\n' +
+        '━━━━━━━━━━━━━━━━━\n' +
+        '⚠️ ВАЖНО: напиши «Урок изучен» до 23:59 сегодня.\n' +
+        'Опоздание фиксируется и влияет на KPI и расчёт зарплаты в конце месяца.\n\n' +
+        'В пятницу будет тест. Повторить материал: напиши «Повтори урок». Удачи! 💪';
+
+      // Сохраняем урок для повторного доступа
+      try {
+        await supabase.from('last_reports').upsert({
+          user_id: 'training_last_lesson',
+          html: JSON.stringify({ topic: topic.topic, lesson: lessonMsg }),
+          filename: 'lesson',
+          caption: topic.topic
+        }, { onConflict: 'user_id' });
+      } catch(e) {}
+
+      for (const [sellerId, sellerName] of sellers) {
+        await sendTelegram(sellerId, lessonMsg);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      // Уведомляем владельца
+      for (const ownerId of OWNER_IDS) {
+        await sendTelegram(ownerId,
+          '📚 Еженедельное обучение отправлено\n' +
+          '📖 Тема: ' + topic.topic + '\n' +
+          '👥 Продавцов: ' + sellers.length + '\n' +
+          'На следующей неделе автоматически отправлю тест.'
+        );
+      }
+    } else {
+      // НЕДЕЛЯ ТЕСТА — отправляем тест всем продавцам
+      const testMsg = '🎯 ТЕСТ — ' + topic.topic + '\n' +
+        '⏰ Дедлайн: сегодня до 23:59\n\n' +
+        '⚠️ Несданный тест фиксируется как нарушение и влияет на KPI и расчёт зарплаты.\n\n' +
+        'Отвечай своими словами — я оценю каждый ответ.\n\n' +
+        'Вопрос 1: Назови 3 главных правила из урока про «' + topic.topic + '».\n\n' +
+        'Жду твой ответ! ✍️';
+
+      for (const [sellerId] of sellers) {
+        await sendTelegram(sellerId, testMsg);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      for (const ownerId of OWNER_IDS) {
+        await sendTelegram(ownerId,
+          '🎯 Тест по теме «' + topic.topic + '» отправлен продавцам.\n' +
+          'Результаты придут после ответов.'
+        );
+      }
+    }
+  } catch(e) { console.error('sendWeeklyTraining error:', e.message); }
+}
+
 function startDailyScheduler() {
   // Проверяем напоминания каждую минуту
   setInterval(() => { checkReminders(); }, 60000);
@@ -2851,6 +3075,18 @@ function startDailyScheduler() {
         if (almatyTime.getDay() === 1) {
           sendWeeklyDisciplineReport();
           sendWeeklySalesReport();
+        }
+        // Понедельник 12:00 — урок, Пятница 12:00 — тест
+        if ((almatyTime.getDay() === 1 || almatyTime.getDay() === 5) && hours === 12 && minutes === 0) {
+          sendWeeklyTraining();
+        }
+        // Понедельник 23:30 — напоминание не прошедшим урок
+        if (almatyTime.getDay() === 1 && hours === 23 && minutes === 30) {
+          checkTrainingDeadline('lesson');
+        }
+        // Пятница 23:30 — напоминание не сдавшим тест
+        if (almatyTime.getDay() === 5 && hours === 23 && minutes === 30) {
+          checkTrainingDeadline('test');
         }
       }
     }
