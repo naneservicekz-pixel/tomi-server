@@ -1804,9 +1804,9 @@ app.post('/webhook', async (req, res) => {
       }
       // ── Определяем действие по геолокации ──
       const existingShiftForGeo = openShifts[String(userId)] || await loadOpenShift(userId);
-      // Если смена второго продавца (is_second=true) — геолокация для открытия, не закрытия
       const shiftIsSecond = !!(existingShiftForGeo && existingShiftForGeo.is_second);
       const action = pendingGeoAction[userId] || ((existingShiftForGeo && !shiftIsSecond) ? 'close_shift' : 'open_shift');
+      console.log('GEO DEBUG userId:', userId, 'pendingGeo:', pendingGeoAction[userId], 'existingShift:', JSON.stringify(existingShiftForGeo), 'shiftIsSecond:', shiftIsSecond, 'action:', action);
       delete pendingGeoAction[userId];
       if (action === 'open_shift') {
         // Проверяем — второй продавец или первый
