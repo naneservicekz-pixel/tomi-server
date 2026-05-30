@@ -40,7 +40,8 @@ const pendingGeoAction = {};
 const checklistTimers = {};
 const pendingReopenApprovals = {};
 const lastShiftReports = {}; // userId -> { html, filename, caption }
-const pendingResendApprovals = {}; // ownerId -> { sellerId, sellerName }
+const pendingResendApprovals = {};
+const pendingPrepayDelete = {}; // ownerId -> { sellerId, sellerName, prepayId, reason } // ownerId -> { sellerId, sellerName }
 
 function getNow() { return new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }); }
 function getTime() { return new Date().toLocaleTimeString('ru-RU', { timeZone: 'Asia/Almaty', hour: '2-digit', minute: '2-digit' }); }
@@ -919,7 +920,8 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
       'Попрощайся и пожелай хорошего вечера.\n\n' +
       'ПРЕДОПЛАТЫ (доступны всегда, без открытия смены):\n' +
       'Новая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
-      'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n\n' +
+      'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
+      'Удаление — запрос руководителю => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента","reason":""}\n\n' +
       'ВАЖНО: на приветствия без "Начала смену" просто отвечай приветствием — НЕ начинай чек-лист.';
   }
 
@@ -936,6 +938,8 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'ПРЕДОПЛАТЫ (доступны ВСЕГДА — даже если смена не открыта):\n' +
     'Новая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
     'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
+    'Удаление — запрос руководителю => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента","reason":""}\n' +
+    'Если продавец говорит имя клиента вместо ID — сначала найди предоплату через PREPAY_LIST, потом удали по найденному ID или имени.\n' +
     'Просмотр => PREPAY_LIST:открытые или PREPAY_LIST:закрытые\n' +
     'ВАЖНО: если продавец спрашивает про предоплату — обрабатывай сразу, не требуй сначала открыть смену.\n\n' +
 
@@ -1028,6 +1032,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Отчет" — итог за сутки\n' +
     '"Аналитика" — недельная сводка\n' +
     '"Предоплаты" => PREPAY_LIST:открытые\n' +
+    'Удалить предоплату: "удали PREP-XXXX" или "удали предоплату Иванова" => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента"}\n' +
     '"Команда" — сводка по продавцам\n' +
     '"Зарплата" — расчет ФОТ\n' +
     '"Дашборд" => DASHBOARD_HTML\n' +
@@ -1164,6 +1169,47 @@ async function handleSystemCommands(reply, userId, sellerName) {
     if (!cleanReply) return '';
   }
 
+  // Обработка ДА/НЕТ от владельца на удаление предоплаты
+  if (OWNER_IDS.includes(String(userId)) && pendingPrepayDelete[String(userId)]) {
+    const msgLower2 = (messageText||'').toLowerCase().trim();
+    if (msgLower2 === 'да' || msgLower2 === 'yes') {
+      const { sellerId, sellerName: sName, prepayId, rowNum: prepayRowNum } = pendingPrepayDelete[String(userId)];
+      delete pendingPrepayDelete[String(userId)];
+      try {
+        let deleted = false;
+        if (prepayRowNum) {
+          // Используем сохранённый номер строки — быстро и точно
+          const { api, id } = getSheets(SPREADSHEET_ID);
+          await api.spreadsheets.values.clear({ spreadsheetId: id, range: 'Предоплаты!A' + prepayRowNum + ':K' + prepayRowNum });
+          deleted = true;
+        } else {
+          const rows = await readSheet('Предоплаты!A:K');
+          for (let i = 1; i < rows.length; i++) {
+            if (String(rows[i][0]).trim().toUpperCase() === String(prepayId).trim().toUpperCase()) {
+              const { api, id } = getSheets(SPREADSHEET_ID);
+              await api.spreadsheets.values.clear({ spreadsheetId: id, range: 'Предоплаты!A' + (i+1) + ':K' + (i+1) });
+              deleted = true;
+              break;
+            }
+          }
+        }
+        if (deleted) {
+          await sendTelegram(userId, '✅ Предоплата удалена.');
+          await sendTelegram(sellerId, '✅ Руководитель подтвердил — предоплата удалена.');
+        } else {
+          await sendTelegram(userId, '❌ Предоплата не найдена в таблице.');
+        }
+      } catch(e) { console.error('prepay delete confirm error:', e.message); }
+      return '';
+    } else if (msgLower2 === 'нет' || msgLower2 === 'no') {
+      const { sellerId, prepayId } = pendingPrepayDelete[String(userId)];
+      delete pendingPrepayDelete[String(userId)];
+      await sendTelegram(sellerId, '❌ Руководитель отказал в удалении предоплаты ' + prepayId + '.');
+      await sendTelegram(userId, '❌ Удаление отменено.');
+      return '';
+    }
+  }
+
   // Обработка ДА/НЕТ от владельца на запрос повторной отправки отчёта
   if (OWNER_IDS.includes(String(userId)) && pendingResendApprovals[String(userId)]) {
     const msgLower = (messageText||'').toLowerCase().trim();
@@ -1278,6 +1324,69 @@ async function handleSystemCommands(reply, userId, sellerName) {
       }
     } catch(e) {}
     cleanReply = reply.replace(/PREPAY_CLOSE:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('PREPAY_DELETE:')) {
+    try {
+      const jsonStr = reply.match(/PREPAY_DELETE:(\{.*?\})/s)?.[1];
+      if (jsonStr) {
+        const p = JSON.parse(jsonStr);
+        // Находим строку — по ID или по имени клиента
+        const findPrepayRow = async (searchStr) => {
+          const rows = await readSheet('Предоплаты!A:K');
+          for (let i = 1; i < rows.length; i++) {
+            if (!rows[i][0]) continue;
+            const rowId = String(rows[i][0]).trim().toUpperCase();
+            const rowClient = String(rows[i][2]||'').trim().toLowerCase();
+            const search = String(searchStr).trim();
+            // Ищем по ID (точное совпадение) или по имени (вхождение)
+            if (rowId === search.toUpperCase() || rowClient.includes(search.toLowerCase())) {
+              return { rowNum: i+1, id: rows[i][0], client: rows[i][2] };
+            }
+          }
+          return null;
+        };
+
+        if (OWNER_IDS.includes(String(userId))) {
+          // Владелец удаляет сам
+          const found = await findPrepayRow(p.id);
+          if (found) {
+            const { api, id } = getSheets(SPREADSHEET_ID);
+            await api.spreadsheets.values.clear({ spreadsheetId: id, range: 'Предоплаты!A' + found.rowNum + ':K' + found.rowNum });
+            console.log('Предоплата удалена:', found.id, found.client);
+          } else {
+            await sendTelegram(userId, '❌ Предоплата не найдена: ' + p.id);
+          }
+        } else {
+          // Продавец — находим предоплату и отправляем запрос владельцу
+          const found = await findPrepayRow(p.id);
+          const displayId = found ? found.id + ' (' + found.client + ')' : p.id;
+          const sellerNameLocal = ALLOWED_MAP[String(userId)] || 'Продавец';
+          if (!found) {
+            await sendTelegram(userId, '❌ Предоплата не найдена: ' + p.id + '. Проверь имя или ID.');
+          } else {
+            for (const ownerId of OWNER_IDS) {
+              pendingPrepayDelete[String(ownerId)] = {
+                sellerId: String(userId),
+                sellerName: sellerNameLocal,
+                prepayId: found.id,
+                rowNum: found.rowNum,
+                reason: p.reason || ''
+              };
+              await sendTelegram(ownerId,
+                '🗑 Запрос на удаление предоплаты\n\n' +
+                '👤 Продавец: ' + sellerNameLocal + '\n' +
+                '🆔 ' + found.id + ' — ' + found.client + '\n' +
+                (p.reason ? '📝 Причина: ' + p.reason + '\n' : '') +
+                '\nОтветь ДА чтобы удалить или НЕТ чтобы отказать.'
+              );
+            }
+            await sendTelegram(userId, '⏳ Запрос на удаление предоплаты ' + found.client + ' отправлен руководителю.');
+          }
+        }
+      }
+    } catch(e) { console.error('PREPAY_DELETE error:', e.message); }
+    cleanReply = reply.replace(/PREPAY_DELETE:\{.*?\}/s, '').trim();
   }
 
   if (reply.includes('SHIFT_OPEN:')) {
