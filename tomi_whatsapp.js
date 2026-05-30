@@ -1807,8 +1807,40 @@ app.post('/webhook', async (req, res) => {
       const action = pendingGeoAction[userId] || (existingShiftForGeo ? 'close_shift' : 'open_shift');
       delete pendingGeoAction[userId];
       if (action === 'open_shift') {
-        delete conversations[String(userId)];
-        await handleMessage(userId, '\u{1F4CD} ' + distance + ' м от магазина. ок', null);
+        // Проверяем — второй продавец или первый
+        let geoIsSecond = false;
+        let geoFirstSeller = '';
+        for (const [otherId, sd] of Object.entries(openShifts)) {
+          if (otherId !== String(userId) && sd && sd.seller) { geoIsSecond = true; geoFirstSeller = sd.seller; break; }
+        }
+        if (!geoIsSecond) {
+          try {
+            const { data: oth } = await supabase.from('open_shifts').select('*').neq('phone', String(userId));
+            if (oth && oth.length > 0) { geoIsSecond = true; geoFirstSeller = oth[0].seller || ''; }
+          } catch(e) {}
+        }
+
+        if (geoIsSecond) {
+          // ВТОРОЙ ПРОДАВЕЦ — только SECOND_ARRIVE, без кассы
+          const sName = ALLOWED_MAP[String(userId)] || 'Продавец';
+          const tStr = getTime();
+          // Отправляем алерт владельцу
+          for (const ownerId of OWNER_IDS) {
+            await sendTelegram(ownerId, '\u2705 Второй продавец на месте\n\u{1F464} ' + sName + '\n\u{1F550} ' + tStr);
+          }
+          await appendSheet('Логи!A:F', [getNow(), 'Приход', sName, String(userId), 'Второй продавец пришёл в ' + tStr, '']);
+          // Проверяем опоздание
+          const h = parseInt(tStr.split(':')[0]);
+          const m = parseInt(tStr.split(':')[1]);
+          if (h > 11 || (h === 11 && m > 15)) {
+            for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '\u26A0\uFE0F Опоздание!\n\u{1F464} ' + sName + '\n\u{1F550} ' + tStr);
+          }
+          await sendTelegram(userId, '\u2705 Геолокация принята. Добро пожаловать на смену, ' + sName + '! Хорошей работы!');
+        } else {
+          // ПЕРВЫЙ ПРОДАВЕЦ — обычный чек-лист
+          delete conversations[String(userId)];
+          await handleMessage(userId, '\u{1F4CD} ' + distance + ' м от магазина. ок', null);
+        }
       } else {
         await handleMessage(userId, '\u{1F4CD} ' + distance + ' м от магазина. закрытие ок', null);
       }
