@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
-// Версия 4.0 — исправлен дашборд: данные, ФОТ с разбивкой, светлый дизайн
+// Версия 4.3 — исправлен баг геолокации при открытии смены
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -1797,7 +1797,9 @@ app.post('/webhook', async (req, res) => {
         }
         return;
       }
-      const action = pendingGeoAction[userId] || 'close_shift';
+      // ── ИСПРАВЛЕНИЕ: определяем действие по наличию открытой смены ──
+      const existingShiftForGeo = openShifts[String(userId)] || await loadOpenShift(userId);
+      const action = pendingGeoAction[userId] || (existingShiftForGeo ? 'close_shift' : 'open_shift');
       delete pendingGeoAction[userId];
       if (action === 'open_shift') {
         await handleMessage(userId, 'Геолокация принята (открытие). Продавец в магазине. Расстояние: ' + distance + ' м. Продолжай чек-лист.', null);
