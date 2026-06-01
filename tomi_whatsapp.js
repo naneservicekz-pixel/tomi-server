@@ -1119,6 +1119,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Обучение команды" или "Статистика обучения" — покажи результаты тестов продавцов из листа Дисциплина => TRAINING_STATS\n' +
     '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n' +
     'Расход / трата / потратил — если владелец упоминает расход или трату с суммой => EXPENSE_NEW:{"amount":0,"description":""}\n' +
+    'ВАЖНО: в EXPENSE_NEW всегда ставь текущую дату ' + now + ', не выдумывай даты из контекста\n' +
     '"Мои расходы" / "Расходы за месяц" / "Расходы за неделю" => EXPENSE_LIST:{"period":"month"}\n' +
     '"Останови обучение" или «Отмени обучение» — поставить на паузу => TRAINING_PAUSE\n' +
     '"Возобнови обучение" — снять с паузы => TRAINING_RESUME\n\n' +
@@ -1876,10 +1877,11 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       if (jsonStr) {
         const e = JSON.parse(jsonStr);
         // Сохраняем в pending и спрашиваем тип
+        const expDate = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' });
         pendingExpense[String(userId)] = {
           amount: e.amount,
           description: e.description,
-          date: new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' }),
+          date: expDate,  // дата берётся из системы, не из Claude
           time: getTime()
         };
         await sendTelegram(userId,
@@ -1898,39 +1900,95 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
     try {
       const jsonStr = reply.match(/EXPENSE_LIST:(\{.*?\})/s)?.[1];
       const period = jsonStr ? JSON.parse(jsonStr).period : 'month';
-      const { data: expenses } = await supabase
+
+      // Читаем NANE расходы из Google Sheets
+      const naneRows = await readSheet('Расходы!A:E', SPREADSHEET_ID);
+      // Читаем личные расходы из Supabase
+      const { data: personalRows } = await supabase
         .from('personal_expenses')
         .select('*')
         .eq('user_id', String(userId))
         .order('created_at', { ascending: false })
-        .limit(period === 'week' ? 50 : 200);
+        .limit(200);
 
-      if (!expenses || expenses.length === 0) {
-        await sendTelegram(userId, '📊 Расходов пока нет.');
+      // Фильтр по периоду
+      const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+      const monthStart = nowAlm.getMonth() + 1;
+      const yearNow = nowAlm.getFullYear();
+      const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
+
+      // Парсим NANE расходы (формат даты DD.MM.YYYY)
+      const naneExpenses = (naneRows || []).slice(1).filter(r => r[0] && r[2]).map(r => ({
+        date: r[0], description: r[1] || '', amount: Number(String(r[2]).replace(/[^0-9.]/g,'')),
+        category: r[3] || 'Прочее', type: 'NANE'
+      })).filter(e => {
+        const parts = String(e.date).split('.');
+        if (parts.length < 3) return false;
+        const m = parseInt(parts[1]), y = parseInt(parts[2]);
+        if (period === 'week') {
+          const d = new Date(y, m-1, parseInt(parts[0]));
+          return d >= weekAgo;
+        }
+        return m === monthStart && y === yearNow;
+      });
+
+      // Парсим личные расходы
+      const personalExpenses = (personalRows || []).filter(e => {
+        const d = new Date(e.created_at);
+        if (period === 'week') return d >= weekAgo;
+        return d.getMonth()+1 === monthStart && d.getFullYear() === yearNow;
+      }).map(e => ({
+        date: e.expense_date || '', description: e.description || '',
+        amount: Number(e.amount), category: e.category || 'Прочее', type: 'Личный'
+      }));
+
+      const allExpenses = [...naneExpenses, ...personalExpenses];
+
+      if (allExpenses.length === 0) {
+        await sendTelegram(userId, '📊 Расходов за ' + (period === 'week' ? 'неделю' : 'этот месяц') + ' пока нет.');
       } else {
-        // Фильтр по периоду
-        const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-        const cutoff = new Date(now);
-        if (period === 'week') cutoff.setDate(now.getDate() - 7);
-        else cutoff.setDate(1); // начало месяца
+        const periodLabel = period === 'week' ? 'неделю' : 'месяц';
+        let naneTotal = 0, personalTotal = 0;
 
-        const filtered = expenses.filter(e => new Date(e.created_at) >= cutoff);
-        const byCategory = {};
-        let total = 0;
-        filtered.forEach(e => {
-          const cat = e.category || 'Прочее';
-          if (!byCategory[cat]) byCategory[cat] = { sum: 0, items: [] };
-          byCategory[cat].sum += Number(e.amount);
-          byCategory[cat].items.push(e.description + ' — ' + Number(e.amount).toLocaleString('ru-RU') + ' тг');
-          total += Number(e.amount);
+        // NANE расходы по категориям
+        const naneBycat = {};
+        naneExpenses.forEach(e => {
+          if (!naneBycat[e.category]) naneBycat[e.category] = { sum: 0, items: [] };
+          naneBycat[e.category].sum += e.amount;
+          naneBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
+          naneTotal += e.amount;
         });
 
-        let msg = '📊 ' + (period === 'week' ? 'Расходы за неделю' : 'Расходы за месяц') + '\n\n';
-        Object.entries(byCategory).forEach(([cat, data]) => {
-          msg += '📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
-          data.items.slice(0,3).forEach(i => { msg += '  · ' + i + '\n'; });
+        // Личные расходы по категориям
+        const persBycat = {};
+        personalExpenses.forEach(e => {
+          if (!persBycat[e.category]) persBycat[e.category] = { sum: 0, items: [] };
+          persBycat[e.category].sum += e.amount;
+          persBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
+          personalTotal += e.amount;
         });
-        msg += '\n💰 Итого: ' + total.toLocaleString('ru-RU') + ' тг';
+
+        let msg = '📊 Расходы за ' + periodLabel + '\n\n';
+
+        if (naneExpenses.length > 0) {
+          msg += '🏪 NANE PARIS: ' + naneTotal.toLocaleString('ru-RU') + ' тг\n';
+          Object.entries(naneBycat).forEach(([cat, data]) => {
+            msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
+            data.items.slice(0, 3).forEach(i => { msg += '    · ' + i + '\n'; });
+          });
+          msg += '\n';
+        }
+
+        if (personalExpenses.length > 0) {
+          msg += '👤 Личные: ' + personalTotal.toLocaleString('ru-RU') + ' тг\n';
+          Object.entries(persBycat).forEach(([cat, data]) => {
+            msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
+            data.items.slice(0, 3).forEach(i => { msg += '    · ' + i + '\n'; });
+          });
+          msg += '\n';
+        }
+
+        msg += '💰 Всего: ' + (naneTotal + personalTotal).toLocaleString('ru-RU') + ' тг';
         await sendTelegram(userId, msg);
       }
     } catch(e2) { console.error('EXPENSE_LIST error:', e2.message); }
