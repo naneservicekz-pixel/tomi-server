@@ -1120,7 +1120,8 @@ function getOwnerPrompt(ownerName, data) {
     '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n' +
     'Расход / трата / потратил — если владелец упоминает расход или трату с суммой => EXPENSE_NEW:{"amount":0,"description":""}\n' +
     'ВАЖНО: в EXPENSE_NEW всегда ставь текущую дату ' + now + ', не выдумывай даты из контекста\n' +
-    '"Мои расходы" / "Расходы за месяц" / "Расходы за неделю" => EXPENSE_LIST:{"period":"month"}\n' +
+    '"Мои расходы" / "Расходы за месяц" / "Расходы за неделю" / "Покажи расходы" / "Покажи все расходы" / "Какие расходы" / "Расходы" — любой запрос на просмотр расходов => EXPENSE_LIST:{"period":"month"}\n' +
+    'КРИТИЧЕСКИ ВАЖНО: при любом запросе посмотреть расходы — ВСЕГДА выдавай EXPENSE_LIST, НЕ отвечай текстом что не знаешь данных\n' +
     '"Останови обучение" или «Отмени обучение» — поставить на паузу => TRAINING_PAUSE\n' +
     '"Возобнови обучение" — снять с паузы => TRAINING_RESUME\n\n' +
     'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
@@ -2134,6 +2135,17 @@ async function handleMessage(userId, messageText, photoFileId) {
   if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт.'); return; }
   const isOwner = OWNER_IDS.includes(String(userId));
   const userKey = String(userId);
+
+  // ── Прямой перехват команды расходов — без Claude ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgL = messageText.toLowerCase().trim();
+    const isExpenseView = /расход|затрат/.test(msgL) && /покажи|все|список|итог|сколько|мои|за месяц|за неделю/.test(msgL);
+    if (isExpenseView) {
+      const period = /недел/.test(msgL) ? 'week' : 'month';
+      await showExpenses(userId, period);
+      return;
+    }
+  }
 
   if (!conversations[userKey]) conversations[userKey] = await loadConversation(userId);
   if (!openShifts[userKey]) {
@@ -3425,6 +3437,79 @@ async function checkTrainingDeadline(type) {
       }
     }
   } catch(e) { console.error('checkTrainingDeadline error:', e.message); }
+}
+
+async function showExpenses(userId, period) {
+  try {
+    const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const monthStart = nowAlm.getMonth() + 1;
+    const yearNow = nowAlm.getFullYear();
+    const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
+
+    const naneRows = await readSheet('Расходы!A:E', SPREADSHEET_ID);
+    const { data: personalRows } = await supabase
+      .from('personal_expenses').select('*').eq('user_id', String(userId))
+      .order('created_at', { ascending: false }).limit(200);
+
+    const naneExpenses = (naneRows || []).slice(1).filter(r => r[0] && r[2]).map(r => ({
+      date: r[0], description: r[1] || '', amount: Number(String(r[2]).replace(/[^0-9.]/g,'')),
+      category: r[3] || 'Прочее'
+    })).filter(e => {
+      const parts = String(e.date).split('.');
+      if (parts.length < 3) return false;
+      const m = parseInt(parts[1]), y = parseInt(parts[2]);
+      if (period === 'week') { const d = new Date(y, m-1, parseInt(parts[0])); return d >= weekAgo; }
+      return m === monthStart && y === yearNow;
+    });
+
+    const personalExpenses = (personalRows || []).filter(e => {
+      const d = new Date(e.created_at);
+      if (period === 'week') return d >= weekAgo;
+      return d.getMonth()+1 === monthStart && d.getFullYear() === yearNow;
+    }).map(e => ({ date: e.expense_date||'', description: e.description||'', amount: Number(e.amount), category: e.category||'Прочее' }));
+
+    if (naneExpenses.length === 0 && personalExpenses.length === 0) {
+      await sendTelegram(userId, '📊 Расходов за ' + (period==='week'?'неделю':'этот месяц') + ' пока нет.');
+      return;
+    }
+
+    const periodLabel = period === 'week' ? 'неделю' : 'месяц';
+    let naneTotal = 0, personalTotal = 0;
+    const naneBycat = {}, persBycat = {};
+
+    naneExpenses.forEach(e => {
+      if (!naneBycat[e.category]) naneBycat[e.category] = { sum:0, items:[] };
+      naneBycat[e.category].sum += e.amount;
+      naneBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
+      naneTotal += e.amount;
+    });
+    personalExpenses.forEach(e => {
+      if (!persBycat[e.category]) persBycat[e.category] = { sum:0, items:[] };
+      persBycat[e.category].sum += e.amount;
+      persBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
+      personalTotal += e.amount;
+    });
+
+    let msg = '📊 Расходы за ' + periodLabel + '\n\n';
+    if (naneExpenses.length > 0) {
+      msg += '🏪 NANE PARIS: ' + naneTotal.toLocaleString('ru-RU') + ' тг\n';
+      Object.entries(naneBycat).forEach(([cat, data]) => {
+        msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
+        data.items.slice(0,3).forEach(i => { msg += '    · ' + i + '\n'; });
+      });
+      msg += '\n';
+    }
+    if (personalExpenses.length > 0) {
+      msg += '👤 Личные: ' + personalTotal.toLocaleString('ru-RU') + ' тг\n';
+      Object.entries(persBycat).forEach(([cat, data]) => {
+        msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
+        data.items.slice(0,3).forEach(i => { msg += '    · ' + i + '\n'; });
+      });
+      msg += '\n';
+    }
+    msg += '💰 Всего: ' + (naneTotal + personalTotal).toLocaleString('ru-RU') + ' тг';
+    await sendTelegram(userId, msg);
+  } catch(e) { console.error('showExpenses error:', e.message); }
 }
 
 async function sendWeeklyTraining(forceLesson) {
