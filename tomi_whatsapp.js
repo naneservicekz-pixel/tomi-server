@@ -1259,9 +1259,11 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
       try {
         if (isNane) {
-          // Пишем в Google Sheets лист Расходы
-          await appendSheet('Расходы!A:E', [
-            exp.date, exp.description, exp.amount, category, 'NANE PARIS'
+          // Пишем в Google Sheets лист Расходы: A=Дата, B=Категория, C=Сумма, D=Примечание, E=Месяц, F=Год
+          const expMonth = exp.date.split('.')[1] || '';
+          const expYear  = exp.date.split('.')[2] || '';
+          await appendSheet('Расходы!A:F', [
+            exp.date, category, exp.amount, exp.description, expMonth, expYear
           ], SPREADSHEET_ID);
           await sendTelegram(userId, '✅ Записано в NANE PARIS\n📁 ' + category + '\n💸 ' + Number(exp.amount).toLocaleString('ru-RU') + ' тг — ' + exp.description);
         } else {
@@ -1919,9 +1921,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
 
       // Парсим NANE расходы (формат даты DD.MM.YYYY)
-      const naneExpenses = (naneRows || []).slice(1).filter(r => r[0] && r[2]).map(r => ({
-        date: r[0], description: r[1] || '', amount: Number(String(r[2]).replace(/[^0-9.]/g,'')),
-        category: r[3] || 'Прочее', type: 'NANE'
+      const naneExpenses = (naneRows || []).slice(2).filter(r => r[0] && r[2]).map(r => ({
+        date: r[0], category: r[1] || 'Прочее',
+        amount: Number(String(r[2]).replace(/[^0-9.]/g,'')),
+        description: r[3] || r[1] || '', type: 'NANE'
       })).filter(e => {
         const parts = String(e.date).split('.');
         if (parts.length < 3) return false;
@@ -3451,16 +3454,33 @@ async function showExpenses(userId, period) {
       .from('personal_expenses').select('*').eq('user_id', String(userId))
       .order('created_at', { ascending: false }).limit(200);
 
-    const naneExpenses = (naneRows || []).slice(1).filter(r => r[0] && r[2]).map(r => ({
-      date: r[0], description: r[1] || '', amount: Number(String(r[2]).replace(/[^0-9.]/g,'')),
-      category: r[3] || 'Прочее'
+    // Структура листа Расходы: A=Дата, B=Категория, C=Сумма, D=Примечание, E=Месяц, F=Год
+    console.log('showExpenses: naneRows total=', (naneRows||[]).length, 'month=', monthStart, 'year=', yearNow);
+    if (naneRows && naneRows.length > 2) {
+      console.log('showExpenses: first data row=', JSON.stringify(naneRows[2]));
+    }
+    const naneExpenses = (naneRows || []).slice(2).filter(r => r[0] && r[2]).map(r => ({
+      date: String(r[0]), category: r[1] || 'Прочее',
+      amount: Number(String(r[2]).replace(/[^0-9.,]/g,'')),
+      description: r[3] || r[1] || ''
     })).filter(e => {
-      const parts = String(e.date).split('.');
-      if (parts.length < 3) return false;
-      const m = parseInt(parts[1]), y = parseInt(parts[2]);
-      if (period === 'week') { const d = new Date(y, m-1, parseInt(parts[0])); return d >= weekAgo; }
+      console.log('showExpenses row date:', e.date, 'amount:', e.amount);
+      // Дата может быть в формате DD.MM.YYYY или объектом Date
+      let m, y;
+      if (typeof e.date === 'string') {
+        const parts = e.date.split('.');
+        if (parts.length < 3) return false;
+        m = parseInt(parts[1]); y = parseInt(parts[2]);
+      } else if (e.date instanceof Date) {
+        m = e.date.getMonth() + 1; y = e.date.getFullYear();
+      } else return false;
+      if (period === 'week') {
+        const d = new Date(y, m-1, typeof e.date === 'string' ? parseInt(e.date.split('.')[0]) : e.date.getDate());
+        return d >= weekAgo;
+      }
       return m === monthStart && y === yearNow;
     });
+    console.log('showExpenses: filtered naneExpenses=', naneExpenses.length);
 
     const personalExpenses = (personalRows || []).filter(e => {
       const d = new Date(e.created_at);
