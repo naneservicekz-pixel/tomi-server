@@ -3449,7 +3449,8 @@ async function showExpenses(userId, period) {
     const yearNow = nowAlm.getFullYear();
     const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
 
-    const naneRows = await readSheet('Расходы!A:E', SPREADSHEET_ID);
+    const naneRows = await readSheet('Расходы!A:F', DASHBOARD_ID);
+    console.log('showExpenses: reading from DASHBOARD_ID, rows=', (naneRows||[]).length);
     const { data: personalRows } = await supabase
       .from('personal_expenses').select('*').eq('user_id', String(userId))
       .order('created_at', { ascending: false }).limit(200);
