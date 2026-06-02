@@ -386,75 +386,64 @@ async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
 // ══════════════════════════════════════════════════════════════════════
 async function generateDashboardHTML() {
   try {
-    // Читаем два листа параллельно
-    const [dash, itogi] = await Promise.all([
-      readSheet("'Дашборд'!A1:H25", DASHBOARD_ID),
-      readSheet("'Итоги месяца'!A1:H18", DASHBOARD_ID)
-    ]);
+    const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const curMonth = nowAlm.getMonth() + 1;
+    const curYear  = nowAlm.getFullYear();
+    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
 
-    // Вспомогательная функция — безопасно достать значение и распарсить число
-    const num = (rows, rowIdx, colIdx) => {
-      try {
-        const v = rows[rowIdx] && rows[rowIdx][colIdx] != null ? rows[rowIdx][colIdx] : '';
-        return parseFloat(String(v).replace(/[^0-9.,-]/g, '').replace(',', '.')) || 0;
-      } catch(e) { return 0; }
-    };
+    // Читаем продажи из Supabase
+    const salesData = await dbGetSales(curMonth, curYear);
 
-    // ── Лист "Дашборд" ────────────────────────────────────────────
-    // Строка 6  (индекс 5)  — план магазина, колонка C (индекс 2)
-    // Строка 14 (индекс 13) — личный план: C=Асель, D=Зарина, E=Луиза, G=Итого
-    // Строка 19 (индекс 18) — оборот факт: C=Асель, D=Зарина, E=Луиза, G=Итого
-    // Строка 22 (индекс 21) — осталось до плана: C=Асель, D=Зарина, E=Луиза, G=Итого
+    // Считаем по продавцам
+    const sellerSales = { 'Асель': 0, 'Зарина': 0, 'Луиза': 0 };
+    let totalFact = 0;
+    salesData.forEach(s => {
+      const rev = Number(s.revenue || 0);
+      totalFact += rev;
+      // Делим оборот поровну между двумя продавцами
+      const sellers = [s.seller1, s.seller2].filter(Boolean);
+      if (sellers.length > 0) {
+        const share = rev / sellers.length;
+        sellers.forEach(name => { if (sellerSales[name] !== undefined) sellerSales[name] += share; });
+      }
+    });
 
-    const plan       = num(dash, 5, 2) || 27000000;
+    // Планы из Настройки (или дефолт пропорционально сменам)
+    const plan = 27000000;
+    // Июнь: Асель 19 смен, Зарина 23, Луиза 18 из 60 итого
+    const totalShifts = 60;
+    const shiftsMap = { 'Асель': 19, 'Зарина': 23, 'Луиза': 18 };
+    const planMap = {};
+    let planCheck = 0;
+    Object.entries(shiftsMap).forEach(([name, shifts]) => {
+      planMap[name] = Math.round(plan * shifts / totalShifts);
+      planCheck += planMap[name];
+    });
+    // Корректируем округление
+    planMap['Луиза'] += plan - planCheck;
 
-    const aselFact   = num(dash, 18, 2);
-    const zarinaFact = num(dash, 18, 3);
-    const luizaFact  = num(dash, 18, 4);
-    const totalFact  = num(dash, 18, 6) || (aselFact + zarinaFact + luizaFact);
-
-    const aselPlan   = num(dash, 13, 2);
-    const zarinaPlan = num(dash, 13, 3);
-    const luizaPlan  = num(dash, 13, 4);
-
-    const aselLeft   = num(dash, 21, 2);
-    const zarinaLeft = num(dash, 21, 3);
-    const luizaLeft  = num(dash, 21, 4);
-    const totalLeft  = num(dash, 21, 6) || Math.max(0, plan - totalFact);
-
-    const aselPct    = aselPlan  > 0 ? Math.round(aselFact  / aselPlan  * 100) : 0;
+    const aselFact   = Math.round(sellerSales['Асель']);
+    const zarinaFact = Math.round(sellerSales['Зарина']);
+    const luizaFact  = Math.round(sellerSales['Луиза']);
+    const aselPlan   = planMap['Асель'];
+    const zarinaPlan = planMap['Зарина'];
+    const luizaPlan  = planMap['Луиза'];
+    const aselLeft   = Math.max(0, aselPlan - aselFact);
+    const zarinaLeft = Math.max(0, zarinaPlan - zarinaFact);
+    const luizaLeft  = Math.max(0, luizaPlan - luizaFact);
+    const aselPct    = aselPlan > 0 ? Math.round(aselFact / aselPlan * 100) : 0;
     const zarinaPct  = zarinaPlan > 0 ? Math.round(zarinaFact / zarinaPlan * 100) : 0;
-    const luizaPct   = luizaPlan  > 0 ? Math.round(luizaFact  / luizaPlan  * 100) : 0;
+    const luizaPct   = luizaPlan > 0 ? Math.round(luizaFact / luizaPlan * 100) : 0;
     const totalPct   = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
+    const totalLeft  = Math.max(0, plan - totalFact);
 
-    // ── Лист "Итоги месяца" ───────────────────────────────────────
-    // Строка 14 (индекс 13) — Асель:  B=Выход, C=%прод, D=БонусХорДень, E=Рекорд, F=БонусПлан, G=KPI, H=ИТОГО
-    // Строка 15 (индекс 14) — Зарина
-    // Строка 16 (индекс 15) — Луиза
-    // Строка 18 (индекс 17) — ИТОГО ФОТ
+    // ФОТ — пока 0 (будет считаться позже из зарплатного Excel)
+    const aselTotal = 0, zarinaTotal = 0, luizaTotal = 0, totalFot = 0;
+    const aselFix = 0, aselProcent = 0, aselBonus = 0, aselRekord = 0, aselPlanB = 0;
+    const zarinaFix = 0, zarinaProcent = 0, zarinaBonus = 0, zarinaRekord = 0, zarinaPlanB = 0;
+    const luizaFix = 0, luizaProcent = 0, luizaBonus = 0, luizaRekord = 0, luizaPlanB = 0;
 
-    const aselFix     = num(itogi, 13, 1);
-    const aselProcent = num(itogi, 13, 2);
-    const aselBonus   = num(itogi, 13, 3);
-    const aselRekord  = num(itogi, 13, 4);
-    const aselPlanB   = num(itogi, 13, 5);
-    const aselTotal   = num(itogi, 13, 7);
-
-    const zarinaFix     = num(itogi, 14, 1);
-    const zarinaProcent = num(itogi, 14, 2);
-    const zarinaBonus   = num(itogi, 14, 3);
-    const zarinaRekord  = num(itogi, 14, 4);
-    const zarinaPlanB   = num(itogi, 14, 5);
-    const zarinaTotal   = num(itogi, 14, 7);
-
-    const luizaFix     = num(itogi, 15, 1);
-    const luizaProcent = num(itogi, 15, 2);
-    const luizaBonus   = num(itogi, 15, 3);
-    const luizaRekord  = num(itogi, 15, 4);
-    const luizaPlanB   = num(itogi, 15, 5);
-    const luizaTotal   = num(itogi, 15, 7);
-
-    const totalFot = num(itogi, 17, 7) || (aselTotal + zarinaTotal + luizaTotal);
+    const dash = []; const itogi = []; // не используются — данные из Supabase
 
     // ── Форматирование ────────────────────────────────────────────
     const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
@@ -586,7 +575,7 @@ body {
   <!-- ШАПКА -->
   <div class="header">
     <div class="brand">NANÉ PARIS</div>
-    <div class="brand-sub">Дашборд продаж — Май 2026</div>
+    <div class="brand-sub">Дашборд продаж — ${monthNames[curMonth]} ${curYear}</div>
     <div class="updated">Обновлено: ${now}</div>
   </div>
 
