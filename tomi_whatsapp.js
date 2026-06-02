@@ -185,6 +185,25 @@ async function dbGetNextPrepayId() {
 // РАСЧЁТ ЗАРПЛАТЫ — система КЕ + KPI
 // ══════════════════════════════════════════════════════════════════════
 
+async function saveKPI(sellerName, score, month, year) {
+  try {
+    await supabase.from('kpi_scores').upsert({
+      seller_name: sellerName, score: score, month: month, year: year
+    }, { onConflict: 'seller_name,month,year' });
+    console.log('KPI saved:', sellerName, score, month, year);
+  } catch(e) { console.error('saveKPI error:', e.message); }
+}
+
+async function getKPI(month, year) {
+  try {
+    const { data } = await supabase.from('kpi_scores')
+      .select('*').eq('month', month).eq('year', year);
+    const result = {};
+    (data || []).forEach(r => { result[r.seller_name] = r.score; });
+    return result;
+  } catch(e) { return {}; }
+}
+
 async function calcSalary(month, year) {
   try {
     const sales = await dbGetSales(month, year);
@@ -207,6 +226,9 @@ async function calcSalary(month, year) {
       if (amount >= 500000)  return 0.017;
       return 0.012;
     };
+
+    // Получаем KPI за месяц
+    const kpiScores = await getKPI(month, year);
 
     // Считаем по продавцам
     const sellers = ['Асель', 'Зарина', 'Луиза'];
@@ -248,7 +270,9 @@ async function calcSalary(month, year) {
       const ke = d.shifts * KE;
       const pct = Math.round(d.pctSum || 0); // уже посчитан подневно
       const bonusPlan = d.sales >= (personalPlans[s] || 0) ? BONUS_PLAN : 0;
-      const total = ke + pct + d.bonusGoodDay + d.bonusRecord + bonusPlan;
+      const kpiScore = kpiScores[s] !== undefined ? kpiScores[s] : 3; // по умолчанию 3/3
+      const kpiAmt = kpiScore * KPI_ONE;
+      const total = ke + pct + d.bonusGoodDay + d.bonusRecord + bonusPlan + kpiAmt;
 
       result[s] = {
         shifts: d.shifts,
@@ -256,6 +280,8 @@ async function calcSalary(month, year) {
         ke: ke,
         pct: pct,
         pctRate: 'подневно',
+        kpiScore: kpiScore,
+        kpiAmt: kpiAmt,
         bonusGoodDay: d.bonusGoodDay,
         bonusRecord: d.bonusRecord,
         bonusPlan: bonusPlan,
@@ -303,6 +329,7 @@ async function showSalaryReport(userId, month, year) {
       if (s.bonusRecord > 0)  msg += '  Рекорд ≥2млн: ' + fmt(s.bonusRecord) + ' тг\n';
       if (s.bonusPlan > 0)    msg += '  Бонус за план: ' + fmt(s.bonusPlan) + ' тг ✅\n';
       else                     msg += '  План: ' + fmt(s.planFact) + ' из ' + fmt(s.planTarget) + ' тг ❌\n';
+      msg += '  KPI: ' + s.kpiScore + '/3 = ' + fmt(s.kpiAmt) + ' тг\n';
       msg += '  ▶ ИТОГО: ' + fmt(s.total) + ' тг\n\n';
     });
 
@@ -1376,6 +1403,8 @@ function getOwnerPrompt(ownerName, data) {
     '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n' +
     '"Продажи за май" / "Продажи за июнь" / "Продажи за месяц" / "Оборот" — показать данные по продажам => SALES_LIST:{"month":0,"year":0}\n' +
     '"Зарплата" / "ФОТ" / "Расчёт зарплаты" / "Зарплата за май" — расчёт зарплаты => SALARY_CALC:{"month":0,"year":0}\n' +
+    '"KPI Асель 3" / "KPI Зарина 2" / «поставь KPI Луизе 1» — выставить KPI продавцу (0-3) => KPI_SET:{"seller":"Имя","score":0,"month":0,"year":0}\n' +
+    '"KPI" / "Посмотри KPI" — показать текущие KPI => KPI_LIST:{"month":0,"year":0}\n' +
     'Расход / трата / потратил — если владелец упоминает расход или трату с суммой => EXPENSE_NEW:{"amount":0,"description":""}\n' +
     'ВАЖНО: в EXPENSE_NEW всегда ставь текущую дату ' + now + ', не выдумывай даты из контекста\n' +
     '"Мои расходы" / "Расходы за месяц" / "Расходы за неделю" / "Покажи расходы" / "Покажи все расходы" / "Какие расходы" / "Расходы" — любой запрос на просмотр расходов => EXPENSE_LIST:{"period":"month"}\n' +
@@ -2437,6 +2466,32 @@ async function handleMessage(userId, messageText, photoFileId) {
   if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт.'); return; }
   const isOwner = OWNER_IDS.includes(String(userId));
   const userKey = String(userId);
+
+  // ── Прямой перехват KPI команд — без Claude ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgLK = messageText.toLowerCase().trim();
+    const kpiMatch = msgLK.match(/kpi\s+(асель|зарина|луиза)\s+(\d)/i) ||
+                     msgLK.match(/(асель|зарина|луиза).*kpi.*(\d)/i) ||
+                     msgLK.match(/kpi\s+(\w+)\s+(\d)/i);
+    if (kpiMatch) {
+      const sellerRaw = kpiMatch[1];
+      const score = parseInt(kpiMatch[2]);
+      const sellerName = sellerRaw.charAt(0).toUpperCase() + sellerRaw.slice(1).toLowerCase();
+      const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+      const kpiMonth = nowA.getMonth() + 1;
+      const kpiYear = nowA.getFullYear();
+      if (score >= 0 && score <= 3) {
+        await saveKPI(sellerName, score, kpiMonth, kpiYear);
+        const kpiAmt = score * 25000;
+        await sendTelegram(userId,
+          '✅ KPI выставлен\n👤 ' + sellerName + '\n' +
+          '⭐ ' + score + '/3 метрики\n' +
+          '💰 ' + kpiAmt.toLocaleString('ru-RU') + ' тг'
+        );
+        return;
+      }
+    }
+  }
 
   // ── Прямой перехват команды зарплаты — без Claude ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
