@@ -58,6 +58,129 @@ function detectCategory(description) {
   return 'Прочее';
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// SUPABASE DATA FUNCTIONS — заменяют Google Sheets для основных данных
+// ══════════════════════════════════════════════════════════════════════
+
+async function dbSaveSale(date, revenue, seller1, seller2) {
+  try {
+    const d = typeof date === 'string' ? date : date.split('.').reverse().join('-');
+    const m = parseInt(d.split('-')[1]);
+    const y = parseInt(d.split('-')[0]);
+    const { error } = await supabase.from('daily_sales').upsert({
+      sale_date: d, revenue: Number(revenue),
+      seller1: seller1 || '', seller2: seller2 || '',
+      month: m, year: y
+    }, { onConflict: 'sale_date' });
+    if (error) console.error('dbSaveSale error:', error.message);
+    else console.log('dbSaveSale OK:', d, revenue);
+    return !error;
+  } catch(e) { console.error('dbSaveSale exception:', e.message); return false; }
+}
+
+async function dbGetSales(month, year) {
+  try {
+    const { data, error } = await supabase
+      .from('daily_sales').select('*')
+      .eq('month', month).eq('year', year)
+      .order('sale_date', { ascending: true });
+    if (error) console.error('dbGetSales error:', error.message);
+    return data || [];
+  } catch(e) { return []; }
+}
+
+async function dbSaveExpense(date, category, amount, description, isPersonal, userId) {
+  try {
+    const d = typeof date === 'string' && date.includes('.') 
+      ? date.split('.').reverse().join('-') : date;
+    const parts = d.split('-');
+    const m = parseInt(parts[1]);
+    const y = parseInt(parts[0]);
+    if (isPersonal) {
+      const { error } = await supabase.from('personal_expenses').insert([{
+        user_id: String(userId), amount: Number(amount),
+        description: description, category: category, expense_date: date
+      }]);
+      if (error) console.error('dbSaveExpense personal error:', error.message);
+      return !error;
+    } else {
+      const { error } = await supabase.from('expenses').insert([{
+        expense_date: d, category: category, amount: Number(amount),
+        description: description, month: m, year: y
+      }]);
+      if (error) console.error('dbSaveExpense nane error:', error.message);
+      return !error;
+    }
+  } catch(e) { console.error('dbSaveExpense exception:', e.message); return false; }
+}
+
+async function dbGetExpenses(month, year, isPersonal, userId) {
+  try {
+    if (isPersonal) {
+      const start = year + '-' + String(month).padStart(2,'0') + '-01';
+      const end   = year + '-' + String(month).padStart(2,'0') + '-31';
+      const { data } = await supabase.from('personal_expenses')
+        .select('*').eq('user_id', String(userId))
+        .gte('created_at', start).lte('created_at', end + 'T23:59:59');
+      return data || [];
+    } else {
+      const { data } = await supabase.from('expenses')
+        .select('*').eq('month', month).eq('year', year)
+        .order('expense_date', { ascending: true });
+      return data || [];
+    }
+  } catch(e) { return []; }
+}
+
+async function dbSaveDiscipline(date, sellerName, eventType, eventTime, note) {
+  try {
+    const d = typeof date === 'string' && date.includes('.') 
+      ? date.split('.').reverse().join('-') : date;
+    await supabase.from('discipline').insert([{
+      event_date: d, seller_name: sellerName,
+      event_type: eventType, event_time: eventTime, note: note
+    }]);
+  } catch(e) { console.error('dbSaveDiscipline error:', e.message); }
+}
+
+async function dbSavePrepay(id, date, client, phone, item, channel, amount, balance, status, notes, seller) {
+  try {
+    const d = typeof date === 'string' && date.includes('.') 
+      ? date.split('.').reverse().join('-') : (date || new Date().toISOString().split('T')[0]);
+    const { error } = await supabase.from('prepayments').upsert({
+      prep_id: id, prep_date: d, client_name: client, phone: phone,
+      item: item, channel: channel, amount: Number(amount),
+      balance: Number(balance), status: status || '🟡 Открыта',
+      notes: notes, seller_name: seller
+    }, { onConflict: 'prep_id' });
+    if (error) console.error('dbSavePrepay error:', error.message);
+    return !error;
+  } catch(e) { console.error('dbSavePrepay exception:', e.message); return false; }
+}
+
+async function dbGetPrepays(statusFilter) {
+  try {
+    let query = supabase.from('prepayments').select('*').order('prep_date', { ascending: true });
+    if (statusFilter === 'open') query = query.ilike('status', '%Открыта%');
+    else if (statusFilter === 'closed') query = query.ilike('status', '%Закрыта%');
+    // 'all' — без фильтра
+    const { data, error } = await query;
+    if (error) console.error('dbGetPrepays error:', error.message);
+    return data || [];
+  } catch(e) { return []; }
+}
+
+async function dbGetNextPrepayId() {
+  try {
+    const { data } = await supabase.from('prepayments')
+      .select('prep_id').order('prep_id', { ascending: false }).limit(1);
+    if (!data || data.length === 0) return 'PREP-0001';
+    const last = String(data[0].prep_id || 'PREP-0000');
+    const num = parseInt(last.replace('PREP-', '')) + 1;
+    return 'PREP-' + String(num).padStart(4, '0');
+  } catch(e) { return 'PREP-' + Date.now(); }
+}
+
 function getNow() { return new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }); }
 function getTime() { return new Date().toLocaleTimeString('ru-RU', { timeZone: 'Asia/Almaty', hour: '2-digit', minute: '2-digit' }); }
 function getDate() { return new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }); }
@@ -872,7 +995,9 @@ function generateShiftHTML(data) {
 }
 
 async function loadOwnerData() {
-  const [shifts, prepays] = await Promise.all([readSheet('Смены!A:Y'), readSheet('Предоплаты!A:K')]);
+  const prepays_raw = await dbGetPrepays('open');
+  const shifts = [];
+  const prepays = prepays_raw.map(p => [p.prep_id, p.prep_date, p.client_name, p.phone, p.item, p.channel, p.amount, p.balance, p.status, '', p.notes]);
   const recentShifts = shifts.slice(-30).map(r => ({ date: r[0], seller: r[1], rostaTotal: r[19], factTotal: r[20], diff: r[21], status: r[22] }));
   const openPrepays = prepays.slice(1).filter(r => r[0] && String(r[8]||'').toLowerCase().includes('открыт')).map(r => ({ id: r[0], date: r[1], client: r[2], phone: r[3], item: r[4], channel: r[5], amount: r[6], balance: r[7] }));
   return { recentShifts, openPrepays };
@@ -1118,6 +1243,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n' +
     '"Обучение команды" или "Статистика обучения" — покажи результаты тестов продавцов из листа Дисциплина => TRAINING_STATS\n' +
     '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n' +
+    '"Продажи за май" / "Продажи за июнь" / "Продажи за месяц" / "Оборот" — показать данные по продажам => SALES_LIST:{"month":0,"year":0}\n' +
     'Расход / трата / потратил — если владелец упоминает расход или трату с суммой => EXPENSE_NEW:{"amount":0,"description":""}\n' +
     'ВАЖНО: в EXPENSE_NEW всегда ставь текущую дату ' + now + ', не выдумывай даты из контекста\n' +
     '"Мои расходы" / "Расходы за месяц" / "Расходы за неделю" / "Покажи расходы" / "Покажи все расходы" / "Какие расходы" / "Расходы" — любой запрос на просмотр расходов => EXPENSE_LIST:{"period":"month"}\n' +
@@ -1262,19 +1388,11 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           // Пишем в Google Sheets лист Расходы: A=Дата, B=Категория, C=Сумма, D=Примечание, E=Месяц, F=Год
           const expMonth = exp.date.split('.')[1] || '';
           const expYear  = exp.date.split('.')[2] || '';
-          await appendSheet('Расходы!A:F', [
-            exp.date, category, exp.amount, exp.description, expMonth, expYear
-          ], SPREADSHEET_ID);
+          await dbSaveExpense(exp.date, category, exp.amount, exp.description, false, userId);
           await sendTelegram(userId, '✅ Записано в NANE PARIS\n📁 ' + category + '\n💸 ' + Number(exp.amount).toLocaleString('ru-RU') + ' тг — ' + exp.description);
         } else {
           // Пишем в Supabase personal_expenses
-          await supabase.from('personal_expenses').insert([{
-            user_id: String(userId),
-            amount: exp.amount,
-            description: exp.description,
-            category: category,
-            expense_date: exp.date,
-          }]);
+          await dbSaveExpense(exp.date, category, exp.amount, exp.description, true, userId);
           await sendTelegram(userId, '✅ Записано в личные расходы\n📁 ' + category + '\n💸 ' + Number(exp.amount).toLocaleString('ru-RU') + ' тг — ' + exp.description);
         }
       } catch(e) { console.error('expense save error:', e.message); }
@@ -1410,11 +1528,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const p = JSON.parse(jsonStr);
         const phone = String(p.phone||'').replace(/\D/g,'');
         const today = new Date().toISOString().split('T')[0];
-        const rows = await readSheet('Предоплаты!A:A');
-        let maxNum = 0;
-        rows.forEach(r => { const m = String(r[0]||'').match(/PREP-(\d+)/i); if (m) { const n = parseInt(m[1]); if (n > maxNum) maxNum = n; } });
-        const id = 'PREP-' + String(maxNum + 1).padStart(4, '0');
-        await appendSheet('Предоплаты!A:K', [id, p.date||today, p.client||'', phone.length>4?phone:'', p.item||'', p.channel||'', p.amount||0, p.balance||0, '🟡 Открыта', '', p.notes||sellerName]);
+        const id = await dbGetNextPrepayId();
+        await dbSavePrepay(id, p.date||today, p.client||'', phone.length>4?phone:'', p.item||'', p.channel||'', p.amount||0, p.balance||0, '🟡 Открыта', p.notes||sellerName, sellerName);
       }
     } catch(e) {}
     cleanReply = reply.replace(/PREPAY_SAVE:\{.*?\}/s, '').trim();
@@ -1425,12 +1540,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const jsonStr = reply.match(/PREPAY_CLOSE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const p = JSON.parse(jsonStr);
-        const rows = await readSheet('Предоплаты!A:K');
-        for (let i = 1; i < rows.length; i++) {
-          if (String(rows[i][0]) === String(p.id)) {
-            await updateSheetCell('Предоплаты!I' + (i+1), '🟢 Закрыта');
-            await updateSheetCell('Предоплаты!J' + (i+1), p.closeDate||new Date().toISOString().split('T')[0]);
-            await updateSheetCell('Предоплаты!K' + (i+1), p.notes||'Товар выдан');
+        const rows = await dbGetPrepays('all');
+        for (const row of rows) {
+          if (String(row.prep_id).trim().toUpperCase() === String(p.id).trim().toUpperCase()) {
+            await supabase.from('prepayments').update({ status: '🟢 Закрыта', notes: p.notes||'Товар выдан' }).eq('prep_id', row.prep_id);
             break;
           }
         }
@@ -1701,9 +1814,9 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           finalNotes, getNow()
         ]);
 
-        console.log('Вызываю writeToUchetPoDnyam: дата=', today, 'оборот=', rostaTotal, 'продавец=', sellerFinal);
-        await writeToUchetPoDnyam(today, rostaTotal, sellerFinal, '');
-        console.log('writeToUchetPoDnyam завершена');
+        console.log('Сохраняю продажи в Supabase: дата=', today, 'оборот=', rostaTotal);
+        await dbSaveSale(today, rostaTotal, sellerFinal, '');
+        console.log('dbSaveSale завершена');
 
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
@@ -1754,7 +1867,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
         // Записываем опоздание в лист "Дисциплина"
         const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-        await appendSheet('Дисциплина!A:E', [today, a.seller, 'Опоздание', timeStr, 'Открытие смены позже 11:00'], DASHBOARD_ID);
+        await dbSaveDiscipline(today, a.seller, 'Опоздание', timeStr, 'Открытие смены позже 11:00');
 
         // Считаем опоздания за текущий месяц
         const monthStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: '2-digit', year: 'numeric' });
@@ -1794,7 +1907,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
         const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-        await appendSheet('Дисциплина!A:E', [today, a.seller, 'Таймаут чек-листа', getTime(), 'Чек-лист не закрыт за 15 минут'], DASHBOARD_ID);
+        await dbSaveDiscipline(today, a.seller, 'Таймаут чек-листа', getTime(), 'Чек-лист не закрыт за 15 минут');
         for (const ownerId of OWNER_IDS) {
           await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт!\n👤 ' + a.seller + '\n🕐 Начала в ' + a.startTime + ', прошло 15 минут\n📋 Незакрыто: ' + (a.remaining || 'неизвестно'));
         }
@@ -2056,6 +2169,49 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
     if (!cleanReply) return '';
   }
 
+  if (reply.includes('SALES_LIST:')) {
+    try {
+      const jsonStr = reply.match(/SALES_LIST:(\{.*?\})/s)?.[1];
+      let month, year;
+      if (jsonStr) {
+        const p = JSON.parse(jsonStr);
+        month = p.month || (new Date().getMonth() + 1);
+        year  = p.year  || new Date().getFullYear();
+      } else {
+        month = new Date().getMonth() + 1;
+        year  = new Date().getFullYear();
+      }
+      // Если month=0 — текущий месяц
+      if (!month || month === 0) month = new Date().getMonth() + 1;
+      if (!year  || year  === 0) year  = new Date().getFullYear();
+
+      const sales = await dbGetSales(month, year);
+      const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+
+      if (!sales || sales.length === 0) {
+        await sendTelegram(userId, '📈 Продаж за ' + (monthNames[month]||month) + ' ' + year + ' пока нет.');
+      } else {
+        let total = 0;
+        let best = { revenue: 0, date: '' };
+        let msg = '📈 Продажи — ' + (monthNames[month]||month) + ' ' + year + '\n\n';
+        sales.forEach(s => {
+          const d = s.sale_date ? s.sale_date.slice(8,10) + '.' + s.sale_date.slice(5,7) : '?';
+          const sellers = [s.seller1, s.seller2].filter(Boolean).join('+');
+          msg += d + ': ' + Number(s.revenue).toLocaleString('ru-RU') + ' тг';
+          if (sellers) msg += ' · ' + sellers;
+          msg += '\n';
+          total += Number(s.revenue);
+          if (Number(s.revenue) > best.revenue) best = { revenue: Number(s.revenue), date: d };
+        });
+        msg += '\n📊 Итого: ' + total.toLocaleString('ru-RU') + ' тг';
+        if (best.date) msg += '\n🏆 Лучший день: ' + best.date + ' — ' + best.revenue.toLocaleString('ru-RU') + ' тг';
+        await sendTelegram(userId, msg);
+      }
+    } catch(e2) { console.error('SALES_LIST error:', e2.message); }
+    cleanReply = reply.replace(/SALES_LIST:\{.*?\}/s, '').trim();
+    if (!cleanReply) return '';
+  }
+
   if (reply.includes('TRAINING_NOW')) {
     cleanReply = reply.replace(/TRAINING_NOW/g, '').trim();
     await sendTelegram(userId, '📚 Запускаю обучение для продавцов...');
@@ -2138,6 +2294,22 @@ async function handleMessage(userId, messageText, photoFileId) {
   if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт.'); return; }
   const isOwner = OWNER_IDS.includes(String(userId));
   const userKey = String(userId);
+
+  // ── Прямой перехват команды продаж — без Claude ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgLS = messageText.toLowerCase().trim();
+    const monthNames2 = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+    if (/продаж|оборот|выручк/.test(msgLS)) {
+      let month = new Date().getMonth() + 1, year = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNames2)) {
+        if (msgLS.includes(name)) { month = num; break; }
+      }
+      // Временный вызов через handleSystemCommands
+      const fakeSalesReply = 'SALES_LIST:{"month":' + month + ',"year":' + year + '}';
+      await handleSystemCommands(fakeSalesReply, userId, ALLOWED_MAP[String(userId)] || 'Руководитель', messageText);
+      return;
+    }
+  }
 
   // ── Прямой перехват команды расходов — без Claude ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
@@ -2534,7 +2706,7 @@ function startChecklistTimer(userId, sellerName, startTime) {
     await sendTelegram(userId, '⏰ ' + sellerName + ', прошло 15 минут — чек-лист ещё не закрыт!\nЗакрой немедленно, иначе уведомлю руководителя.');
 
     const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-    await appendSheet('Дисциплина!A:E', [today, sellerName, 'Таймаут чек-листа', getTime(), 'Не закрыт за 15 минут'], DASHBOARD_ID);
+    await dbSaveDiscipline(today, sellerName, 'Таймаут чек-листа', getTime(), 'Не закрыт за 15 минут');
     for (const ownerId of OWNER_IDS) {
       await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт за 15 минут!\n👤 ' + sellerName + '\n🕐 Начала в ' + startTimeStr + '\nПродавец получила напоминание.');
     }
@@ -3449,41 +3621,17 @@ async function showExpenses(userId, period) {
     const yearNow = nowAlm.getFullYear();
     const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
 
-    const naneRows = await readSheet('Расходы!A:F', DASHBOARD_ID);
-    console.log('showExpenses: reading from DASHBOARD_ID, rows=', (naneRows||[]).length);
-    const { data: personalRows } = await supabase
-      .from('personal_expenses').select('*').eq('user_id', String(userId))
-      .order('created_at', { ascending: false }).limit(200);
+    // Читаем из Supabase
+    const naneRaw = await dbGetExpenses(monthStart, yearNow, false, userId);
+    const personalRaw = await dbGetExpenses(monthStart, yearNow, true, userId);
+    console.log('showExpenses: naneRaw=', naneRaw.length, 'personalRaw=', personalRaw.length);
 
-    // Структура листа Расходы: A=Дата, B=Категория, C=Сумма, D=Примечание, E=Месяц, F=Год
-    console.log('showExpenses: naneRows total=', (naneRows||[]).length, 'month=', monthStart, 'year=', yearNow);
-    if (naneRows && naneRows.length > 2) {
-      console.log('showExpenses: first data row=', JSON.stringify(naneRows[2]));
-    }
-    const naneExpenses = (naneRows || []).slice(2).filter(r => r[0] && r[2]).map(r => ({
-      date: String(r[0]), category: r[1] || 'Прочее',
-      amount: Number(String(r[2]).replace(/[^0-9.,]/g,'')),
-      description: r[3] || r[1] || ''
-    })).filter(e => {
-      console.log('showExpenses row date:', e.date, 'amount:', e.amount);
-      // Дата может быть в формате DD.MM.YYYY или объектом Date
-      let m, y;
-      if (typeof e.date === 'string') {
-        const parts = e.date.split('.');
-        if (parts.length < 3) return false;
-        m = parseInt(parts[1]); y = parseInt(parts[2]);
-      } else if (e.date instanceof Date) {
-        m = e.date.getMonth() + 1; y = e.date.getFullYear();
-      } else return false;
-      if (period === 'week') {
-        const d = new Date(y, m-1, typeof e.date === 'string' ? parseInt(e.date.split('.')[0]) : e.date.getDate());
-        return d >= weekAgo;
-      }
-      return m === monthStart && y === yearNow;
-    });
-    console.log('showExpenses: filtered naneExpenses=', naneExpenses.length);
+    const naneExpenses = naneRaw.filter(e => {
+      if (period === 'week') return new Date(e.expense_date) >= weekAgo;
+      return e.month === monthStart && e.year === yearNow;
+    }).map(e => ({ date: e.expense_date, category: e.category||'Прочее', amount: Number(e.amount), description: e.description||'' }));
 
-    const personalExpenses = (personalRows || []).filter(e => {
+    const personalExpenses = personalRaw.filter(e => {
       const d = new Date(e.created_at);
       if (period === 'week') return d >= weekAgo;
       return d.getMonth()+1 === monthStart && d.getFullYear() === yearNow;
