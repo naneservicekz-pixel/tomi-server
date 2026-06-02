@@ -2314,10 +2314,18 @@ async function handleMessage(userId, messageText, photoFileId) {
   // ── Прямой перехват команды расходов — без Claude ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
     const msgL = messageText.toLowerCase().trim();
-    const isExpenseView = /расход|затрат/.test(msgL) && /покажи|все|список|итог|сколько|мои|за месяц|за неделю/.test(msgL);
-    if (isExpenseView) {
+    // Любое сообщение со словом "расход" или "затрат" — показываем расходы
+    const isExpenseView = /расход|затрат/.test(msgL);
+    if (isExpenseView && !/внести|добавить|записать|потратил|трата|расход \d/.test(msgL)) {
+      // Определяем месяц
+      const monthNamesExp = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let expMonth = new Date().getMonth() + 1;
+      let expYear  = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNamesExp)) {
+        if (msgL.includes(name)) { expMonth = num; break; }
+      }
       const period = /недел/.test(msgL) ? 'week' : 'month';
-      await showExpenses(userId, period);
+      await showExpensesByMonth(userId, expMonth, expYear, period);
       return;
     }
   }
@@ -3612,6 +3620,61 @@ async function checkTrainingDeadline(type) {
       }
     }
   } catch(e) { console.error('checkTrainingDeadline error:', e.message); }
+}
+
+async function showExpensesByMonth(userId, month, year, period) {
+  try {
+    const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
+    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+
+    const naneRaw = await dbGetExpenses(month, year, false, userId);
+    const personalRaw = await dbGetExpenses(month, year, true, userId);
+
+    const naneExpenses = naneRaw.map(e => ({ date: e.expense_date, category: e.category||'Прочее', amount: Number(e.amount), description: e.description||'' }));
+    const personalExpenses = personalRaw.map(e => ({ date: e.expense_date||'', description: e.description||'', amount: Number(e.amount), category: e.category||'Прочее' }));
+
+    if (naneExpenses.length === 0 && personalExpenses.length === 0) {
+      await sendTelegram(userId, '📊 Расходов за ' + (monthNames[month]||month) + ' ' + year + ' пока нет.');
+      return;
+    }
+
+    let naneTotal = 0, personalTotal = 0;
+    const naneBycat = {}, persBycat = {};
+
+    naneExpenses.forEach(e => {
+      if (!naneBycat[e.category]) naneBycat[e.category] = { sum:0, items:[] };
+      naneBycat[e.category].sum += e.amount;
+      naneBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
+      naneTotal += e.amount;
+    });
+    personalExpenses.forEach(e => {
+      if (!persBycat[e.category]) persBycat[e.category] = { sum:0, items:[] };
+      persBycat[e.category].sum += e.amount;
+      persBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
+      personalTotal += e.amount;
+    });
+
+    let msg = '📊 Расходы — ' + (monthNames[month]||month) + ' ' + year + '\n\n';
+    if (naneExpenses.length > 0) {
+      msg += '🏪 NANE PARIS: ' + naneTotal.toLocaleString('ru-RU') + ' тг\n';
+      Object.entries(naneBycat).forEach(([cat, data]) => {
+        msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
+        data.items.forEach(i => { msg += '    · ' + i + '\n'; });
+      });
+      msg += '\n';
+    }
+    if (personalExpenses.length > 0) {
+      msg += '👤 Личные: ' + personalTotal.toLocaleString('ru-RU') + ' тг\n';
+      Object.entries(persBycat).forEach(([cat, data]) => {
+        msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
+        data.items.forEach(i => { msg += '    · ' + i + '\n'; });
+      });
+      msg += '\n';
+    }
+    msg += '💰 Всего: ' + (naneTotal + personalTotal).toLocaleString('ru-RU') + ' тг';
+    await sendTelegram(userId, msg);
+  } catch(e) { console.error('showExpensesByMonth error:', e.message); }
 }
 
 async function showExpenses(userId, period) {
