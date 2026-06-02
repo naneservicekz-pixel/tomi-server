@@ -181,6 +181,138 @@ async function dbGetNextPrepayId() {
   } catch(e) { return 'PREP-' + Date.now(); }
 }
 
+// ══════════════════════════════════════════════════════════════════════
+// РАСЧЁТ ЗАРПЛАТЫ — система КЕ + KPI
+// ══════════════════════════════════════════════════════════════════════
+
+async function calcSalary(month, year) {
+  try {
+    const sales = await dbGetSales(month, year);
+    if (!sales || sales.length === 0) return null;
+
+    // Параметры
+    const KE = 14000; // выход тг/смена
+    const TAX_PCT = 0.03; // 3% налог
+    const BONUS_PLAN = 30000; // бонус за выполнение личного плана
+    const KPI_ONE = 25000; // одна KPI метрика
+
+    // Личные планы июнь
+    const personalPlans = { 'Асель': 8550000, 'Зарина': 10350000, 'Луиза': 8100000 };
+    // Обновляем планы динамически по месяцу (пока захардкожено июнь)
+
+    // Шкала % (от личных продаж продавца)
+    const getPct = (amount) => {
+      if (amount >= 1000000) return 0.027;
+      if (amount >= 750000)  return 0.022;
+      if (amount >= 500000)  return 0.017;
+      return 0.012;
+    };
+
+    // Считаем по продавцам
+    const sellers = ['Асель', 'Зарина', 'Луиза'];
+    const data = {};
+    sellers.forEach(s => {
+      data[s] = { shifts: 0, sales: 0, bonusGoodDay: 0, bonusRecord: 0 };
+    });
+
+    let totalRevenue = 0;
+
+    sales.forEach(day => {
+      const rev = Number(day.revenue || 0);
+      totalRevenue += rev;
+      const daySellers = [day.seller1, day.seller2].filter(s => s && sellers.includes(s));
+      if (daySellers.length === 0) return;
+
+      const sharePerSeller = rev / daySellers.length;
+
+      daySellers.forEach(s => {
+        data[s].shifts++;
+        data[s].sales += sharePerSeller;
+
+        // Бонус за хороший день (на каждого продавца в смене)
+        if (rev >= 2000000) {
+          data[s].bonusRecord += 40000;
+        } else if (rev >= 700000) {
+          data[s].bonusGoodDay += 5000;
+        }
+      });
+    });
+
+    // Итоги по каждому продавцу
+    const result = {};
+    sellers.forEach(s => {
+      const d = data[s];
+      const ke = d.shifts * KE;
+      const pct = d.sales * getPct(d.sales);
+      const bonusPlan = d.sales >= (personalPlans[s] || 0) ? BONUS_PLAN : 0;
+      const total = ke + pct + d.bonusGoodDay + d.bonusRecord + bonusPlan;
+
+      result[s] = {
+        shifts: d.shifts,
+        sales: Math.round(d.sales),
+        ke: ke,
+        pct: Math.round(pct),
+        pctRate: (getPct(d.sales) * 100).toFixed(1) + '%',
+        bonusGoodDay: d.bonusGoodDay,
+        bonusRecord: d.bonusRecord,
+        bonusPlan: bonusPlan,
+        planFact: Math.round(d.sales),
+        planTarget: personalPlans[s] || 0,
+        planDone: d.sales >= (personalPlans[s] || 0),
+        total: Math.round(total)
+      };
+    });
+
+    const totalFot = sellers.reduce((s, name) => s + result[name].total, 0);
+    const tax = Math.round(totalRevenue * TAX_PCT);
+
+    return { sellers: result, totalRevenue, totalFot, tax, month, year };
+  } catch(e) {
+    console.error('calcSalary error:', e.message);
+    return null;
+  }
+}
+
+async function showSalaryReport(userId, month, year) {
+  try {
+    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+    const calc = await calcSalary(month, year);
+
+    if (!calc) {
+      await sendTelegram(userId, '📊 Нет данных по продажам за ' + (monthNames[month]||month) + ' ' + year);
+      return;
+    }
+
+    const fmt = n => Math.round(n).toLocaleString('ru-RU');
+    const sellers = ['Асель', 'Зарина', 'Луиза'];
+
+    let msg = '💰 РАСЧЁТ ЗАРПЛАТЫ — ' + (monthNames[month]||month) + ' ' + year + '\n';
+    msg += '━━━━━━━━━━━━━━━━━━━━\n\n';
+
+    sellers.forEach(name => {
+      const s = calc.sellers[name];
+      if (!s || s.shifts === 0) return;
+      msg += '👤 ' + name + ' · ' + s.shifts + ' смен\n';
+      msg += '  Продажи: ' + fmt(s.sales) + ' тг (' + s.pctRate + ')\n';
+      msg += '  КЕ (выходы): ' + fmt(s.ke) + ' тг\n';
+      msg += '  % от продаж: ' + fmt(s.pct) + ' тг\n';
+      if (s.bonusGoodDay > 0) msg += '  Бонус хор.день: ' + fmt(s.bonusGoodDay) + ' тг\n';
+      if (s.bonusRecord > 0)  msg += '  Рекорд ≥2млн: ' + fmt(s.bonusRecord) + ' тг\n';
+      if (s.bonusPlan > 0)    msg += '  Бонус за план: ' + fmt(s.bonusPlan) + ' тг ✅\n';
+      else                     msg += '  План: ' + fmt(s.planFact) + ' из ' + fmt(s.planTarget) + ' тг ❌\n';
+      msg += '  ▶ ИТОГО: ' + fmt(s.total) + ' тг\n\n';
+    });
+
+    msg += '━━━━━━━━━━━━━━━━━━━━\n';
+    msg += '💼 Оборот: ' + fmt(calc.totalRevenue) + ' тг\n';
+    msg += '📊 ФОТ итого: ' + fmt(calc.totalFot) + ' тг\n';
+    msg += '🏛 Налог (3%): ' + fmt(calc.tax) + ' тг\n';
+    msg += '💰 Прибыль: ~' + fmt(calc.totalRevenue - calc.totalFot - calc.tax) + ' тг';
+
+    await sendTelegram(userId, msg);
+  } catch(e) { console.error('showSalaryReport error:', e.message); }
+}
+
 function getNow() { return new Date().toLocaleString('ru-RU', { timeZone: 'Asia/Almaty' }); }
 function getTime() { return new Date().toLocaleTimeString('ru-RU', { timeZone: 'Asia/Almaty', hour: '2-digit', minute: '2-digit' }); }
 function getDate() { return new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }); }
@@ -437,11 +569,32 @@ async function generateDashboardHTML() {
     const totalPct   = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
     const totalLeft  = Math.max(0, plan - totalFact);
 
-    // ФОТ — пока 0 (будет считаться позже из зарплатного Excel)
-    const aselTotal = 0, zarinaTotal = 0, luizaTotal = 0, totalFot = 0;
-    const aselFix = 0, aselProcent = 0, aselBonus = 0, aselRekord = 0, aselPlanB = 0;
-    const zarinaFix = 0, zarinaProcent = 0, zarinaBonus = 0, zarinaRekord = 0, zarinaPlanB = 0;
-    const luizaFix = 0, luizaProcent = 0, luizaBonus = 0, luizaRekord = 0, luizaPlanB = 0;
+    // Расчёт зарплаты из Supabase
+    const salaryCalc = await calcSalary(curMonth, curYear);
+    const sc = salaryCalc ? salaryCalc.sellers : {};
+
+    const aselFix     = sc['Асель'] ? sc['Асель'].ke : 0;
+    const aselProcent = sc['Асель'] ? sc['Асель'].pct : 0;
+    const aselBonus   = sc['Асель'] ? sc['Асель'].bonusGoodDay : 0;
+    const aselRekord  = sc['Асель'] ? sc['Асель'].bonusRecord : 0;
+    const aselPlanB   = sc['Асель'] ? sc['Асель'].bonusPlan : 0;
+    const aselTotal   = sc['Асель'] ? sc['Асель'].total : 0;
+
+    const zarinaFix     = sc['Зарина'] ? sc['Зарина'].ke : 0;
+    const zarinaProcent = sc['Зарина'] ? sc['Зарина'].pct : 0;
+    const zarinaBonus   = sc['Зарина'] ? sc['Зарина'].bonusGoodDay : 0;
+    const zarinaRekord  = sc['Зарина'] ? sc['Зарина'].bonusRecord : 0;
+    const zarinaPlanB   = sc['Зарина'] ? sc['Зарина'].bonusPlan : 0;
+    const zarinaTotal   = sc['Зарина'] ? sc['Зарина'].total : 0;
+
+    const luizaFix     = sc['Луиза'] ? sc['Луиза'].ke : 0;
+    const luizaProcent = sc['Луиза'] ? sc['Луиза'].pct : 0;
+    const luizaBonus   = sc['Луиза'] ? sc['Луиза'].bonusGoodDay : 0;
+    const luizaRekord  = sc['Луиза'] ? sc['Луиза'].bonusRecord : 0;
+    const luizaPlanB   = sc['Луиза'] ? sc['Луиза'].bonusPlan : 0;
+    const luizaTotal   = sc['Луиза'] ? sc['Луиза'].total : 0;
+
+    const totalFot = salaryCalc ? salaryCalc.totalFot : 0;
 
     const dash = []; const itogi = []; // не используются — данные из Supabase
 
@@ -1219,6 +1372,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Обучение команды" или "Статистика обучения" — покажи результаты тестов продавцов из листа Дисциплина => TRAINING_STATS\n' +
     '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n' +
     '"Продажи за май" / "Продажи за июнь" / "Продажи за месяц" / "Оборот" — показать данные по продажам => SALES_LIST:{"month":0,"year":0}\n' +
+    '"Зарплата" / "ФОТ" / "Расчёт зарплаты" / "Зарплата за май" — расчёт зарплаты => SALARY_CALC:{"month":0,"year":0}\n' +
     'Расход / трата / потратил — если владелец упоминает расход или трату с суммой => EXPENSE_NEW:{"amount":0,"description":""}\n' +
     'ВАЖНО: в EXPENSE_NEW всегда ставь текущую дату ' + now + ', не выдумывай даты из контекста\n' +
     '"Мои расходы" / "Расходы за месяц" / "Расходы за неделю" / "Покажи расходы" / "Покажи все расходы" / "Какие расходы" / "Расходы" — любой запрос на просмотр расходов => EXPENSE_LIST:{"period":"month"}\n' +
@@ -2144,6 +2298,17 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
     if (!cleanReply) return '';
   }
 
+  if (reply.includes('SALARY_CALC:')) {
+    try {
+      const jsonStr = reply.match(/SALARY_CALC:(\{.*?\})/s)?.[1];
+      let month = new Date().getMonth() + 1, year = new Date().getFullYear();
+      if (jsonStr) { const p = JSON.parse(jsonStr); if (p.month) month = p.month; if (p.year) year = p.year; }
+      await showSalaryReport(userId, month, year);
+    } catch(e2) { console.error('SALARY_CALC error:', e2.message); }
+    cleanReply = reply.replace(/SALARY_CALC:\{.*?\}/s, '').trim();
+    if (!cleanReply) return '';
+  }
+
   if (reply.includes('SALES_LIST:')) {
     try {
       const jsonStr = reply.match(/SALES_LIST:(\{.*?\})/s)?.[1];
@@ -2269,6 +2434,21 @@ async function handleMessage(userId, messageText, photoFileId) {
   if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт.'); return; }
   const isOwner = OWNER_IDS.includes(String(userId));
   const userKey = String(userId);
+
+  // ── Прямой перехват команды зарплаты — без Claude ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgLZ = messageText.toLowerCase().trim();
+    if (/зарплат|фот|расчёт зп|расчет зп/.test(msgLZ)) {
+      const monthNamesZ = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let salMonth = new Date().getMonth() + 1;
+      let salYear  = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNamesZ)) {
+        if (msgLZ.includes(name)) { salMonth = num; break; }
+      }
+      await showSalaryReport(userId, salMonth, salYear);
+      return;
+    }
+  }
 
   // ── Прямой перехват команды продаж — без Claude ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
