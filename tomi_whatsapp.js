@@ -1565,31 +1565,17 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
   if (OWNER_IDS.includes(String(userId)) && pendingPrepayDelete[String(userId)]) {
     const msgLower2 = (messageText||'').toLowerCase().trim();
     if (msgLower2 === 'да' || msgLower2 === 'yes') {
-      const { sellerId, sellerName: sName, prepayId, rowNum: prepayRowNum } = pendingPrepayDelete[String(userId)];
+      const { sellerId, sellerName: sName, prepayId } = pendingPrepayDelete[String(userId)];
       delete pendingPrepayDelete[String(userId)];
       try {
-        let deleted = false;
-        if (prepayRowNum) {
-          // Используем сохранённый номер строки — быстро и точно
-          const { api, id } = getSheets(SPREADSHEET_ID);
-          await api.spreadsheets.values.clear({ spreadsheetId: id, range: 'Предоплаты!A' + prepayRowNum + ':K' + prepayRowNum });
-          deleted = true;
-        } else {
-          const rows = await readSheet('Предоплаты!A:K');
-          for (let i = 1; i < rows.length; i++) {
-            if (String(rows[i][0]).trim().toUpperCase() === String(prepayId).trim().toUpperCase()) {
-              const { api, id } = getSheets(SPREADSHEET_ID);
-              await api.spreadsheets.values.clear({ spreadsheetId: id, range: 'Предоплаты!A' + (i+1) + ':K' + (i+1) });
-              deleted = true;
-              break;
-            }
-          }
-        }
-        if (deleted) {
+        // Удаляем из Supabase по prep_id
+        const { error } = await supabase.from('prepayments')
+          .delete().ilike('prep_id', prepayId);
+        if (!error) {
           await sendTelegram(userId, '✅ Предоплата удалена.');
           await sendTelegram(sellerId, '✅ Руководитель подтвердил — предоплата удалена.');
         } else {
-          await sendTelegram(userId, '❌ Предоплата не найдена в таблице.');
+          await sendTelegram(userId, '❌ Ошибка удаления: ' + error.message);
         }
       } catch(e) { console.error('prepay delete confirm error:', e.message); }
       return '';
@@ -1720,26 +1706,23 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const p = JSON.parse(jsonStr);
         // Находим строку — по ID или по имени клиента
         const findPrepayRow = async (searchStr) => {
-          const rows = await readSheet('Предоплаты!A:K');
-          for (let i = 1; i < rows.length; i++) {
-            if (!rows[i][0]) continue;
-            const rowId = String(rows[i][0]).trim().toUpperCase();
-            const rowClient = String(rows[i][2]||'').trim().toLowerCase();
-            const search = String(searchStr).trim();
-            // Ищем по ID (точное совпадение) или по имени (вхождение)
-            if (rowId === search.toUpperCase() || rowClient.includes(search.toLowerCase())) {
-              return { rowNum: i+1, id: rows[i][0], client: rows[i][2] };
+          const rows = await dbGetPrepays('all');
+          const search = String(searchStr).trim().toLowerCase();
+          for (const row of rows) {
+            const rowId = String(row.prep_id || '').trim().toUpperCase();
+            const rowClient = String(row.client_name || '').trim().toLowerCase();
+            if (rowId === search.toUpperCase() || rowClient.includes(search)) {
+              return { id: row.prep_id, client: row.client_name, supabaseId: row.id };
             }
           }
           return null;
         };
 
         if (OWNER_IDS.includes(String(userId))) {
-          // Владелец удаляет сам
+          // Владелец удаляет сам через Supabase
           const found = await findPrepayRow(p.id);
           if (found) {
-            const { api, id } = getSheets(SPREADSHEET_ID);
-            await api.spreadsheets.values.clear({ spreadsheetId: id, range: 'Предоплаты!A' + found.rowNum + ':K' + found.rowNum });
+            await supabase.from('prepayments').delete().eq('id', found.supabaseId);
             console.log('Предоплата удалена:', found.id, found.client);
           } else {
             await sendTelegram(userId, '❌ Предоплата не найдена: ' + p.id);
