@@ -161,12 +161,12 @@ async function dbSavePrepay(id, date, client, phone, item, channel, amount, bala
 async function dbGetPrepays(statusFilter) {
   try {
     let query = supabase.from('prepayments').select('*').order('prep_date', { ascending: true });
-    if (statusFilter === 'open') query = query.ilike('status', '%Открыта%');
+    if (statusFilter === 'open') query = query.not('status', 'ilike', '%Закрыта%');
     else if (statusFilter === 'closed') query = query.ilike('status', '%Закрыта%');
     // 'all' — без фильтра
     const { data, error } = await query;
     if (error) console.error('dbGetPrepays error:', error.message);
-    return data || [];
+    return (data || []).filter(r => r.client_name && r.client_name.trim().length > 0);
   } catch(e) { return []; }
 }
 
