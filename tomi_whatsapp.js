@@ -223,13 +223,16 @@ async function calcSalary(month, year) {
       const daySellers = [day.seller1, day.seller2].filter(s => s && sellers.includes(s));
       if (daySellers.length === 0) return;
 
-      const sharePerSeller = rev / daySellers.length;
+      // % считается от ОБЩЕГО оборота смены для каждого продавца
+      const dayPct = rev * getPct(rev);
 
       daySellers.forEach(s => {
         data[s].shifts++;
-        data[s].sales += sharePerSeller;
+        data[s].sales += rev / daySellers.length; // для статистики продаж
+        // Каждый продавец получает % от ПОЛНОГО оборота смены
+        data[s].pctSum = (data[s].pctSum || 0) + dayPct;
 
-        // Бонус за хороший день (на каждого продавца в смене)
+        // Бонус за хороший день — от ОБЩЕГО оборота дня
         if (rev >= 2000000) {
           data[s].bonusRecord += 40000;
         } else if (rev >= 700000) {
@@ -243,7 +246,7 @@ async function calcSalary(month, year) {
     sellers.forEach(s => {
       const d = data[s];
       const ke = d.shifts * KE;
-      const pct = d.sales * getPct(d.sales);
+      const pct = Math.round(d.pctSum || 0); // уже посчитан подневно
       const bonusPlan = d.sales >= (personalPlans[s] || 0) ? BONUS_PLAN : 0;
       const total = ke + pct + d.bonusGoodDay + d.bonusRecord + bonusPlan;
 
@@ -251,8 +254,8 @@ async function calcSalary(month, year) {
         shifts: d.shifts,
         sales: Math.round(d.sales),
         ke: ke,
-        pct: Math.round(pct),
-        pctRate: (getPct(d.sales) * 100).toFixed(1) + '%',
+        pct: pct,
+        pctRate: 'подневно',
         bonusGoodDay: d.bonusGoodDay,
         bonusRecord: d.bonusRecord,
         bonusPlan: bonusPlan,
