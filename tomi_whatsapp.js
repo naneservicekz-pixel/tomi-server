@@ -2543,6 +2543,27 @@ async function handleMessage(userId, messageText, photoFileId) {
     }
   }
 
+  // ── Прямой перехват предоплат для продавцов ──
+  if (!isOwner && messageText) {
+    const msgLP = messageText.toLowerCase().trim();
+    if (/предоплат|prepay/.test(msgLP) && !/новая|создать|добавить|внести/.test(msgLP)) {
+      const list = await loadPrepays('open');
+      if (list.length === 0) {
+        await sendTelegram(userId, '📋 Открытых предоплат нет.');
+      } else {
+        let msg = '📋 Открытые предоплаты: ' + list.length + '\n\n';
+        list.forEach((p, i) => {
+          msg += '🟡 №' + (i+1) + ' ' + p.client + '\n';
+          if (p.id) msg += '🆔 ' + p.id + '\n';
+          if (p.items && p.items.length) msg += '👗 ' + p.items.join(', ') + '\n';
+          msg += '💰 Аванс: ' + Number(p.amount).toLocaleString('ru-RU') + ' тг\n\n';
+        });
+        await sendTelegram(userId, msg);
+      }
+      return;
+    }
+  }
+
   if (!conversations[userKey]) conversations[userKey] = await loadConversation(userId);
   if (!openShifts[userKey]) {
     const dbShift = await loadOpenShift(userId);
