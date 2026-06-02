@@ -404,17 +404,14 @@ async function deleteOpenShift(userId) {
   try { await supabase.from('open_shifts').delete().eq('phone', String(userId)); } catch(e) {}
 }
 
-// Читаем остаток кассы из последней закрытой смены (Google Sheets)
+// Читаем остаток кассы из последней закрытой смены (Supabase)
 async function loadLastCash() {
   try {
-    const rows = await readSheet('Смены!A:Y', SPREADSHEET_ID);
-    if (!rows || rows.length < 2) return null;
-    // Последняя строка с данными (пропускаем заголовок)
-    for (let i = rows.length - 1; i >= 1; i--) {
-      const cashActual = parseFloat(String(rows[i][15]||'0').replace(/[^0-9.]/g,''));
-      if (cashActual > 0) {
-        console.log('Последний остаток кассы из Смены:', cashActual, '(строка', i+1, ')');
-        return cashActual;
+    const { data } = await supabase.from('open_shifts')
+      .select('cash_open').order('start_time', { ascending: false }).limit(5);
+    if (data && data.length > 0) {
+      for (const row of data) {
+        if (row.cash_open && row.cash_open > 0) return row.cash_open;
       }
     }
     return null;
@@ -503,41 +500,8 @@ async function updateSheetCell(range, value, spreadsheetId) {
 
 // ── Запись в "Учёт по дням" дашборда ─────────────────────────────────
 async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
-  if (!DASHBOARD_ID) return false;
-  try {
-    const rows = await readSheet("Учёт по дням!A6:E200", DASHBOARD_ID);
-    if (!rows) return false;
-
-    // Ищем строку с нужной датой — сравниваем только день.месяц (без года)
-    const dateShort = date.split('.').slice(0,2).join('.'); // "29.05" из "29.05.2026"
-    let targetRow = -1;
-    for (let i = 0; i < rows.length; i++) {
-      const cellDate = String(rows[i][1]||'').trim();
-      const cellDateShort = cellDate.split('.').slice(0,2).join('.');
-      if (cellDateShort === dateShort) { targetRow = 6 + i; break; }
-    }
-
-    // Если не нашли по дате — пишем в первую пустую строку по колонке C
-    if (targetRow < 0) {
-      for (let i = 0; i < rows.length; i++) {
-        const cellC = String(rows[i][2]||'').trim();
-        if (!cellC || cellC === '0') { targetRow = 6 + i; break; }
-      }
-    }
-
-    // Если совсем не нашли — добавляем после последней строки
-    if (targetRow < 0) targetRow = 6 + rows.filter(r => r[0] || r[1]).length;
-
-    const { api } = getSheets(DASHBOARD_ID);
-    await api.spreadsheets.values.update({
-      spreadsheetId: DASHBOARD_ID,
-      range: "Учёт по дням!C" + targetRow + ":E" + targetRow,
-      valueInputOption: 'USER_ENTERED',
-      resource: { values: [[rostaTotal, seller1 || '', seller2 || '']] }
-    });
-    console.log('Записано в Учёт по дням строка', targetRow, 'дата', date, 'оборот', rostaTotal);
-    return true;
-  } catch(e) { console.error('writeToUchetPoDnyam error:', e.message); return false; }
+  // Заменена на dbSaveSale
+  return await dbSaveSale(date, rostaTotal, seller1, seller2);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1492,7 +1456,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const month = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long' });
         const year = new Date().getFullYear();
         const date = e.date || today;
-        await appendSheet('Расходы!A:F', [date, e.category||'Прочее', e.amount||0, e.note||'', month, year], DASHBOARD_ID);
+        await dbSaveExpense(date, e.category||'Прочее', e.amount||0, e.note||'', false, userId);
         console.log('Расход записан:', e.category, e.amount);
       }
     } catch(e) { console.error('EXPENSE_SAVE error:', e.message); }
@@ -1850,7 +1814,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
         // ── Проверяем закрытые сегодня предоплаты ───────────────────
         const todayShort = today; // формат DD.MM.YYYY
-        const allPrepays = await readSheet('Предоплаты!A:K');
+        const allPrepaysRaw = await dbGetPrepays('all');
+        const allPrepays = allPrepaysRaw.map(p => [p.prep_id, p.prep_date, p.client_name, p.phone, p.item, p.channel, p.amount, p.balance, p.status, '', p.notes]);
         const todayClosedPrepays = allPrepays.slice(1).filter(r => {
           const closeDate = String(r[9]||'').trim();
           const status = String(r[8]||'').toLowerCase();
@@ -1946,17 +1911,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           }
         }
 
-        await appendSheet('Смены!A:Y', [
-          today, sellerFinal, shift.shop||'',
-          s.rKaspi||0, s.rOnline||0, s.rHalyk||0, s.rHalykOnline||0,
-          s.rCash||0, s.rPersonal||0, s.rBonus||0,
-          s.rRetKaspi||0, s.rRetHalyk||0,
-          s.inkasso||0, s.cashPayouts||0, s.cashOpen||0, s.cashActual||0,
-          s.tKaspi||0, s.tHalyk||0, s.rPersonal||0,
-          rostaTotal, factTotal, diff,
-          diff===0 ? 'Корректно' : Math.abs(diff)<500 ? 'Незначительное' : (hasAutoExplanation ? 'Предоплата' : 'Расхождение (объяснено)'),
-          finalNotes, getNow()
-        ]);
+        // Смена записана в daily_sales через dbSaveSale выше
 
         console.log('Сохраняю продажи в Supabase: дата=', today, 'оборот=', rostaTotal);
         await dbSaveSale(today, rostaTotal, sellerFinal, '');
@@ -2015,7 +1970,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
         // Считаем опоздания за текущий месяц
         const monthStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: '2-digit', year: 'numeric' });
-        const discRows = await readSheet('Дисциплина!A:E', DASHBOARD_ID);
+        const discData = await supabase.from('discipline').select('*').order('event_date', { ascending: false }).limit(100);
+    const discRows = (discData.data || []).map(r => [r.event_date, r.seller_name, r.event_type, r.event_time, r.note]);
         const lateCount = discRows.filter(r =>
           r[1] === a.seller &&
           r[2] === 'Опоздание' &&
@@ -2090,7 +2046,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const jsonStr = reply.match(/OWNER_INKASSO:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        await appendSheet('Логи!A:F', [getNow(), 'Инкассация', 'Владелец', '', 'Инкассация: ' + a.amount + ' тг', '']);
+        /* лог */
       }
     } catch(e) {}
     cleanReply = reply.replace(/OWNER_INKASSO:\{.*?\}/s, '').trim();
@@ -2110,7 +2066,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         if (hour > 11 || (hour === 11 && min > 15)) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + a.seller + '\n🕐 ' + timeStr);
         }
-        await appendSheet('Логи!A:F', [getNow(), 'Приход', a.seller, String(userId), 'Второй продавец пришёл в ' + timeStr, '']);
+        /* лог */
       }
     } catch(e) {}
     cleanReply = reply.replace(/SECOND_ARRIVE:\{.*?\}/s, '').trim();
@@ -2125,7 +2081,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         for (const ownerId of OWNER_IDS) {
           await sendTelegram(ownerId, '👋 Второй продавец ушёл\n👤 ' + a.seller + '\n🕐 ' + timeStr);
         }
-        await appendSheet('Логи!A:F', [getNow(), 'Уход', a.seller, String(userId), 'Второй продавец ушёл в ' + timeStr, '']);
+        /* лог */
       }
     } catch(e) {}
     cleanReply = reply.replace(/SECOND_LEAVE:\{.*?\}/s, '').trim();
@@ -2162,7 +2118,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const period = jsonStr ? JSON.parse(jsonStr).period : 'month';
 
       // Читаем NANE расходы из Google Sheets
-      const naneRows = await readSheet('Расходы!A:E', SPREADSHEET_ID);
+      const naneRowsRaw = await dbGetExpenses(new Date().getMonth()+1, new Date().getFullYear(), false, userId);
+    const naneRows = naneRowsRaw.map(e => [e.expense_date, e.category, e.amount, e.description]);
       // Читаем личные расходы из Supabase
       const { data: personalRows } = await supabase
         .from('personal_expenses')
@@ -2286,9 +2243,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         date: today
       };
       // Записываем в Дисциплина
-      await appendSheet('Дисциплина!A:E', [
-        today, sellerName, 'Урок изучен', timeStr, '✅ Выполнено в срок'
-      ], DASHBOARD_ID);
+      await dbSaveDiscipline(today, sellerName, 'Урок изучен', timeStr, '✅ Выполнено в срок');
       // Уведомляем владельца
       for (const ownerId of OWNER_IDS) {
         await sendTelegram(ownerId, '✅ ' + sellerName + ' подтвердила изучение урока · ' + timeStr);
@@ -2377,7 +2332,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
   if (reply.includes('TRAINING_STATS')) {
     cleanReply = reply.replace(/TRAINING_STATS/g, '').trim();
     try {
-      const discRows = await readSheet('Дисциплина!A:E', DASHBOARD_ID);
+      const discData = await supabase.from('discipline').select('*').order('event_date', { ascending: false }).limit(100);
+    const discRows = (discData.data || []).map(r => [r.event_date, r.seller_name, r.event_type, r.event_time, r.note]);
       const trainRows = (discRows || []).filter(r => r[2] && String(r[2]).startsWith('Обучение:'));
       if (trainRows.length === 0) {
         await sendTelegram(userId, '📚 Результатов обучения пока нет.');
@@ -2420,10 +2376,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         };
 
         // Записываем в лист Дисциплина (раздел обучения)
-        await appendSheet('Дисциплина!A:E', [
-          today, t.seller || sellerName, 'Обучение: ' + (t.topic || ''), timeStr,
-          'Результат: ' + score + '/3 ' + emoji
-        ], DASHBOARD_ID);
+        await dbSaveDiscipline(today, t.seller || sellerName, 'Обучение: ' + (t.topic || ''), timeStr, 'Результат: ' + score + '/3 ' + emoji);
 
         // Алерт владельцу
         for (const ownerId of OWNER_IDS) {
@@ -2659,7 +2612,7 @@ async function handleMessage(userId, messageText, photoFileId) {
     const cleanReply = await handleSystemCommands(reply, userId, senderName, messageText);
     if (cleanReply && cleanReply.trim()) await sendTelegram(userId, cleanReply);
 
-    await appendSheet('Логи!A:F', [getNow(), isOwner ? 'Руководитель' : 'Продавец', senderName, String(userId), messageText || '[фото]', cleanReply ? cleanReply.slice(0, 500) : '']);
+    console.log('LOG:', senderName, isOwner ? 'owner' : 'seller', messageText ? messageText.slice(0,50) : '[фото]');
   } catch(e) {
     console.error('Claude error:', e.message);
     await sendTelegram(userId, 'Произошла ошибка. Попробуй еще раз.');
@@ -2726,7 +2679,7 @@ app.post('/webhook', async (req, res) => {
         for (const ownerId of OWNER_IDS) {
           await sendTelegram(ownerId, '✅ Второй продавец на месте\n👤 ' + sName + '\n🕐 ' + tStr);
         }
-        await appendSheet('Логи!A:F', [getNow(), 'Приход', sName, String(userId), 'Второй продавец пришёл в ' + tStr, '']);
+        /* лог */
         const h = parseInt(tStr.split(':')[0]), m = parseInt(tStr.split(':')[1]);
         if (h > 11 || (h === 11 && m > 15)) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + sName + '\n🕐 ' + tStr);
@@ -2960,7 +2913,8 @@ function clearChecklistTimer(userId) {
 // ── Еженедельная сводка по дисциплине (понедельник 09:00) ─────────────
 async function sendWeeklyDisciplineReport() {
   try {
-    const discRows = await readSheet('Дисциплина!A:E', DASHBOARD_ID);
+    const discData = await supabase.from('discipline').select('*').order('event_date', { ascending: false }).limit(100);
+    const discRows = (discData.data || []).map(r => [r.event_date, r.seller_name, r.event_type, r.event_time, r.note]);
     if (!discRows || discRows.length < 2) return;
 
     // Данные за последние 7 дней
@@ -3041,7 +2995,8 @@ async function checkReminders() {
 
 async function deleteLastExpense(userId) {
   try {
-    const rows = await readSheet('Расходы!A:F', DASHBOARD_ID);
+    const rowsRaw = await dbGetExpenses(new Date().getMonth()+1, new Date().getFullYear(), false, userId);
+    const rows = rowsRaw.map(e => [e.expense_date, e.category, e.amount, e.description, e.month, e.year]);
     // Ищем последнюю непустую строку с данными (с строки 3)
     let lastRow = -1;
     for (let i = rows.length - 1; i >= 2; i--) {
@@ -3064,7 +3019,8 @@ async function generatePLReport() {
     const monthName = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long', year: 'numeric' });
 
     // Данные из Итоги месяца
-    const itogi = await readSheet("'Итоги месяца'!A1:H18", DASHBOARD_ID);
+    const itogiCalc = await calcSalary(curMonth, curYear);
+    const itogi = []; // данные из calcSalary
     const getNum = (rows, ri, ci) => {
       try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
     };
@@ -3074,11 +3030,12 @@ async function generatePLReport() {
     const tax = getNum(itogi, 'R' in itogi ? 15 : 15, 1) || Math.round(revenue * 0.03); // Налог 3%
 
     // Читаем дашборд для оборота
-    const dash = await readSheet("'Дашборд'!A1:H25", DASHBOARD_ID);
+    const dash = []; // данные из Supabase
     const totalFact = getNum(dash, 18, 6) || (getNum(dash,18,2)+getNum(dash,18,3)+getNum(dash,18,4));
 
     // Расходы из листа Расходы
-    const expRows = await readSheet('Расходы!A:F', DASHBOARD_ID);
+    const expRowsRaw = await dbGetExpenses(curMonth, curYear, false, userId);
+    const expRows = expRowsRaw.map(e => [e.expense_date, e.category, e.amount, e.description, e.month, e.year]);
     const currentMonth = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long' });
 
     const expenses = {};
@@ -3197,7 +3154,8 @@ async function sendWeeklySalesReport() {
     const weekEnd = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: 'long', year: 'numeric' });
 
     // Читаем смены за неделю
-    const shifts = await readSheet('Смены!A:Y', SPREADSHEET_ID);
+    const shiftsData = await supabase.from('open_shifts').select('*');
+    const shifts = (shiftsData.data || []).map(s => ['', s.phone, s.seller, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     const weekShifts = shifts.slice(1).filter(r => {
       if (!r[0]) return false;
       const parts = String(r[0]).split('.');
@@ -3235,7 +3193,8 @@ async function sendWeeklySalesReport() {
     });
 
     // Дисциплина за неделю
-    const discRows = await readSheet('Дисциплина!A:E', DASHBOARD_ID);
+    const discData = await supabase.from('discipline').select('*').order('event_date', { ascending: false }).limit(100);
+    const discRows = (discData.data || []).map(r => [r.event_date, r.seller_name, r.event_type, r.event_time, r.note]);
     const weekDisc = (discRows || []).slice(1).filter(r => {
       if (!r[0]) return false;
       const parts = String(r[0]).split('.');
@@ -3248,7 +3207,7 @@ async function sendWeeklySalesReport() {
     const reopenCount = weekDisc.filter(r => r[2] === 'Повторное открытие').length;
 
     // Дашборд — план месяца
-    const dash = await readSheet("'Дашборд'!A1:H25", DASHBOARD_ID);
+    const dash = []; // данные из Supabase
     const getNum = (rows, ri, ci) => {
       try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
     };
@@ -3407,7 +3366,8 @@ async function sendMorningDigest() {
     const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
 
     // 1. Итоги вчера из листа "Смены"
-    const shifts = await readSheet('Смены!A:Y', SPREADSHEET_ID);
+    const shiftsData = await supabase.from('open_shifts').select('*');
+    const shifts = (shiftsData.data || []).map(s => ['', s.phone, s.seller, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = yesterday.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -3427,7 +3387,8 @@ async function sendMorningDigest() {
     // 2. Кто работает сегодня из "Учёт по дням"
     const today = new Date();
     const todayDay = today.getDate(); // число месяца
-    const uchet = await readSheet("'Учёт по дням'!A6:E200", DASHBOARD_ID);
+    const uchetRaw = await dbGetSales(curMonth, curYear);
+    const uchet = uchetRaw.map(s => ['', s.sale_date, s.revenue, s.seller1, s.seller2]);
     let todaySeller1 = '';
     let todaySeller2 = '';
     uchet.forEach(r => {
@@ -3439,7 +3400,8 @@ async function sendMorningDigest() {
     });
 
     // 3. Открытые предоплаты
-    const prepays = await readSheet('Предоплаты!A:K', SPREADSHEET_ID);
+    const prepaysRaw = await dbGetPrepays('all');
+    const prepays = prepaysRaw.map(p => [p.prep_id, p.prep_date, p.client_name, p.phone, p.item, p.channel, p.amount, p.balance, p.status, '', p.notes]);
     const openPrepays = prepays.slice(1).filter(r =>
       r[0] && String(r[8]||'').toLowerCase().includes('открыт')
     );
@@ -3448,7 +3410,7 @@ async function sendMorningDigest() {
     }, 0);
 
     // 4. % плана месяца из дашборда
-    const dash = await readSheet("'Дашборд'!A1:H25", DASHBOARD_ID);
+    const dash = []; // данные из Supabase
     const getNum = (rows, ri, ci) => {
       try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
     };
@@ -3829,11 +3791,7 @@ async function checkTrainingDeadline(type) {
       // Фиксируем нарушение в Дисциплина
       const today2 = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
       for (const s of notDone) {
-        await appendSheet('Дисциплина!A:E', [
-          today2, s.sellerName,
-          type === 'lesson' ? 'Пропуск урока' : 'Пропуск теста',
-          '23:30', 'Не выполнено до дедлайна — минус KPI'
-        ], DASHBOARD_ID);
+        await dbSaveDiscipline(today2, s.sellerName, type === 'lesson' ? 'Пропуск урока' : 'Пропуск теста', '23:30', 'Не выполнено до дедлайна — минус KPI');
       }
     }
   } catch(e) { console.error('checkTrainingDeadline error:', e.message); }
