@@ -1004,33 +1004,19 @@ async function loadOwnerData() {
 }
 
 async function loadPrepays(type) {
-  const rows = await readSheet('Предоплаты!A:K');
-  const prepMap = {};
-  rows.slice(1).forEach(r => {
-    if (!r[0]) return;
-    const prepId = String(r[0]).trim();
-    if (!prepId.toUpperCase().startsWith('PREP')) return;
-    const client = String(r[2]||'').trim();
-    if (!client || client.length < 2) return;
-    if (/^CL-\d+$/.test(client) || /^\d+$/.test(client)) return;
-    const status = String(r[8]||'').replace(/[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}]/gu,'').trim().toLowerCase();
-    const amount = parseFloat(String(r[6]||'0').replace(/[^0-9.]/g,''))||0;
-    const balance = parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,''))||0;
-    const rawPhone = String(r[3]||'').replace(/[^0-9]/g,'');
-    const phone = rawPhone.length > 4 ? rawPhone : '';
-    const item = String(r[4]||'').trim();
-    if (!prepMap[prepId]) {
-      prepMap[prepId] = { id: prepId, date: String(r[1]||''), client, phone, channel: String(r[5]||'—'), amount, balance, status, items: [] };
-    } else {
-      if (!prepMap[prepId].phone && phone) prepMap[prepId].phone = phone;
-      if (amount > prepMap[prepId].amount) prepMap[prepId].amount = amount;
-      if (status.includes('открыт')) prepMap[prepId].status = status;
-    }
-    if (item && !prepMap[prepId].items.includes(item)) prepMap[prepId].items.push(item);
-  });
-  let list = Object.values(prepMap);
-  if (type === 'open') list = list.filter(p => p.status.includes('открыт'));
-  if (type === 'closed') list = list.filter(p => p.status.includes('закрыт'));
+  const rawData = await dbGetPrepays(type === 'open' ? 'open' : type === 'closed' ? 'closed' : 'all');
+  const list = rawData.map(p => ({
+    id: p.prep_id,
+    date: p.prep_date ? String(p.prep_date) : '',
+    client: p.client_name || '',
+    phone: p.phone || '',
+    channel: p.channel || '—',
+    amount: Number(p.amount || 0),
+    balance: Number(p.balance || 0),
+    status: p.status || '🟡 Открыта',
+    items: p.item ? [p.item] : [],
+    notes: p.notes || ''
+  }));
   list.sort((a, b) => new Date(a.date) - new Date(b.date));
   return list;
 }
