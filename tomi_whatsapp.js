@@ -3907,7 +3907,23 @@ async function showFinanceReport(userId, month, year) {
       msg += '\n';
     });
 
-    totalFot = salaryCalc ? salaryCalc.totalFot : 0;
+    // ФОТ считаем только за фактические дни из продаж
+    // Пересчитываем по каждому дню
+    let dailyFot = 0;
+    sales.forEach(s => {
+      const rev = Number(s.revenue || 0);
+      if (rev === 0) return;
+      const daySellers = [s.seller1, s.seller2].filter(Boolean);
+      const KE = 14000;
+      const getPct = (r) => r >= 1000000 ? 0.027 : r >= 750000 ? 0.022 : r >= 500000 ? 0.017 : 0.012;
+      daySellers.forEach(() => {
+        dailyFot += KE + rev * getPct(rev);
+        // Бонус хороший день
+        if (rev >= 2000000) dailyFot += 40000;
+        else if (rev >= 700000) dailyFot += 5000;
+      });
+    });
+    totalFot = Math.round(dailyFot);
     const netProfit = totalProfit > 0 ? totalProfit - totalTax - totalFot : 0;
 
     msg += '\n━━━━━━━━━━━━━━━━━━━━\n';
