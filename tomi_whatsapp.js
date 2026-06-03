@@ -2460,7 +2460,11 @@ async function handleMessage(userId, messageText, photoFileId) {
       const nums = parts.filter(p => /^\d+$/.test(p));
       const words = parts.filter(p => !/^\d+$/.test(p));
       
-      profitAmount = parseInt(nums[nums.length - 1]); // последнее число = сумма
+      // Собираем всё сообщение и ищем числа (убираем пробелы внутри чисел типа "808 322")
+      const cleanMsg = msgLR.replace('прибыль', '').trim();
+      // Ищем число с возможными пробелами: "808 322" → 808322
+      const bigNumMatch = cleanMsg.replace(/\s/g, '').match(/(\d{4,})/g);
+      profitAmount = bigNumMatch ? parseInt(bigNumMatch[bigNumMatch.length - 1]) : parseInt(nums[nums.length - 1]);
       
       const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
       if (words.includes('сегодня') || nums.length === 1) {
