@@ -2433,7 +2433,7 @@ async function handleMessage(userId, messageText, photoFileId) {
   // ── Прямой перехват финансового отчёта ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
     const msgLF = messageText.toLowerCase().trim();
-    if (/финанс|фот%|прибыль.*отчёт|финансовый/.test(msgLF) && !/записать|внести|сегодня|\d/.test(msgLF)) {
+    if (/^финанс|фот%|финансовый/.test(msgLF)) {
       const monthNamesF = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
       let finMonth = new Date().getMonth() + 1;
       let finYear  = new Date().getFullYear();
@@ -2448,8 +2448,9 @@ async function handleMessage(userId, messageText, photoFileId) {
   // ── Прямой перехват команды прибыли ROSTA ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
     const msgLR = messageText.toLowerCase().trim();
-    const profitMatch = msgLR.match(/прибыль\s+(\d+)\s+(\w+)\s+(\d+)|прибыль\s+(\d+\s+\w+)\s+(\d+)|прибыль\s+сегодня\s+(\d+)|прибыль\s+(\d+)/);
-    if (profitMatch) {
+    // Ловим: "прибыль [день] [месяц] сумма" или "прибыль сегодня сумма"
+    if (/^прибыль/.test(msgLR)) {
+      const profitMatch = true;
       // Парсим дату и сумму
       const monthNames = {январ:1,феврал:2,март:3,апрел:4,май:5,мая:5,июн:6,июля:7,август:8,сентябр:9,октябр:10,ноябр:11,декабр:12};
       let profitDate, profitAmount;
@@ -2533,7 +2534,7 @@ async function handleMessage(userId, messageText, photoFileId) {
     const msgL = messageText.toLowerCase().trim();
     // Любое сообщение со словом "расход" или "затрат" — показываем расходы
     const isExpenseView = /расход|затрат/.test(msgL);
-    if (isExpenseView && !/внести|добавить|записать|потратил|трата|расход \d/.test(msgL)) {
+    if (isExpenseView && !/внести|добавить|записать|потратил|трата|прибыль/.test(msgL)) {
       // Определяем месяц
       const monthNamesExp = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
       let expMonth = new Date().getMonth() + 1;
