@@ -1366,6 +1366,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Обучение команды" или "Статистика обучения" — покажи результаты тестов продавцов из листа Дисциплина => TRAINING_STATS\n' +
     '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n' +
     '"Продажи за май" / "Продажи за июнь" / "Продажи за месяц" / "Оборот" — показать данные по продажам => SALES_LIST:{"month":0,"year":0}\n' +
+    '"Финансы" / "Финансы за май" / «финансовый отчёт» — финансовый отчёт с прибылью ФОТ налогом => FINANCE_REPORT:{"month":0,"year":0}\n' +
     '"Зарплата" / "ФОТ" / "Расчёт зарплаты" / "Зарплата за май" — расчёт зарплаты => SALARY_CALC:{"month":0,"year":0}\n' +
     '"KPI Асель 3" / "KPI Зарина 2" / «поставь KPI Луизе 1» — выставить KPI продавцу (0-3) => KPI_SET:{"seller":"Имя","score":0,"month":0,"year":0}\n' +
     '"KPI" / "Посмотри KPI" — показать текущие KPI => KPI_LIST:{"month":0,"year":0}\n' +
@@ -2424,6 +2425,73 @@ async function handleMessage(userId, messageText, photoFileId) {
           '⭐ ' + score + '/3 метрики\n' +
           '💰 ' + kpiAmt.toLocaleString('ru-RU') + ' тг'
         );
+        return;
+      }
+    }
+  }
+
+  // ── Прямой перехват финансового отчёта ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgLF = messageText.toLowerCase().trim();
+    if (/финанс|фот%|прибыль.*отчёт|финансовый/.test(msgLF) && !/записать|внести|сегодня|\d/.test(msgLF)) {
+      const monthNamesF = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let finMonth = new Date().getMonth() + 1;
+      let finYear  = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNamesF)) {
+        if (msgLF.includes(name)) { finMonth = num; break; }
+      }
+      await showFinanceReport(userId, finMonth, finYear);
+      return;
+    }
+  }
+
+  // ── Прямой перехват команды прибыли ROSTA ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgLR = messageText.toLowerCase().trim();
+    const profitMatch = msgLR.match(/прибыль\s+(\d+)\s+(\w+)\s+(\d+)|прибыль\s+(\d+\s+\w+)\s+(\d+)|прибыль\s+сегодня\s+(\d+)|прибыль\s+(\d+)/);
+    if (profitMatch) {
+      // Парсим дату и сумму
+      const monthNames = {январ:1,феврал:2,март:3,апрел:4,май:5,мая:5,июн:6,июля:7,август:8,сентябр:9,октябр:10,ноябр:11,декабр:12};
+      let profitDate, profitAmount;
+      
+      // Формат: "Прибыль 2 июня 450000" или "Прибыль сегодня 450000" или "Прибыль 450000"
+      const parts = msgLR.replace('прибыль', '').trim().split(/\s+/);
+      const nums = parts.filter(p => /^\d+$/.test(p));
+      const words = parts.filter(p => !/^\d+$/.test(p));
+      
+      profitAmount = parseInt(nums[nums.length - 1]); // последнее число = сумма
+      
+      const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+      if (words.includes('сегодня') || nums.length === 1) {
+        profitDate = nowA.toISOString().split('T')[0];
+      } else if (nums.length >= 2) {
+        // "2 июня" — день и месяц
+        const day = parseInt(nums[0]);
+        let month = nowA.getMonth() + 1;
+        for (const [name, num] of Object.entries(monthNames)) {
+          if (words.some(w => w.startsWith(name))) { month = num; break; }
+        }
+        profitDate = nowA.getFullYear() + '-' + String(month).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+      }
+      
+      if (profitDate && profitAmount > 0) {
+        const { error } = await supabase.from('daily_sales')
+          .update({ rosta_profit: profitAmount })
+          .eq('sale_date', profitDate);
+        
+        if (!error) {
+          await sendTelegram(userId, 
+            '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг'
+          );
+        } else {
+          // Если строки нет — создаём
+          await supabase.from('daily_sales').insert([{
+            sale_date: profitDate, revenue: 0, rosta_profit: profitAmount,
+            month: parseInt(profitDate.split('-')[1]),
+            year: parseInt(profitDate.split('-')[0])
+          }]);
+          await sendTelegram(userId, '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг');
+        }
         return;
       }
     }
@@ -3795,6 +3863,63 @@ async function checkTrainingDeadline(type) {
       }
     }
   } catch(e) { console.error('checkTrainingDeadline error:', e.message); }
+}
+
+async function showFinanceReport(userId, month, year) {
+  try {
+    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+    const sales = await dbGetSales(month, year);
+    const salaryCalc = await calcSalary(month, year);
+    const fmt = n => Math.round(n||0).toLocaleString('ru-RU');
+
+    if (!sales || sales.length === 0) {
+      await sendTelegram(userId, '📊 Нет данных за ' + (monthNames[month]||month) + ' ' + year);
+      return;
+    }
+
+    const TAX = 0.03;
+    let totalRevenue = 0, totalProfit = 0, totalTax = 0, totalFot = 0;
+    let profitDays = 0;
+
+    let msg = '📊 ФИНАНСЫ — ' + (monthNames[month]||month) + ' ' + year + '\n';
+    msg += '━━━━━━━━━━━━━━━━━━━━\n\n';
+
+    sales.forEach(s => {
+      const rev = Number(s.revenue || 0);
+      const profit = Number(s.rosta_profit || 0);
+      const tax = Math.round(rev * TAX);
+      const day = s.sale_date ? s.sale_date.slice(8,10) + '.' + s.sale_date.slice(5,7) : '?';
+      const sellers = [s.seller1, s.seller2].filter(Boolean).join('+');
+
+      totalRevenue += rev;
+      totalProfit += profit;
+      totalTax += tax;
+      if (profit > 0) profitDays++;
+
+      msg += day + ' · ' + fmt(rev) + ' тг';
+      if (profit > 0) msg += ' · прибыль: ' + fmt(profit) + ' тг';
+      if (sellers) msg += ' · ' + sellers;
+      msg += '\n';
+    });
+
+    totalFot = salaryCalc ? salaryCalc.totalFot : 0;
+    const netProfit = totalProfit > 0 ? totalProfit - totalTax - totalFot : 0;
+
+    msg += '\n━━━━━━━━━━━━━━━━━━━━\n';
+    msg += '💼 Оборот: ' + fmt(totalRevenue) + ' тг\n';
+    if (totalProfit > 0) {
+      msg += '📈 Прибыль ROSTA: ' + fmt(totalProfit) + ' тг (' + profitDays + ' дней)\n';
+      msg += '🏛 Налог 3%: ' + fmt(totalTax) + ' тг\n';
+      msg += '👥 ФОТ: ' + fmt(totalFot) + ' тг\n';
+      msg += '💰 Чистая (прибыль-ФОТ-налог): ' + fmt(netProfit) + ' тг\n';
+      const fotPct = totalRevenue > 0 ? (totalFot/totalRevenue*100).toFixed(1) : 0;
+      msg += '📊 ФОТ%: ' + fotPct + '%';
+    } else {
+      msg += '\n⚠️ Введи прибыль ROSTA командой:\n«Прибыль [день] [месяц] [сумма]»\nНапример: «Прибыль 2 июня 450000»';
+    }
+
+    await sendTelegram(userId, msg);
+  } catch(e) { console.error('showFinanceReport error:', e.message); }
 }
 
 async function showExpensesByMonth(userId, month, year, period) {
