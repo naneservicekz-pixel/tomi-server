@@ -4000,7 +4000,22 @@ async function generateFullReport(userId, month, year) {
     const css='*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:12px;background:#f5f0eb;color:#1a1a1a}.hdr{background:#1a1a1a;color:white;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}.brand{font-size:18px;font-weight:700;letter-spacing:.1em}.sub{font-size:10px;opacity:.5;margin-top:2px}.tabs{display:flex;background:#ebe5dd;border-bottom:2px solid #d5cfc7;padding:0 12px;overflow-x:auto;gap:0}.tab{padding:9px 14px;cursor:pointer;font-size:10px;font-weight:700;color:#8a847c;border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em}.tab.on{color:#1a1a1a;border-bottom-color:#c8a97a}.pane{display:none;padding:16px;background:white}.pane.on{display:block}.kards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}.kard{background:#f5f0eb;border:1px solid #d5cfc7;border-radius:8px;padding:12px 14px}.kl{font-size:9px;color:#8a847c;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px}.kv{font-size:18px;font-weight:700;line-height:1.2}.ks{font-size:10px;color:#8a847c;margin-top:3px}.pb{background:#e8e2da;border-radius:2px;height:5px;margin-top:7px}.pf{height:100%;border-radius:2px}.sellers{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}.seller{background:white;border:1px solid #d5cfc7;border-radius:8px;overflow:hidden}.sh{padding:10px 14px;color:white;display:flex;justify-content:space-between;align-items:center}.sn{font-size:13px;font-weight:700}.sb{padding:10px 14px}.sr{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0ece6;font-size:11px}.sr:last-child{border:0;font-weight:700;font-size:12px;margin-top:4px}.tw{overflow-x:auto;margin-bottom:16px}table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:11px;border:1.5px solid #aaa}th{background:#1a1a1a;color:white;padding:7px 8px;text-align:center;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border:1px solid #333}th.l{text-align:left}td{padding:5px 8px;border:1px solid #ccc;text-align:right;vertical-align:middle}td.l{text-align:left}td.c{text-align:center}tr:hover td{filter:brightness(0.97)}tr.good{background:#eef5ee}tr.str{background:#fff8e8}tr.tot{background:#1a1a1a;color:white;font-weight:700}tr.tot td{border-color:#333}.ga{background:#c87060;color:white;border:1px solid #a05040;text-align:center;font-size:10px;font-weight:700;padding:4px}.gz{background:#5a8e70;color:white;border:1px solid #3a6e50;text-align:center;font-size:10px;font-weight:700;padding:4px}.gl{background:#7060a8;color:white;border:1px solid #5040a0;text-align:center;font-size:10px;font-weight:700;padding:4px}.gf{background:#1a5080;color:white;border:1px solid #0a3060;text-align:center;font-size:10px;font-weight:700;padding:4px}.gn{background:#2a2a2a;color:white;border:1px solid #444;text-align:center;font-size:10px;font-weight:700;padding:4px}.ca{background:#fdf0ec}.cz{background:#ecf5f0}.cl{background:#f0ecf8}.sec{font-size:12px;font-weight:700;color:#1a1a1a;margin:20px 0 10px;padding-bottom:6px;border-bottom:2px solid #c8a97a;text-transform:uppercase;letter-spacing:.06em}.badge{display:inline-block;padding:2px 7px;border-radius:10px;font-size:9px;font-weight:700}.bg-good{background:#d4edda;color:#1a6a2a}.bg-str{background:#fff3cd;color:#856404}.bg-n{background:#e9e9e9;color:#555}.note{background:#fff8e8;border:1px solid #e8d5a0;border-radius:6px;padding:10px 14px;font-size:11px;color:#6b5500;margin-top:12px}@media(max-width:600px){.sellers{grid-template-columns:1fr}.kards{grid-template-columns:repeat(2,1fr)}}';
 
     // Строим секции
-    let dash='<div class="kards">';
+    // Сначала продавцы (для скриншота продавцам), потом финансы внизу
+    let dash='<div class="sec">Продавцы — прогресс к личному плану</div><div class="sellers">';
+    sellers.forEach(name=>{
+      const sd=selD[name]; if(sd.shifts===0)return;
+      const C=COLORS[name]; const p=plans[name]||0; const pct=sd.sales/p*100;
+      dash+='<div class="seller"><div class="sh" style="background:'+C.hd+'"><div class="sn">'+name+'</div><div style="font-size:14px;font-weight:700">'+pct.toFixed(0)+'%</div></div>';
+      dash+='<div class="sb"><div class="sr"><span>Смен отработано</span><span><b>'+sd.shifts+'</b></span></div>';
+      dash+='<div class="sr"><span>Оборот факт</span><span>'+fmt(sd.sales)+' тг</span></div>';
+      dash+='<div class="sr"><span>Личный план</span><span>'+fmt(p)+' тг</span></div>';
+      dash+='<div class="sr"><span>До плана</span><span style="color:'+(pct>=100?'#2e7d32':'#c62828')+'">'+fmt(Math.max(0,p-sd.sales))+' тг</span></div>';
+      dash+='<div class="pb" style="margin:8px 0 4px"><div class="pf" style="width:'+Math.min(100,pct).toFixed(0)+'%;background:'+(pct>=100?'#2e7d32':'#c8a97a')+'"></div></div>';
+      dash+='</div></div>';
+    });
+    dash+='</div>';
+    // Финансовые карточки — внизу
+    dash+='<div class="sec" style="margin-top:20px">Итоги магазина</div><div class="kards">';
     dash+='<div class="kard"><div class="kl">Оборот месяца</div><div class="kv">'+fmt(totalRev)+'</div><div class="ks">тг · план '+fmt(planTotal)+'</div><div class="pb"><div class="pf" style="width:'+Math.min(100,totalRev/planTotal*100).toFixed(0)+'%;background:#c8a97a"></div></div></div>';
     dash+='<div class="kard"><div class="kl">Выполнение плана</div><div class="kv" style="color:'+(totalRev>=planTotal?'#2e7d32':'#c62828')+'">'+(totalRev/planTotal*100).toFixed(1)+'%</div><div class="ks">'+(totalRev>=planTotal?'✅ выполнен':'❌ не выполнен')+'</div></div>';
     dash+='<div class="kard"><div class="kl">Дней продаж</div><div class="kv">'+sales.length+'</div></div>';
@@ -4010,20 +4025,6 @@ async function generateFullReport(userId, month, year) {
     dash+='<div class="kard"><div class="kl">ФОТ</div><div class="kv">'+fmt(totalFot)+'</div><div class="ks">тг · '+fotPct+'%</div></div>';
     dash+='<div class="kard"><div class="kl">Налог 3%</div><div class="kv">'+fmt(totalTax)+'</div><div class="ks">тг</div></div>';
     if(totalProfit>0){dash+='<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmt(totalProfit)+'</div></div><div class="kard"><div class="kl">Чистая прибыль</div><div class="kv" style="color:#2e7d32">'+fmt(netProfit)+'</div></div>';}
-    dash+='</div><div class="sec">Продавцы — прогресс к личному плану</div><div class="sellers">';
-    sellers.forEach(name=>{
-      const sd=selD[name]; if(sd.shifts===0)return;
-      const C=COLORS[name]; const p=plans[name]||0; const pct=sd.sales/p*100;
-      const sr=salRows.find(r=>r&&r.name===name);
-      dash+='<div class="seller"><div class="sh" style="background:'+C.hd+'"><div class="sn">'+name+'</div><div style="font-size:14px;font-weight:700">'+pct.toFixed(0)+'%</div></div>';
-      dash+='<div class="sb"><div class="sr"><span>Смен отработано</span><span><b>'+sd.shifts+'</b></span></div>';
-      dash+='<div class="sr"><span>Оборот факт</span><span>'+fmt(sd.sales)+' тг</span></div>';
-      dash+='<div class="sr"><span>Личный план</span><span>'+fmt(p)+' тг</span></div>';
-      dash+='<div class="sr"><span>До плана</span><span style="color:'+(pct>=100?'#2e7d32':'#c62828')+'">'+fmt(Math.max(0,p-sd.sales))+' тг</span></div>';
-      dash+='<div class="pb" style="margin:8px 0 4px"><div class="pf" style="width:'+Math.min(100,pct).toFixed(0)+'%;background:'+(pct>=100?'#2e7d32':'#c8a97a')+'"></div></div>';
-      if(sr){dash+='<div class="sr" style="border:0;padding-top:6px;font-size:13px"><span>К выплате</span><span style="color:#2e7d32"><b>'+fmt(sr.total)+' тг</b></span></div>';}
-      dash+='</div></div>';
-    });
     dash+='</div>';
 
     let dHtml='<div class="tw"><table><thead><tr>';
