@@ -1187,6 +1187,17 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
       'Когда система написала что геолокация получена — выдай SECOND_LEAVE.\n' +
       '=> SECOND_LEAVE:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
       'Попрощайся и пожелай хорошего вечера.\n\n' +
+      'ЗАКРЫТИЕ СМЕНЫ (второй продавец закрывает вместе с первым или после него):\n' +
+      'Когда пишет "Закрываю смену" или "Заканчиваю смену" — проводи УСЕЧЁННЫЙ чек-лист:\n' +
+      'НЕ спрашивай Z-отчёт ROSTA — он уже получен от первого продавца.\n' +
+      'НЕ спрашивай фото терминалов — они уже получены.\n' +
+      'Только:\n' +
+      'ШАГ 1 — Товар убран, ценники на месте?\n' +
+      'ШАГ 2 — Посуда вымыта, стол чистый?\n' +
+      'ШАГ 3 — Пришли геолокацию для закрытия.\n' +
+      'После геолокации выдай SHIFT_CLOSE с данными из памяти (все нули кроме shiftStatus и seller2):\n' +
+      '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"second_close","seller2":"' + sellerName + '","notes":"Второй продавец закрыл смену"}\n' +
+      'После закрытия — попрощайся и пожелай хорошего вечера.\n\n' +
       'ПРЕДОПЛАТЫ (доступны всегда, без открытия смены):\n' +
       'Новая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
       'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
@@ -1940,8 +1951,15 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         // Смена записана в daily_sales через dbSaveSale выше
 
         console.log('Сохраняю продажи в Supabase: дата=', today, 'оборот=', finalRevenue, 'продавец=', sellerFinal);
-        await dbSaveSale(today, finalRevenue, sellerFinal, '');
-        console.log('dbSaveSale завершена');
+        if (s.shiftStatus === 'second_close' && s.seller2) {
+          // Второй продавец — только обновляем seller2 в существующей записи
+          const dateKey = today.split('.').reverse().join('-');
+          await supabase.from('daily_sales').update({ seller2: s.seller2 }).eq('sale_date', dateKey);
+          console.log('seller2 обновлён:', s.seller2, 'для', dateKey);
+        } else {
+          await dbSaveSale(today, finalRevenue, sellerFinal, '');
+          console.log('dbSaveSale завершена');
+        }
 
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
