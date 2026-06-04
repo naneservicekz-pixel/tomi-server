@@ -1807,17 +1807,12 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const closeTime = getTime();
         const rostaTotal = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0)-(s.rRetKaspi||0)-(s.rRetHalyk||0)-(s.rRetCash||0);
 
-        // Проверяем контрольную сумму из Z-отчёта
+        // Проверяем контрольную сумму из Z-отчёта — перемещено после sellerFinal
         const rostaCheck = s.rostaCheck || 0;
+        let finalRevenue = rostaTotal;
         if (rostaCheck > 0 && Math.abs(rostaCheck - rostaTotal) > 1000) {
           console.log(`rostaCheck mismatch: check=${rostaCheck} calculated=${rostaTotal} — используем rostaCheck`);
-          // Если есть расхождение — доверяем итогу из Z-отчёта
-          const correctedTotal = rostaCheck;
-          await dbSaveSale(today, correctedTotal, sellerFinal, '');
-          console.log('Сохранено по rostaCheck:', correctedTotal);
-        } else {
-          await dbSaveSale(today, rostaTotal, sellerFinal, '');
-          console.log('Сохранено по rostaTotal:', rostaTotal);
+          finalRevenue = rostaCheck;
         }
         const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
         const halykNet = (s.tHalyk||0)-(s.tHalykRet||0);
@@ -1937,8 +1932,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
         // Смена записана в daily_sales через dbSaveSale выше
 
-        console.log('Сохраняю продажи в Supabase: дата=', today, 'оборот=', rostaTotal);
-        await dbSaveSale(today, rostaTotal, sellerFinal, '');
+        console.log('Сохраняю продажи в Supabase: дата=', today, 'оборот=', finalRevenue, 'продавец=', sellerFinal);
+        await dbSaveSale(today, finalRevenue, sellerFinal, '');
         console.log('dbSaveSale завершена');
 
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
@@ -4222,3 +4217,5 @@ app.listen(PORT, async () => {
     res.on('end', () => console.log('Webhook установлен:', data));
   }).end(body);
 });
+
+                        
