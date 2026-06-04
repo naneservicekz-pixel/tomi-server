@@ -2509,33 +2509,40 @@ async function handleMessage(userId, messageText, photoFileId) {
     // Ловим: "прибыль [день] [месяц] сумма" или "прибыль сегодня сумма"
     if (/^прибыль/.test(msgLR)) {
       const profitMatch = true;
-      // Парсим дату и сумму
-      const monthNames = {январ:1,феврал:2,март:3,апрел:4,май:5,мая:5,июн:6,июля:7,август:8,сентябр:9,октябр:10,ноябр:11,декабр:12};
+      const monthNamesP = {январ:1,феврал:2,март:3,апрел:4,май:5,мая:5,июн:6,июля:7,июль:7,август:8,сентябр:9,октябр:10,ноябр:11,декабр:12};
       let profitDate, profitAmount;
-      
-      // Формат: "Прибыль 2 июня 450000" или "Прибыль сегодня 450000" или "Прибыль 450000"
-      const parts = msgLR.replace('прибыль', '').trim().split(/\s+/);
-      const nums = parts.filter(p => /^\d+$/.test(p));
-      const words = parts.filter(p => !/^\d+$/.test(p));
-      
-      // Собираем всё сообщение и ищем числа (убираем пробелы внутри чисел типа "808 322")
-      const cleanMsg = msgLR.replace('прибыль', '').trim();
-      // Ищем число с возможными пробелами: "808 322" → 808322
-      const bigNumMatch = cleanMsg.replace(/\s/g, '').match(/(\d{4,})/g);
-      profitAmount = bigNumMatch ? parseInt(bigNumMatch[bigNumMatch.length - 1]) : parseInt(nums[nums.length - 1]);
-      
       const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-      if (words.includes('сегодня') || nums.length === 1) {
-        profitDate = nowA.toISOString().split('T')[0];
-      } else if (nums.length >= 2) {
-        // "2 июня" — день и месяц
-        const day = parseInt(nums[0]);
-        let month = nowA.getMonth() + 1;
-        for (const [name, num] of Object.entries(monthNames)) {
-          if (words.some(w => w.startsWith(name))) { month = num; break; }
+      const cleanP = msgLR.replace('прибыль', '').trim();
+
+      // Формат "ДД.ММ.ГГГГ сумма" или "ДД.ММ сумма"
+      const ddmmyyyy = cleanP.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+      const ddmm = cleanP.match(/(\d{1,2})\.(\d{2})\b/);
+
+      if (ddmmyyyy) {
+        profitDate = ddmmyyyy[3]+'-'+ddmmyyyy[2]+'-'+ddmmyyyy[1];
+      } else if (ddmm) {
+        profitDate = nowA.getFullYear()+'-'+ddmm[2].padStart(2,'0')+'-'+ddmm[1].padStart(2,'0');
+      } else {
+        // Формат "4 июня" или "сегодня"
+        const parts = cleanP.split(/\s+/);
+        const nums = parts.filter(p => /^\d+$/.test(p));
+        const words = parts.filter(p => !/^\d+$/.test(p));
+        if (words.includes('сегодня') || nums.length === 1) {
+          profitDate = nowA.toISOString().split('T')[0];
+        } else if (nums.length >= 2) {
+          const day = parseInt(nums[0]);
+          let month = nowA.getMonth() + 1;
+          for (const [name, num] of Object.entries(monthNamesP)) {
+            if (words.some(w => w.startsWith(name))) { month = num; break; }
+          }
+          profitDate = nowA.getFullYear()+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0');
         }
-        profitDate = nowA.getFullYear() + '-' + String(month).padStart(2,'0') + '-' + String(day).padStart(2,'0');
       }
+
+      // Сумма — последнее большое число (4+ цифр), игнорируем дату
+      const withoutDate = cleanP.replace(/\d{1,2}[.\s]\d{2}[.\s]?\d{0,4}/g, ' ').trim();
+      const amountMatch = withoutDate.replace(/\s/g,'').match(/\d{4,}/g);
+      profitAmount = amountMatch ? parseInt(amountMatch[amountMatch.length-1]) : 0;
       
       if (profitDate && profitAmount > 0) {
         const { error } = await supabase.from('daily_sales')
