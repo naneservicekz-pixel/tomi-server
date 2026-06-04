@@ -1299,9 +1299,19 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'Если продавец говорит "не знаю" — это не объяснение. Дожимай до конкретной причины.\n\n' +
     'rKaspi=QR Kaspi ROSTA, rOnline=Онлайн Kaspi ROSTA, rHalyk=QR Halyk ROSTA, rHalykOnline=Онлайн Halyk ROSTA\n' +
     'rCash=Наличные, rPersonal=Личная карта ROSTA, rBonus=Бонусы\n' +
+    'ВАЖНО при чтении Z-отчёта ROSTA:\n' +
+    '- Строка "Kaspi QR" → rKaspi\n' +
+    '- Строка "Онлайн Каспи" (без слова Возврат) → rOnline\n' +
+    '- Строка "Halyk QR" (без слова Возврат) → rHalyk\n' +
+    '- Строка "Онлайн Халык" → rHalykOnline\n' +
+    '- Строка "Наличные" → rCash\n' +
+    '- Строки с "(Возврат)" → rRetKaspi или rRetHalyk (всегда положительное число)\n' +
+    '- ИТОГО в Z-отчёте = сумма всех строк включая возвраты\n' +
+    '- НИКОГДА не пропускай строки с большими суммами — Kaspi QR и Онлайн Каспи часто самые крупные\n' +
     'tKaspi=Kaspi ФАКТ, tKaspiRet=возврат Kaspi, tHalyk=Halyk ФАКТ, tHalykRet=возврат Halyk\n' +
     'cashOpen=начало, cashActual=конец\n' +
-    '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}\n\n' +
+    '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}\n' +
+    'rostaCheck = строка ИТОГО из Z-отчёта ROSTA (контрольная сумма)\n' +
     'Необъясненное расхождение >500 тг — НЕ ЗАКРЫВАЙ смену, уточни причину. Один вопрос за раз.\n\n' +
     'ОБУЧЕНИЕ (доступно всегда, даже без открытой смены):\n' +
     'Когда продавец пишет "Обучение", "Учиться", "Урок", "Тест" или спрашивает про технику продаж — переходи в режим обучения.\n' +
@@ -1796,6 +1806,19 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         const closeTime = getTime();
         const rostaTotal = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0)-(s.rRetKaspi||0)-(s.rRetHalyk||0)-(s.rRetCash||0);
+
+        // Проверяем контрольную сумму из Z-отчёта
+        const rostaCheck = s.rostaCheck || 0;
+        if (rostaCheck > 0 && Math.abs(rostaCheck - rostaTotal) > 1000) {
+          console.log(`rostaCheck mismatch: check=${rostaCheck} calculated=${rostaTotal} — используем rostaCheck`);
+          // Если есть расхождение — доверяем итогу из Z-отчёта
+          const correctedTotal = rostaCheck;
+          await dbSaveSale(today, correctedTotal, sellerFinal, '');
+          console.log('Сохранено по rostaCheck:', correctedTotal);
+        } else {
+          await dbSaveSale(today, rostaTotal, sellerFinal, '');
+          console.log('Сохранено по rostaTotal:', rostaTotal);
+        }
         const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
         const halykNet = (s.tHalyk||0)-(s.tHalykRet||0);
         const cashSales = (s.cashActual||0)-(s.cashOpen||0)+(s.cashPayouts||0)+(s.inkasso||0)+(s.rRetCash||0);
