@@ -4093,12 +4093,8 @@ async function generateFullReport(userId, month, year) {
       +'<div id="tab-shp" class="pane">'+shp+'</div>'
       +'<scr'+'ipt>function sw(id,el){document.querySelectorAll(".pane").forEach(p=>p.classList.remove("on"));document.querySelectorAll(".tab").forEach(t=>t.classList.remove("on"));document.getElementById("tab-"+id).classList.add("on");el.classList.add("on");}</scr'+'ipt></body></html>';
 
-    const { Readable } = require('stream');
-    const buf = Buffer.from(html, 'utf8');
-    const stream = Readable.from([buf]);
     const filename = 'otchet_'+mName.toLowerCase()+'_'+year+'.html';
-    await bot.sendDocument(userId, stream, {}, { filename, contentType: 'text/html' });
-    await sendTelegram(userId, '📊 Отчёт '+mName+' '+year+' готов — открой в браузере');
+    await sendTelegramDocument(userId, filename, html, '📊 Отчёт '+mName+' '+year+' — открой в браузере');
   } catch(e) { console.error('generateFullReport error:', e.message); await sendTelegram(userId, '❌ Ошибка: '+e.message); }
 }
 
