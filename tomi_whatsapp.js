@@ -64,9 +64,16 @@ function detectCategory(description) {
 
 async function dbSaveSale(date, revenue, seller1, seller2) {
   try {
-    const d = typeof date === 'string' ? date : date.split('.').reverse().join('-');
+    // Конвертируем дату в формат YYYY-MM-DD
+    let d = date;
+    if (typeof date === 'string' && date.includes('.')) {
+      // Формат DD.MM.YYYY → YYYY-MM-DD
+      const parts = date.split('.');
+      d = parts[2] + '-' + parts[1] + '-' + parts[0];
+    }
     const m = parseInt(d.split('-')[1]);
     const y = parseInt(d.split('-')[0]);
+    console.log('dbSaveSale: date=', d, 'month=', m, 'year=', y, 'revenue=', revenue);
     const { error } = await supabase.from('daily_sales').upsert({
       sale_date: d, revenue: Number(revenue),
       seller1: seller1 || '', seller2: seller2 || '',
@@ -4217,5 +4224,3 @@ app.listen(PORT, async () => {
     res.on('end', () => console.log('Webhook установлен:', data));
   }).end(body);
 });
-
-                        
