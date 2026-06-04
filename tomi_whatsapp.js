@@ -2455,6 +2455,21 @@ async function handleMessage(userId, messageText, photoFileId) {
     }
   }
 
+  // ── Прямой перехват команды полного отчёта ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgLO = messageText.toLowerCase().trim();
+    if (/^отчёт|^отчет|полный отчёт|полный отчет/.test(msgLO)) {
+      const monthNamesO = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let repMonth = new Date().getMonth() + 1;
+      let repYear  = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNamesO)) {
+        if (msgLO.includes(name)) { repMonth = num; break; }
+      }
+      await generateFullReport(userId, repMonth, repYear);
+      return;
+    }
+  }
+
   // ── Прямой перехват финансового отчёта ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
     const msgLF = messageText.toLowerCase().trim();
@@ -3893,6 +3908,135 @@ async function checkTrainingDeadline(type) {
       }
     }
   } catch(e) { console.error('checkTrainingDeadline error:', e.message); }
+}
+
+async function generateFullReport(userId, month, year) {
+  try {
+    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+    const mName = monthNames[month] || month;
+    const fmt = n => Math.round(n||0).toLocaleString('ru-RU');
+
+    const [sales, expenses, kpiScoresData] = await Promise.all([
+      dbGetSales(month, year),
+      dbGetExpenses(month, year, false, userId),
+      getKPI(month, year)
+    ]);
+
+    if (!sales || sales.length === 0) {
+      await sendTelegram(userId, '📊 Нет данных за ' + mName + ' ' + year);
+      return;
+    }
+
+    const KE = 14000, TAX = 0.03, BONUS_PLAN = 30000, KPI_ONE = 25000;
+    const getPct = r => r >= 1000000 ? 0.027 : r >= 750000 ? 0.022 : r >= 500000 ? 0.017 : 0.012;
+    const plans = { 'Асель': 8550000, 'Зарина': 10350000, 'Луиза': 8100000 };
+    const sellers = ['Асель', 'Зарина', 'Луиза'];
+
+    let totalRev = 0, totalProfit = 0, totalTax = 0;
+    const sellerData = {};
+    sellers.forEach(s => { sellerData[s] = { shifts:0, sales:0, pct:0, bonusGood:0, bonusRec:0 }; });
+
+    const dayRows = sales.map((s, i) => {
+      const rev = Number(s.revenue||0);
+      const profit = Number(s.rosta_profit||0);
+      const tax = Math.round(rev * TAX);
+      totalRev += rev; totalProfit += profit; totalTax += tax;
+      const daySellers = [s.seller1, s.seller2].filter(b => b && sellers.includes(b));
+      const dayPct = rev * getPct(rev);
+      let dayFot = 0;
+      daySellers.forEach(name => {
+        sellerData[name].shifts++;
+        sellerData[name].sales += rev / daySellers.length;
+        sellerData[name].pct += dayPct;
+        dayFot += KE + dayPct;
+        if (rev >= 2000000) { sellerData[name].bonusRec += 40000; dayFot += 40000; }
+        else if (rev >= 700000) { sellerData[name].bonusGood += 5000; dayFot += 5000; }
+      });
+      const d = s.sale_date ? s.sale_date.slice(8,10)+'.'+s.sale_date.slice(5,7) : '?';
+      const type = rev >= 2000000 ? 'РЕКОРД' : rev >= 700000 ? 'ХОРОШИЙ' : '—';
+      return { num: i+1, d, rev, profit, tax, dayFot: Math.round(dayFot), sellers: daySellers.join('+'), pctRate: (getPct(rev)*100).toFixed(1), type };
+    });
+
+    let totalFot = 0;
+    const salaryRows = sellers.map(name => {
+      const sd = sellerData[name];
+      if (sd.shifts === 0) return null;
+      const ke = sd.shifts * KE;
+      const pct = Math.round(sd.pct);
+      const bonusPlan = sd.sales >= (plans[name]||0) ? BONUS_PLAN : 0;
+      const kpi = (kpiScoresData[name] !== undefined ? kpiScoresData[name] : 3) * KPI_ONE;
+      const total = ke + pct + sd.bonusGood + sd.bonusRec + bonusPlan + kpi;
+      totalFot += total;
+      return { name, shifts: sd.shifts, ke, pct, bonusGood: sd.bonusGood, bonusRec: sd.bonusRec, bonusPlan, kpi, total, planDone: sd.sales >= (plans[name]||0) };
+    }).filter(Boolean);
+
+    const expTotal = expenses.reduce((s,e) => s + Number(e.amount||0), 0);
+    const netProfit = totalProfit > 0 ? totalProfit - totalTax - totalFot : 0;
+    const fotPct = totalRev > 0 ? (totalFot/totalRev*100).toFixed(1) : '0';
+
+    // CSS
+    const css = '*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;background:#F7F3EE;color:#1C1916;font-size:13px}.hdr{background:#1C1916;color:white;padding:16px 20px;display:flex;justify-content:space-between;align-items:center}.brand{font-size:20px;font-weight:700}.sub{font-size:11px;opacity:.5;margin-top:2px}.tabs{display:flex;background:#EFE9E1;border-bottom:2px solid #DDD7CE;padding:0 12px;gap:2px;overflow-x:auto}.tab{padding:9px 14px;cursor:pointer;font-size:12px;font-weight:500;color:#8A847C;border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap}.tab.on{color:#1C1916;border-bottom-color:#C8A97A}.pane{display:none;padding:16px}.pane.on{display:block}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}.card{background:white;border:1px solid #DDD7CE;border-radius:8px;padding:12px 14px}.cl{font-size:10px;color:#8A847C;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px}.cv{font-size:20px;font-weight:700}.cs{font-size:11px;color:#8A847C;margin-top:2px}.tw{overflow-x:auto}table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:12px}th{background:#1C1916;color:white;padding:7px 9px;text-align:center}td{padding:6px 9px;border-bottom:1px solid #DDD7CE;text-align:right}td.l{text-align:left}td.c{text-align:center}tr:hover td{background:#f5f0ea}.good{background:#f1f8f2}.scards{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}.sc{background:white;border:1px solid #DDD7CE;border-radius:8px;overflow:hidden}.sh{padding:10px 14px;color:white;display:flex;justify-content:space-between}.sh.a{background:#D4845A}.sh.z{background:#5A9E7A}.sh.l{background:#7A6AAA}.sn{font-size:14px;font-weight:700}.sb{padding:10px 14px}.sr{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid #f0ece6;font-size:12px}.sr:last-child{border:none;font-weight:700;font-size:13px;padding-top:6px}@media(max-width:600px){.scards{grid-template-columns:1fr}.cards{grid-template-columns:repeat(2,1fr)}}';
+
+    // Строим HTML по частям
+    let daysTableRows = '';
+    dayRows.forEach(d => {
+      const cls = d.rev >= 700000 ? ' class="good"' : '';
+      daysTableRows += '<tr' + cls + '><td class="c">' + d.num + '</td><td class="l">' + d.d + '</td><td><b>' + fmt(d.rev) + '</b></td><td class="l">' + d.sellers + '</td><td class="c">' + d.pctRate + '%</td><td class="c">' + d.type + '</td><td>' + fmt(d.dayFot) + '</td></tr>';
+    });
+    daysTableRows += '<tr style="background:#1c1916;color:white;font-weight:700"><td colspan="2" class="l">ИТОГО</td><td>' + fmt(totalRev) + '</td><td></td><td></td><td></td><td>' + fmt(totalFot) + '</td></tr>';
+
+    let salCards = '';
+    const colors = { 'Асель':'a', 'Зарина':'z', 'Луиза':'l' };
+    salaryRows.forEach(r => {
+      salCards += '<div class="sc"><div class="sh ' + (colors[r.name]||'a') + '"><div class="sn">' + r.name + '</div><div>' + r.shifts + ' смен</div></div><div class="sb">';
+      salCards += '<div class="sr"><span>КЕ (выходы)</span><span>' + fmt(r.ke) + ' тг</span></div>';
+      salCards += '<div class="sr"><span>% от продаж</span><span>' + fmt(r.pct) + ' тг</span></div>';
+      if (r.bonusGood > 0) salCards += '<div class="sr"><span>Бонус хор.день</span><span>' + fmt(r.bonusGood) + ' тг</span></div>';
+      if (r.bonusRec > 0) salCards += '<div class="sr"><span>Рекорд ≥2млн</span><span>' + fmt(r.bonusRec) + ' тг</span></div>';
+      salCards += '<div class="sr"><span>Бонус за план</span><span>' + (r.planDone ? '✅ '+fmt(r.bonusPlan) : '❌ 0') + ' тг</span></div>';
+      salCards += '<div class="sr"><span>KPI</span><span>' + fmt(r.kpi) + ' тг</span></div>';
+      salCards += '<div class="sr"><span>ИТОГО</span><span style="color:#2e7d32;font-size:15px">' + fmt(r.total) + ' тг</span></div>';
+      salCards += '</div></div>';
+    });
+
+    let expRows = '';
+    if (expenses.length > 0) {
+      expenses.forEach(e => {
+        expRows += '<tr><td class="l">' + (e.expense_date||'') + '</td><td class="l">' + (e.category||'') + '</td><td>' + fmt(e.amount) + ' тг</td><td class="l">' + (e.description||'') + '</td></tr>';
+      });
+      expRows += '<tr style="background:#1c1916;color:white;font-weight:700"><td colspan="2" class="l">ИТОГО</td><td>' + fmt(expTotal) + ' тг</td><td></td></tr>';
+    }
+
+    let finRows = '';
+    dayRows.forEach(d => {
+      finRows += '<tr><td class="l">' + d.d + '</td><td>' + fmt(d.rev) + '</td><td>' + (d.profit>0?fmt(d.profit):'—') + '</td><td>' + fmt(d.tax) + '</td><td>' + fmt(d.dayFot) + '</td><td>' + (d.dayFot/d.rev*100).toFixed(1) + '%</td></tr>';
+    });
+
+    const html = '<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANE PARIS ' + mName + ' ' + year + '</title><style>' + css + '</style></head><body>'
+      + '<div class="hdr"><div><div class="brand">NANE PARIS</div><div class="sub">Отчёт · ' + mName + ' ' + year + '</div></div><div style="font-size:11px;opacity:.4">' + new Date().toLocaleDateString('ru-RU') + '</div></div>'
+      + '<div class="tabs"><div class="tab on" onclick="show(\'dash\',this)">📊 Дашборд</div><div class="tab" onclick="show(\'days\',this)">📅 По дням</div><div class="tab" onclick="show(\'sal\',this)">💰 Зарплата</div><div class="tab" onclick="show(\'exp\',this)">💸 Расходы</div><div class="tab" onclick="show(\'fin\',this)">📈 Финансы</div></div>'
+      + '<div id="tab-dash" class="pane on"><div class="cards">'
+      + '<div class="card"><div class="cl">Оборот</div><div class="cv">' + fmt(totalRev) + '</div><div class="cs">тг · план 27 000 000</div></div>'
+      + '<div class="card"><div class="cl">Выполнение плана</div><div class="cv" style="color:' + (totalRev>=27000000?'#2e7d32':'#c62828') + '">' + (totalRev/27000000*100).toFixed(1) + '%</div></div>'
+      + '<div class="card"><div class="cl">Дней продаж</div><div class="cv">' + sales.length + '</div></div>'
+      + '<div class="card"><div class="cl">Средний день</div><div class="cv">' + fmt(Math.round(totalRev/sales.length)) + '</div><div class="cs">тг</div></div>'
+      + '<div class="card"><div class="cl">ФОТ</div><div class="cv">' + fmt(totalFot) + '</div><div class="cs">тг · ' + fotPct + '%</div></div>'
+      + '<div class="card"><div class="cl">Налог 3%</div><div class="cv">' + fmt(totalTax) + '</div><div class="cs">тг</div></div>'
+      + (totalProfit>0 ? '<div class="card"><div class="cl">Прибыль ROSTA</div><div class="cv">' + fmt(totalProfit) + '</div></div><div class="card"><div class="cl">Чистая прибыль</div><div class="cv" style="color:#2e7d32">' + fmt(netProfit) + '</div></div>' : '')
+      + '</div></div>'
+      + '<div id="tab-days" class="pane"><div class="tw"><table><thead><tr><th>#</th><th>Дата</th><th>Оборот</th><th>Продавцы</th><th>%</th><th>Тип</th><th>ФОТ день</th></tr></thead><tbody>' + daysTableRows + '</tbody></table></div></div>'
+      + '<div id="tab-sal" class="pane"><div class="scards">' + salCards + '</div><div class="cards"><div class="card"><div class="cl">Итого ФОТ</div><div class="cv">' + fmt(totalFot) + '</div></div><div class="card"><div class="cl">ФОТ %</div><div class="cv">' + fotPct + '%</div></div></div></div>'
+      + '<div id="tab-exp" class="pane">' + (expenses.length>0 ? '<div class="cards"><div class="card"><div class="cl">Расходы NANE</div><div class="cv">' + fmt(expTotal) + '</div></div></div><div class="tw"><table><thead><tr><th>Дата</th><th>Категория</th><th>Сумма</th><th>Описание</th></tr></thead><tbody>' + expRows + '</tbody></table></div>' : '<p style="color:#8A847C;padding:20px">Расходов нет</p>') + '</div>'
+      + '<div id="tab-fin" class="pane"><div class="cards"><div class="card"><div class="cl">Оборот</div><div class="cv">' + fmt(totalRev) + '</div></div>' + (totalProfit>0?'<div class="card"><div class="cl">Прибыль ROSTA</div><div class="cv">' + fmt(totalProfit) + '</div></div>':'') + '<div class="card"><div class="cl">Налог 3%</div><div class="cv">' + fmt(totalTax) + '</div></div><div class="card"><div class="cl">ФОТ</div><div class="cv">' + fmt(totalFot) + '</div></div>' + (totalProfit>0?'<div class="card"><div class="cl">Чистая прибыль</div><div class="cv" style="color:#2e7d32">' + fmt(netProfit) + '</div></div>':'') + '</div><div class="tw"><table><thead><tr><th>Дата</th><th>Оборот</th><th>Прибыль ROSTA</th><th>Налог 3%</th><th>ФОТ день</th><th>ФОТ %</th></tr></thead><tbody>' + finRows + '</tbody></table></div></div>'
+      + '<script>function show(id,el){document.querySelectorAll(".pane").forEach(p=>p.classList.remove("on"));document.querySelectorAll(".tab").forEach(t=>t.classList.remove("on"));document.getElementById("tab-"+id).classList.add("on");el.classList.add("on");}</' + 'script></body></html>';
+
+    const { Readable } = require('stream');
+    const buf = Buffer.from(html, 'utf8');
+    const stream = Readable.from([buf]);
+    const filename = 'otchet_' + mName.toLowerCase() + '_' + year + '.html';
+    await bot.sendDocument(userId, stream, {}, { filename, contentType: 'text/html' });
+    await sendTelegram(userId, '📊 Отчёт ' + mName + ' ' + year + ' готов — открой в браузере');
+  } catch(e) { console.error('generateFullReport error:', e.message); await sendTelegram(userId, '❌ Ошибка: ' + e.message); }
 }
 
 async function showFinanceReport(userId, month, year) {
