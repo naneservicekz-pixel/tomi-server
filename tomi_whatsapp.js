@@ -1958,8 +1958,19 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         }
 
         // ── Всё ок или есть объяснение — закрываем ──────────────────
-        const sellerFinal = shift.seller || sellerName;
+        const sellerFinal = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
         const finalNotes = autoNotes || s.notes || '';
+
+        // Уведомление владельцу о закрытии смены вторым продавцом
+        if (s.shiftStatus === 'second_close') {
+          for (const ownerId of OWNER_IDS) {
+            await sendTelegram(ownerId,
+              '🔴 Смена закрыта (второй продавец)\n' +
+              '👤 ' + sellerFinal + '\n' +
+              '🕐 ' + closeTime
+            );
+          }
+        }
 
         // Алерт владельцу если есть предоплаты объясняющие расхождение
         if (hasAutoExplanation) {
