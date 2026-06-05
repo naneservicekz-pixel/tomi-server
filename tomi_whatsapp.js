@@ -42,6 +42,7 @@ const pendingReopenApprovals = {};
 const lastShiftReports = {}; // userId -> { html, filename, caption }
 const pendingResendApprovals = {};
 const pendingPrepayDelete = {};
+const shiftPhotos = {}; // Хранит file_id фото при закрытии смены: {userId: {zreport, kaspi, halyk}}
 const pendingExpense = {}; // userId -> { amount, description, date } // ownerId -> { sellerId, sellerName, prepayId, reason } // ownerId -> { sellerId, sellerName }
 
 function detectCategory(description) {
@@ -943,6 +944,21 @@ async function sendTelegram(chatId, text) {
     });
     await new Promise(r => setTimeout(r, 300));
   }
+}
+
+async function forwardPhoto(chatId, fileId, caption) {
+  try {
+    const body = JSON.stringify({ chat_id: chatId, photo: fileId, caption: caption || '' });
+    await new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.telegram.org',
+        path: '/bot' + TELEGRAM_TOKEN + '/sendPhoto',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+      }, res => { let d=''; res.on('data', c=>d+=c); res.on('end', ()=>{ if(res.statusCode!==200) console.error('forwardPhoto error:', d); resolve(); }); });
+      req.on('error', reject); req.write(body); req.end();
+    });
+  } catch(e) { console.error('forwardPhoto error:', e.message); }
 }
 
 async function sendTelegramDocument(chatId, filename, content, caption) {
@@ -1973,7 +1989,16 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         await saveLastReport(userId, htmlReport, filename, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
         for (const ownerId of OWNER_IDS) {
           await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
+          // Пересылаем фото Z-отчёта и терминалов
+          const photos = shiftPhotos[String(userId)] || {};
+          if (photos.zreport || photos.kaspi || photos.halyk) {
+            await sendTelegram(ownerId, '📸 Фото смены — ' + sellerFinal + ' · ' + today);
+            if (photos.zreport) await forwardPhoto(ownerId, photos.zreport, '📄 Z-отчёт ROSTA');
+            if (photos.kaspi) await forwardPhoto(ownerId, photos.kaspi, '💳 Терминал Kaspi');
+            if (photos.halyk) await forwardPhoto(ownerId, photos.halyk, '💳 Терминал Halyk');
+          }
         }
+        delete shiftPhotos[String(userId)];
 
         // ── Командный отчёт дня — отправляем всем продавцам ──────────
         const teamFilename = 'den_' + today.replace(/\./g,'_') + '.html';
@@ -2711,8 +2736,14 @@ async function handleMessage(userId, messageText, photoFileId) {
   if (photoFileId) {
     try {
       await sendTelegram(userId, '📷 Читаю фото...');
-      const base64 = await downloadTelegramFile(photoFileId);
+      // Сохраняем file_id для пересылки владельцу
+      if (!shiftPhotos[String(userId)]) shiftPhotos[String(userId)] = {};
       const photoType = detectPhotoType(conversations[userKey] || []);
+      if (photoType === 'zreport') shiftPhotos[String(userId)].zreport = photoFileId;
+      else if (photoType === 'kaspi_terminal') shiftPhotos[String(userId)].kaspi = photoFileId;
+      else if (photoType === 'halyk_terminal') shiftPhotos[String(userId)].halyk = photoFileId;
+
+      const base64 = await downloadTelegramFile(photoFileId);
       const ocrResult = await readPhotoWithClaude(base64, photoType);
       let contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
         : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
