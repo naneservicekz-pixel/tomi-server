@@ -1820,6 +1820,17 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const timeStr = getTime();
         const hour = parseInt(timeStr.split(':')[0]);
         const min = parseInt(timeStr.split(':')[1]);
+
+        // Уведомление владельцу об открытии смены
+        for (const ownerId of OWNER_IDS) {
+          await sendTelegram(ownerId,
+            '🟢 Смена открыта\n' +
+            '👤 ' + s.seller + '\n' +
+            '🕐 ' + timeStr + '\n' +
+            '💰 Касса: ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' тг'
+          );
+        }
+
         if (hour > 11 || (hour === 11 && min > 0)) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + s.seller + '\n🕐 ' + timeStr);
         }
