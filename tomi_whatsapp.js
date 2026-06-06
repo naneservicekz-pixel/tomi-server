@@ -2537,6 +2537,38 @@ async function handleMessage(userId, messageText, photoFileId) {
     }
   }
 
+  // ── Прямой перехват приветствия владельца — показываем меню команд ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgLG = messageText.toLowerCase().trim();
+    if (/^привет$|^здравствуй|^салем|^хай$|^hi$|^hello$|^добрый|^доброе|^добро/.test(msgLG)) {
+      const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+      const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+      const m = nowA.getMonth() + 1;
+      const y = nowA.getFullYear();
+      const mName = monthNames[m].toLowerCase();
+      await sendTelegram(userId,
+        '👋 Привет, Ермек!\n\n' +
+        '📊 ОТЧЁТЫ\n' +
+        '• Продажи за ' + mName + ' — список продаж по дням\n' +
+        '• Финансы — оборот, прибыль, ФОТ, налог\n' +
+        '• Дисциплина — опоздания и нарушения\n' +
+        '• Отчёт за ' + mName + ' — полный HTML файл\n' +
+        '• Дашборд — сводка текущего месяца\n\n' +
+        '💰 ФИНАНСЫ\n' +
+        '• Прибыль ' + nowA.toLocaleDateString('ru-RU') + ' 734798 — внести прибыль ROSTA\n' +
+        '• Расходы — список расходов за месяц\n' +
+        '• Потратил 5000 такси — добавить расход\n\n' +
+        '👥 ПРОДАВЦЫ\n' +
+        '• KPI Асель 3 — выставить KPI продавцу (0-3)\n' +
+        '• Зарплата за ' + mName + ' — расчёт ФОТ по продавцам\n\n' +
+        '📋 ПРЕДОПЛАТЫ\n' +
+        '• Предоплаты — список открытых предоплат\n' +
+        '• Новая предоплата — добавить предоплату'
+      );
+      return;
+    }
+  }
+
   // ── Прямой перехват команды дисциплины ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
     const msgLD = messageText.toLowerCase().trim();
