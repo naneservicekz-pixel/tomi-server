@@ -2786,7 +2786,9 @@ async function handleMessage(userId, messageText, photoFileId) {
       const data = await loadOwnerData();
       systemPrompt = getOwnerPrompt(senderName, data);
     } else {
-      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecondSeller, firstSellerName);
+      // isSecondSeller = true если флаг в сохранённой смене ИЛИ обнаружена чужая смена
+      const isSecond = isSecondSeller || isSecondSellerFromShift;
+      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecond, firstSellerName);
     }
 
     const response = await anthropic.messages.create({
