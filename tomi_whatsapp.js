@@ -2537,6 +2537,46 @@ async function handleMessage(userId, messageText, photoFileId) {
     }
   }
 
+  // ── Прямой перехват команды дисциплины ──
+  if (OWNER_IDS.includes(String(userId)) && messageText) {
+    const msgLD = messageText.toLowerCase().trim();
+    if (/дисциплин|опоздан|нарушен/.test(msgLD)) {
+      const monthNamesD = {май:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let dMonth = null;
+      for (const [name, num] of Object.entries(monthNamesD)) {
+        if (msgLD.includes(name)) { dMonth = num; break; }
+      }
+      const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+      if (!dMonth) dMonth = nowA.getMonth() + 1;
+      const dYear = nowA.getFullYear();
+
+      let query = supabase.from('discipline').select('*').order('event_date', { ascending: false });
+      const { data: discRows } = await query;
+      const rows = (discRows || []).filter(r => {
+        if (!r.event_date) return false;
+        const d = new Date(r.event_date);
+        return d.getMonth() + 1 === dMonth && d.getFullYear() === dYear;
+      });
+
+      const monthNames2 = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+      if (rows.length === 0) {
+        await sendTelegram(userId, '✅ Нарушений за ' + (monthNames2[dMonth]||dMonth) + ' ' + dYear + ' нет.');
+      } else {
+        let msg = '📋 Дисциплина — ' + (monthNames2[dMonth]||dMonth) + ' ' + dYear + '\n';
+        msg += '━━━━━━━━━━━━━━━━━━━━\n\n';
+        rows.forEach(r => {
+          msg += '📅 ' + (r.event_date||'') + ' · ' + (r.seller_name||'') + '\n';
+          msg += '⚠️ ' + (r.event_type||'') + ' — ' + (r.event_time||'') + '\n';
+          if (r.note) msg += '📝 ' + r.note + '\n';
+          msg += '\n';
+        });
+        msg += 'Итого нарушений: ' + rows.length;
+        await sendTelegram(userId, msg);
+      }
+      return;
+    }
+  }
+
   // ── Прямой перехват команды полного отчёта ──
   if (OWNER_IDS.includes(String(userId)) && messageText) {
     const msgLO = messageText.toLowerCase().trim();
