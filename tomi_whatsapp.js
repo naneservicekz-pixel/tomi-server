@@ -1461,10 +1461,22 @@ async function readPhotoWithClaude(base64Image, photoType) {
 }
 
 function detectPhotoType(conversation) {
-  const last = conversation.slice(-6).map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).toLowerCase()).join(' ');
-  if (last.includes('z-отчет') || last.includes('rosta') || last.includes('роста')) return 'zreport';
-  if (last.includes('kaspi терминал') || last.includes('терминал kaspi')) return 'kaspi_terminal';
-  if (last.includes('halyk терминал') || last.includes('терминал halyk')) return 'halyk_terminal';
+  const last = conversation.slice(-8).map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).toLowerCase()).join(' ');
+  // Z-отчёт ROSTA — проверяем первым так как самый важный
+  if (last.includes('z-отчет') || last.includes('z отчет') || last.includes('zотчет') ||
+      last.includes('rosta') || last.includes('роста') || last.includes('итоговый отчет') ||
+      last.includes('z-report') || last.includes('фото экрана') && last.includes('rosta')) return 'zreport';
+  // Kaspi терминал
+  if (last.includes('kaspi терминал') || last.includes('терминал kaspi') ||
+      last.includes('каспи терминал') || last.includes('терминал каспи') ||
+      last.includes('фото kaspi') || last.includes('kaspi отчет') ||
+      last.includes('smart pos') || last.includes('смарт пос') ||
+      (last.includes('kaspi') && last.includes('терминал'))) return 'kaspi_terminal';
+  // Halyk терминал
+  if (last.includes('halyk терминал') || last.includes('терминал halyk') ||
+      last.includes('халык терминал') || last.includes('терминал халык') ||
+      last.includes('фото halyk') || last.includes('halyk отчет') ||
+      (last.includes('halyk') && last.includes('терминал'))) return 'halyk_terminal';
   return 'unknown';
 }
 
@@ -2022,6 +2034,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             if (photos.zreport) await forwardPhoto(ownerId, photos.zreport, '📄 Z-отчёт ROSTA');
             if (photos.kaspi) await forwardPhoto(ownerId, photos.kaspi, '💳 Терминал Kaspi');
             if (photos.halyk) await forwardPhoto(ownerId, photos.halyk, '💳 Терминал Halyk');
+            if (photos.extra) await forwardPhoto(ownerId, photos.extra, '📸 Дополнительное фото');
           }
         }
         delete shiftPhotos[String(userId)];
@@ -2774,12 +2787,20 @@ async function handleMessage(userId, messageText, photoFileId) {
   if (photoFileId) {
     try {
       await sendTelegram(userId, '📷 Читаю фото...');
-      // Сохраняем file_id для пересылки владельцу
+      // Сохраняем file_id фото для пересылки владельцу
       if (!shiftPhotos[String(userId)]) shiftPhotos[String(userId)] = {};
       const photoType = detectPhotoType(conversations[userKey] || []);
       if (photoType === 'zreport') shiftPhotos[String(userId)].zreport = photoFileId;
       else if (photoType === 'kaspi_terminal') shiftPhotos[String(userId)].kaspi = photoFileId;
       else if (photoType === 'halyk_terminal') shiftPhotos[String(userId)].halyk = photoFileId;
+      else {
+        // Тип не определён — сохраняем по порядку
+        if (!shiftPhotos[String(userId)].zreport) shiftPhotos[String(userId)].zreport = photoFileId;
+        else if (!shiftPhotos[String(userId)].kaspi) shiftPhotos[String(userId)].kaspi = photoFileId;
+        else if (!shiftPhotos[String(userId)].halyk) shiftPhotos[String(userId)].halyk = photoFileId;
+        else shiftPhotos[String(userId)].extra = photoFileId;
+      }
+      console.log('Photo saved:', photoType, 'for user:', userId, 'shiftPhotos:', JSON.stringify(shiftPhotos[String(userId)]));
 
       const base64 = await downloadTelegramFile(photoFileId);
       const ocrResult = await readPhotoWithClaude(base64, photoType);
