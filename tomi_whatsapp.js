@@ -1191,6 +1191,10 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
       'РОЛЬ: Второй продавец смены. Смену уже открыл(а) ' + (firstSellerName || 'первый продавец') + '.\n\n' +
       'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Женский род.\n' +
       'Один вопрос за раз. Только русский. Никакого Markdown.\n\n' +
+      'КРИТИЧЕСКИ ВАЖНО:\n' +
+      'Если продавец пишет "Открыть смену", "Начала смену", "Начать смену" — это ПРИХОД на работу.\n' +
+      'Начни ЧЕК-ЛИСТ ПРИХОДА. НЕ путай с закрытием.\n' +
+      'Если продавец пишет "Закрыть смену", "Закрываю смену" — это УХОД. Начни чек-лист закрытия.\n\n' +
       'ЧЕК-ЛИСТ ПРИХОДА (второй продавец):\n' +
       'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
       'ШАГ 0 — ВНЕШНИЙ ВИД: макияж, одежда, готовность\n' +
@@ -1211,7 +1215,7 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
       'ШАГ 1 — Товар убран, ценники на месте?\n' +
       'ШАГ 2 — Посуда вымыта, стол чистый?\n' +
       'ШАГ 3 — Пришли геолокацию для закрытия.\n' +
-      'После геолокации выдай SHIFT_CLOSE с данными из памяти (все нули кроме shiftStatus и seller2):\n' +
+      'После геолокации выдай SHIFT_CLOSE:\n' +
       '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"second_close","seller2":"' + sellerName + '","notes":"Второй продавец закрыл смену"}\n' +
       'После закрытия — попрощайся и пожелай хорошего вечера.\n\n' +
       'ПРЕДОПЛАТЫ (доступны всегда, без открытия смены):\n' +
@@ -2712,7 +2716,19 @@ async function handleMessage(userId, messageText, photoFileId) {
   const isSecondSellerFromShift = !!(openShifts[userKey] && openShifts[userKey].is_second);
   console.log('handleMessage:', senderName, 'hasOpenShift:', hasOpenShift, 'is_second:', isSecondSellerFromShift, 'shift:', JSON.stringify(openShifts[userKey]));
 
-  // ── Перехват запроса повторной отправки отчёта ───────────────────
+  // ── Прямой перехват "Открыть смену" для второго продавца ──
+  if (!isOwner && hasOpenShift && isSecondSellerFromShift && messageText) {
+    const msgLS = messageText.toLowerCase().trim();
+    if (/открыть смену|начала смену|начать смену|открываю смену/.test(msgLS)) {
+      // Очищаем историю — начинаем чек-лист прихода заново
+      conversations[userKey] = [];
+      await supabase.from('conversations').delete().eq('phone', String(userId));
+      await sendTelegram(userId, 'Привет! Ты второй продавец сегодня.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?');
+      return;
+    }
+  }
+
+
   if (!isOwner && !hasOpenShift && messageText) {
     const msgLow = messageText.toLowerCase();
     if (msgLow.includes('повторно') || msgLow.includes('вышли отчёт') || msgLow.includes('вышли html') || msgLow.includes('html файл')) {
