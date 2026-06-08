@@ -603,7 +603,10 @@ function getOwnerPrompt(ownerName, data) {
     '"Финансы за май" => FINANCE_REPORT:{"month":0,"year":0}\n' +
     '"Зарплата за май" => SALARY_CALC:{"month":0,"year":0}\n' +
     '"KPI Асель 3" => KPI_SET:{"seller":"Имя","score":0,"month":0,"year":0}\n' +
-    '"Запусти обучение" => TRAINING_NOW\n\n' +
+    '"Запусти обучение" => TRAINING_NOW\n' +
+    '"Останови обучение" => TRAINING_PAUSE\n' +
+    '"Возобнови обучение" => TRAINING_RESUME\n' +
+    '"Еженедельный отчёт" => WEEKLY_REPORT\n\n' +
     'По-русски. Прямо, с цифрами.';
 }
 
@@ -1058,7 +1061,137 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
     if (!cleanReply) return '';
   }
 
+  if (reply.includes('TRAINING_PAUSE')) {
+    trainingPaused = true;
+    cleanReply = reply.replace(/TRAINING_PAUSE/g, '').trim();
+    await sendTelegram(userId, '⏸ Обучение поставлено на паузу.');
+    if (!cleanReply) return '';
+  }
+
+  if (reply.includes('TRAINING_RESUME')) {
+    trainingPaused = false;
+    cleanReply = reply.replace(/TRAINING_RESUME/g, '').trim();
+    await sendTelegram(userId, '▶️ Обучение возобновлено.');
+    if (!cleanReply) return '';
+  }
+
+  if (reply.includes('LESSON_CONFIRMED')) {
+    try {
+      const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' });
+      await dbSaveDiscipline(today, sellerName, 'Урок изучен', getTime(), '✅ Выполнено в срок');
+      for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '✅ ' + sellerName + ' подтвердила изучение урока · ' + getTime());
+    } catch(e) {}
+    cleanReply = reply.replace(/LESSON_CONFIRMED/g, '').trim();
+  }
+
+  if (reply.includes('TRAINING_RESULT:')) {
+    try {
+      const jsonStr = reply.match(/TRAINING_RESULT:(\{.*?\})/s)?.[1];
+      if (jsonStr) {
+        const t = JSON.parse(jsonStr);
+        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' });
+        const score = parseInt(t.score) || 0;
+        const emoji = score >= 3 ? '✅' : score >= 2 ? '⚠️' : '❌';
+        await dbSaveDiscipline(today, t.seller||sellerName, 'Обучение: '+(t.topic||''), getTime(), 'Результат: '+score+'/3 '+emoji);
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '📚 Обучение завершено\n👤 '+(t.seller||sellerName)+'\n📖 '+(t.topic||'')+'\n🎯 '+score+'/3 '+emoji);
+      }
+    } catch(e) {}
+    cleanReply = reply.replace(/TRAINING_RESULT:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('EXPENSE_DELETE:')) {
+    try {
+      const deleted = await deleteLastExpense(userId);
+      if (deleted) await sendTelegram(userId, '🗑 Удалена запись:\n'+(deleted[0]||'')+' · '+Number(deleted[2]||0).toLocaleString()+' тг');
+      else await sendTelegram(userId, '❌ Нет записей для удаления.');
+    } catch(e) {}
+    cleanReply = reply.replace(/EXPENSE_DELETE:\{.*?\}/s, '').trim();
+    if (!cleanReply) return '';
+  }
+
+  if (reply.includes('INKASSO_CHECK:')) {
+    try {
+      const jsonStr = reply.match(/INKASSO_CHECK:(\{.*?\})/s)?.[1];
+      if (jsonStr) {
+        const a = JSON.parse(jsonStr);
+        const inkDiff = Math.abs((parseFloat(a.sellerAmount)||0)-(parseFloat(a.ownerAmount)||0));
+        if (inkDiff > 500) { for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '🚨 РАСХОЖДЕНИЕ ИНКАССАЦИИ!\nРасхождение: '+Number(inkDiff).toLocaleString()+' тг'); }
+      }
+    } catch(e) {}
+    cleanReply = reply.replace(/INKASSO_CHECK:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('TERMINAL_ALERT:')) {
+    try {
+      const jsonStr = reply.match(/TERMINAL_ALERT:(\{.*?\})/s)?.[1];
+      if (jsonStr) { const a = JSON.parse(jsonStr); for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Терминал не работает\n👤 '+a.seller+'\n💳 '+a.terminal+'\n📝 '+a.reason); }
+    } catch(e) {}
+    cleanReply = reply.replace(/TERMINAL_ALERT:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('SECOND_LEAVE:')) {
+    try {
+      const jsonStr = reply.match(/SECOND_LEAVE:(\{.*?\})/s)?.[1];
+      if (jsonStr) { const a = JSON.parse(jsonStr); for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '👋 Второй продавец ушёл\n👤 '+a.seller+'\n🕐 '+(a.time||getTime())); }
+    } catch(e) {}
+    cleanReply = reply.replace(/SECOND_LEAVE:\{.*?\}/s, '').trim();
+  }
+
+  if (reply.includes('WEEKLY_REPORT')) {
+    cleanReply = reply.replace(/WEEKLY_REPORT/g, '').trim();
+    await sendWeeklySalesReport();
+    if (!cleanReply) return '';
+  }
+
+  if (reply.includes('CASH_ALERT:')) {
+    try {
+      const jsonStr = reply.match(/CASH_ALERT:(\{.*?\})/s)?.[1];
+      if (jsonStr) { const a = JSON.parse(jsonStr); for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ\nНаличных: '+Number(a.amount).toLocaleString()+' тг\n👤 '+sellerName+'\n🕐 '+getTime()); }
+    } catch(e) {}
+    cleanReply = reply.replace(/CASH_ALERT:\{.*?\}/s, '').trim();
+  }
+
   return cleanReply;
+}
+
+async function deleteLastExpense(userId) {
+  try {
+    const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const rowsRaw = await dbGetExpenses(nowAlm.getMonth()+1, nowAlm.getFullYear(), false, userId);
+    if (!rowsRaw || rowsRaw.length === 0) return null;
+    const last = rowsRaw[rowsRaw.length - 1];
+    await supabase.from('expenses').delete().eq('id', last.id);
+    return [last.expense_date, last.category, last.amount, last.description];
+  } catch(e) { return null; }
+}
+
+async function sendWeeklySalesReport() {
+  try {
+    const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const month = nowA.getMonth()+1, year = nowA.getFullYear();
+    const sales = await dbGetSales(month, year);
+    if (!sales || sales.length === 0) return;
+    const weekAgo = new Date(nowA); weekAgo.setDate(nowA.getDate()-7);
+    const weekSales = sales.filter(s => new Date(s.sale_date) >= weekAgo);
+    const weekTotal = weekSales.reduce((sum,s) => sum+Number(s.revenue||0), 0);
+    const avgDay = weekSales.length > 0 ? Math.round(weekTotal/weekSales.length) : 0;
+    const monthTotal = sales.reduce((sum,s) => sum+Number(s.revenue||0), 0);
+    const plan = 27000000;
+    const pct = Math.round(monthTotal/plan*100);
+    const remains = Math.max(0, plan-monthTotal);
+    const daysLeft = new Date(year,month,0).getDate()-nowA.getDate();
+    const dailyNeed = daysLeft > 0 ? Math.round(remains/daysLeft) : 0;
+    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+    let msg = '📊 Еженедельный отчёт — '+monthNames[month]+'\n\n';
+    msg += '📅 За неделю: '+weekTotal.toLocaleString('ru-RU')+' тг ('+weekSales.length+' дней)\n';
+    msg += '📈 Средний день: '+avgDay.toLocaleString('ru-RU')+' тг\n\n';
+    msg += '🎯 ПЛАН МЕСЯЦА\n';
+    msg += '✅ Выполнено: '+monthTotal.toLocaleString('ru-RU')+' тг ('+pct+'%)\n';
+    msg += '🎯 Осталось: '+remains.toLocaleString('ru-RU')+' тг\n';
+    msg += '📅 Дней осталось: '+daysLeft+'\n';
+    msg += '📌 Нужно в день: '+dailyNeed.toLocaleString('ru-RU')+' тг';
+    for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, msg);
+  } catch(e) { console.error('sendWeeklySalesReport error:', e.message); }
 }
 
 async function handleMessage(userId, messageText, photoFileId) {
@@ -1991,7 +2124,7 @@ function startDailyScheduler() {
       if (startDailyScheduler.lastRun !== todayKey) {
         startDailyScheduler.lastRun = todayKey;
         sendMorningDigest();
-        if (almatyTime.getDay() === 1) { sendWeeklyTraining(false); }
+        if (almatyTime.getDay() === 1) { sendWeeklyTraining(false); sendWeeklySalesReport(); }
       }
     }
   }, 30000);
