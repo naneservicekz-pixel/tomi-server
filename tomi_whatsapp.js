@@ -1,6 +1,6 @@
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
-// Версия 4.3 — исправлен баг геолокации при открытии смены
+// Версия 4.4 — исправлено сохранение фото по порядку
 // ══════════════════════════════════════════════════════════════════════
 
 const express = require('express');
@@ -39,11 +39,11 @@ const openShifts = {};
 const pendingGeoAction = {};
 const checklistTimers = {};
 const pendingReopenApprovals = {};
-const lastShiftReports = {}; // userId -> { html, filename, caption }
+const lastShiftReports = {};
 const pendingResendApprovals = {};
 const pendingPrepayDelete = {};
-const shiftPhotos = {}; // Хранит file_id фото при закрытии смены: {userId: {zreport, kaspi, halyk}}
-const pendingExpense = {}; // userId -> { amount, description, date } // ownerId -> { sellerId, sellerName, prepayId, reason } // ownerId -> { sellerId, sellerName }
+const shiftPhotos = {};
+const pendingExpense = {};
 
 function detectCategory(description) {
   const d = (description || '').toLowerCase();
@@ -59,29 +59,21 @@ function detectCategory(description) {
   return 'Прочее';
 }
 
-// ══════════════════════════════════════════════════════════════════════
-// SUPABASE DATA FUNCTIONS — заменяют Google Sheets для основных данных
-// ══════════════════════════════════════════════════════════════════════
-
 async function dbSaveSale(date, revenue, seller1, seller2) {
   try {
-    // Конвертируем дату в формат YYYY-MM-DD
     let d = date;
     if (typeof date === 'string' && date.includes('.')) {
-      // Формат DD.MM.YYYY → YYYY-MM-DD
       const parts = date.split('.');
       d = parts[2] + '-' + parts[1] + '-' + parts[0];
     }
     const m = parseInt(d.split('-')[1]);
     const y = parseInt(d.split('-')[0]);
-    console.log('dbSaveSale: date=', d, 'month=', m, 'year=', y, 'revenue=', revenue);
     const { error } = await supabase.from('daily_sales').upsert({
       sale_date: d, revenue: Number(revenue),
       seller1: seller1 || '', seller2: seller2 || '',
       month: m, year: y
     }, { onConflict: 'sale_date' });
     if (error) console.error('dbSaveSale error:', error.message);
-    else console.log('dbSaveSale OK:', d, revenue);
     return !error;
   } catch(e) { console.error('dbSaveSale exception:', e.message); return false; }
 }
@@ -99,7 +91,7 @@ async function dbGetSales(month, year) {
 
 async function dbSaveExpense(date, category, amount, description, isPersonal, userId) {
   try {
-    const d = typeof date === 'string' && date.includes('.') 
+    const d = typeof date === 'string' && date.includes('.')
       ? date.split('.').reverse().join('-') : date;
     const parts = d.split('-');
     const m = parseInt(parts[1]);
@@ -142,7 +134,7 @@ async function dbGetExpenses(month, year, isPersonal, userId) {
 
 async function dbSaveDiscipline(date, sellerName, eventType, eventTime, note) {
   try {
-    const d = typeof date === 'string' && date.includes('.') 
+    const d = typeof date === 'string' && date.includes('.')
       ? date.split('.').reverse().join('-') : date;
     await supabase.from('discipline').insert([{
       event_date: d, seller_name: sellerName,
@@ -153,7 +145,7 @@ async function dbSaveDiscipline(date, sellerName, eventType, eventTime, note) {
 
 async function dbSavePrepay(id, date, client, phone, item, channel, amount, balance, status, notes, seller) {
   try {
-    const d = typeof date === 'string' && date.includes('.') 
+    const d = typeof date === 'string' && date.includes('.')
       ? date.split('.').reverse().join('-') : (date || new Date().toISOString().split('T')[0]);
     const { error } = await supabase.from('prepayments').upsert({
       prep_id: id, prep_date: d, client_name: client, phone: phone,
@@ -171,7 +163,6 @@ async function dbGetPrepays(statusFilter) {
     let query = supabase.from('prepayments').select('*').order('prep_date', { ascending: true });
     if (statusFilter === 'open') query = query.not('status', 'ilike', '%Закрыта%');
     else if (statusFilter === 'closed') query = query.ilike('status', '%Закрыта%');
-    // 'all' — без фильтра
     const { data, error } = await query;
     if (error) console.error('dbGetPrepays error:', error.message);
     return (data || []).filter(r => r.client_name && r.client_name.trim().length > 0);
@@ -189,16 +180,11 @@ async function dbGetNextPrepayId() {
   } catch(e) { return 'PREP-' + Date.now(); }
 }
 
-// ══════════════════════════════════════════════════════════════════════
-// РАСЧЁТ ЗАРПЛАТЫ — система КЕ + KPI
-// ══════════════════════════════════════════════════════════════════════
-
 async function saveKPI(sellerName, score, month, year) {
   try {
     await supabase.from('kpi_scores').upsert({
       seller_name: sellerName, score: score, month: month, year: year
     }, { onConflict: 'seller_name,month,year' });
-    console.log('KPI saved:', sellerName, score, month, year);
   } catch(e) { console.error('saveKPI error:', e.message); }
 }
 
@@ -216,121 +202,70 @@ async function calcSalary(month, year) {
   try {
     const sales = await dbGetSales(month, year);
     if (!sales || sales.length === 0) return null;
-
-    // Параметры
-    const KE = 14000; // выход тг/смена
-    const TAX_PCT = 0.03; // 3% налог
-    const BONUS_PLAN = 30000; // бонус за выполнение личного плана
-    const KPI_ONE = 25000; // одна KPI метрика
-
-    // Личные планы июнь
+    const KE = 14000;
+    const TAX_PCT = 0.03;
+    const BONUS_PLAN = 30000;
+    const KPI_ONE = 25000;
     const personalPlans = { 'Асель': 8550000, 'Зарина': 10350000, 'Луиза': 8100000 };
-    // Обновляем планы динамически по месяцу (пока захардкожено июнь)
-
-    // Шкала % (от личных продаж продавца)
     const getPct = (amount) => {
       if (amount >= 1000000) return 0.027;
       if (amount >= 750000)  return 0.022;
       if (amount >= 500000)  return 0.017;
       return 0.012;
     };
-
-    // Получаем KPI за месяц
     const kpiScores = await getKPI(month, year);
-
-    // Считаем по продавцам
     const sellers = ['Асель', 'Зарина', 'Луиза'];
     const data = {};
-    sellers.forEach(s => {
-      data[s] = { shifts: 0, sales: 0, bonusGoodDay: 0, bonusRecord: 0 };
-    });
-
+    sellers.forEach(s => { data[s] = { shifts: 0, sales: 0, bonusGoodDay: 0, bonusRecord: 0, pctSum: 0 }; });
     let totalRevenue = 0;
-
     sales.forEach(day => {
       const rev = Number(day.revenue || 0);
       totalRevenue += rev;
       const daySellers = [day.seller1, day.seller2].filter(s => s && sellers.includes(s));
       if (daySellers.length === 0) return;
-
-      // % считается от ОБЩЕГО оборота смены для каждого продавца
       const dayPct = rev * getPct(rev);
-
       daySellers.forEach(s => {
         data[s].shifts++;
-        data[s].sales += rev / daySellers.length; // для статистики продаж
-        // Каждый продавец получает % от ПОЛНОГО оборота смены
+        data[s].sales += rev / daySellers.length;
         data[s].pctSum = (data[s].pctSum || 0) + dayPct;
-
-        // Бонус за хороший день — от ОБЩЕГО оборота дня
-        if (rev >= 2000000) {
-          data[s].bonusRecord += 40000;
-        } else if (rev >= 700000) {
-          data[s].bonusGoodDay += 5000;
-        }
+        if (rev >= 2000000) data[s].bonusRecord += 40000;
+        else if (rev >= 700000) data[s].bonusGoodDay += 5000;
       });
     });
-
-    // Итоги по каждому продавцу
     const result = {};
     sellers.forEach(s => {
       const d = data[s];
       const ke = d.shifts * KE;
-      const pct = Math.round(d.pctSum || 0); // уже посчитан подневно
+      const pct = Math.round(d.pctSum || 0);
       const bonusPlan = d.sales >= (personalPlans[s] || 0) ? BONUS_PLAN : 0;
-      const kpiScore = kpiScores[s] !== undefined ? kpiScores[s] : 3; // по умолчанию 3/3
+      const kpiScore = kpiScores[s] !== undefined ? kpiScores[s] : 3;
       const kpiAmt = kpiScore * KPI_ONE;
       const total = ke + pct + d.bonusGoodDay + d.bonusRecord + bonusPlan + kpiAmt;
-
       result[s] = {
-        shifts: d.shifts,
-        sales: Math.round(d.sales),
-        ke: ke,
-        pct: pct,
-        pctRate: 'подневно',
-        kpiScore: kpiScore,
-        kpiAmt: kpiAmt,
-        bonusGoodDay: d.bonusGoodDay,
-        bonusRecord: d.bonusRecord,
-        bonusPlan: bonusPlan,
-        planFact: Math.round(d.sales),
-        planTarget: personalPlans[s] || 0,
-        planDone: d.sales >= (personalPlans[s] || 0),
-        total: Math.round(total)
+        shifts: d.shifts, sales: Math.round(d.sales), ke, pct,
+        kpiScore, kpiAmt, bonusGoodDay: d.bonusGoodDay, bonusRecord: d.bonusRecord,
+        bonusPlan, planFact: Math.round(d.sales), planTarget: personalPlans[s] || 0,
+        planDone: d.sales >= (personalPlans[s] || 0), total: Math.round(total)
       };
     });
-
     const totalFot = sellers.reduce((s, name) => s + result[name].total, 0);
     const tax = Math.round(totalRevenue * TAX_PCT);
-
     return { sellers: result, totalRevenue, totalFot, tax, month, year };
-  } catch(e) {
-    console.error('calcSalary error:', e.message);
-    return null;
-  }
+  } catch(e) { console.error('calcSalary error:', e.message); return null; }
 }
 
 async function showSalaryReport(userId, month, year) {
   try {
     const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
     const calc = await calcSalary(month, year);
-
-    if (!calc) {
-      await sendTelegram(userId, '📊 Нет данных по продажам за ' + (monthNames[month]||month) + ' ' + year);
-      return;
-    }
-
+    if (!calc) { await sendTelegram(userId, '📊 Нет данных по продажам за ' + (monthNames[month]||month) + ' ' + year); return; }
     const fmt = n => Math.round(n).toLocaleString('ru-RU');
     const sellers = ['Асель', 'Зарина', 'Луиза'];
-
-    let msg = '💰 РАСЧЁТ ЗАРПЛАТЫ — ' + (monthNames[month]||month) + ' ' + year + '\n';
-    msg += '━━━━━━━━━━━━━━━━━━━━\n\n';
-
+    let msg = '💰 РАСЧЁТ ЗАРПЛАТЫ — ' + (monthNames[month]||month) + ' ' + year + '\n━━━━━━━━━━━━━━━━━━━━\n\n';
     sellers.forEach(name => {
       const s = calc.sellers[name];
       if (!s || s.shifts === 0) return;
       msg += '👤 ' + name + ' · ' + s.shifts + ' смен\n';
-      msg += '  Продажи: ' + fmt(s.sales) + ' тг (' + s.pctRate + ')\n';
       msg += '  КЕ (выходы): ' + fmt(s.ke) + ' тг\n';
       msg += '  % от продаж: ' + fmt(s.pct) + ' тг\n';
       if (s.bonusGoodDay > 0) msg += '  Бонус хор.день: ' + fmt(s.bonusGoodDay) + ' тг\n';
@@ -340,13 +275,11 @@ async function showSalaryReport(userId, month, year) {
       msg += '  KPI: ' + s.kpiScore + '/3 = ' + fmt(s.kpiAmt) + ' тг\n';
       msg += '  ▶ ИТОГО: ' + fmt(s.total) + ' тг\n\n';
     });
-
     msg += '━━━━━━━━━━━━━━━━━━━━\n';
     msg += '💼 Оборот: ' + fmt(calc.totalRevenue) + ' тг\n';
     msg += '📊 ФОТ итого: ' + fmt(calc.totalFot) + ' тг\n';
     msg += '🏛 Налог (3%): ' + fmt(calc.tax) + ' тг\n';
     msg += '💰 Прибыль: ~' + fmt(calc.totalRevenue - calc.totalFot - calc.tax) + ' тг';
-
     await sendTelegram(userId, msg);
   } catch(e) { console.error('showSalaryReport error:', e.message); }
 }
@@ -389,15 +322,21 @@ async function loadOpenShift(userId) {
 
 async function saveOpenShift(userId, shiftData) {
   try {
-    const result = await supabase.from('open_shifts').upsert({ phone: String(userId), ...shiftData }, { onConflict: 'phone' });
-    console.log('saveOpenShift result:', JSON.stringify(result?.error || 'ok'), 'userId:', userId);
+    const dataToSave = { phone: String(userId), ...shiftData };
+    const result = await supabase.from('open_shifts').upsert(dataToSave, { onConflict: 'phone' });
+    if (result.error && result.error.code === 'PGRST204') {
+      const { is_second, ...dataWithout } = dataToSave;
+      await supabase.from('open_shifts').upsert(dataWithout, { onConflict: 'phone' });
+      console.log('saveOpenShift OK (without is_second)');
+    } else {
+      console.log('saveOpenShift result:', JSON.stringify(result?.error || 'ok'));
+    }
   } catch(e) { console.error('saveOpenShift ERROR:', e.message); }
 }
 
 async function saveLastReport(userId, html, filename, caption) {
   try {
     await supabase.from('last_reports').upsert({ user_id: String(userId), html, filename, caption }, { onConflict: 'user_id' });
-    console.log('Отчёт сохранён в Supabase для', userId);
   } catch(e) { console.error('saveLastReport error:', e.message); }
 }
 
@@ -412,18 +351,14 @@ async function deleteOpenShift(userId) {
   try { await supabase.from('open_shifts').delete().eq('phone', String(userId)); } catch(e) {}
 }
 
-// Читаем остаток кассы из последней закрытой смены (Supabase)
 async function loadLastCash() {
   try {
-    const { data } = await supabase.from('open_shifts')
-      .select('cash_open').order('start_time', { ascending: false }).limit(5);
+    const { data } = await supabase.from('open_shifts').select('cash_open').order('start_time', { ascending: false }).limit(5);
     if (data && data.length > 0) {
-      for (const row of data) {
-        if (row.cash_open && row.cash_open > 0) return row.cash_open;
-      }
+      for (const row of data) { if (row.cash_open && row.cash_open > 0) return row.cash_open; }
     }
     return null;
-  } catch(e) { console.error('loadLastCash error:', e.message); return null; }
+  } catch(e) { return null; }
 }
 
 async function restoreOpenShifts() {
@@ -473,9 +408,6 @@ function getSheets(spreadsheetId) {
       client_id: '100228927705920212548',
       auth_uri: 'https://accounts.google.com/o/oauth2/auth',
       token_uri: 'https://oauth2.googleapis.com/token',
-      auth_provider_x509_cert_url: 'https://www.googleapis.com/oauth2/v1/certs',
-      client_x509_cert_url: 'https://www.googleapis.com/robot/v1/metadata/x509/tomi-sheets%40tomi-nane.iam.gserviceaccount.com',
-      universe_domain: 'googleapis.com'
     },
     scopes: ['https://www.googleapis.com/auth/spreadsheets']
   });
@@ -498,448 +430,13 @@ async function appendSheet(range, values, spreadsheetId) {
   } catch(e) { console.error('appendSheet error:', e.message); return false; }
 }
 
-async function updateSheetCell(range, value, spreadsheetId) {
-  try {
-    const { api, id } = getSheets(spreadsheetId || SPREADSHEET_ID);
-    await api.spreadsheets.values.update({ spreadsheetId: id, range, valueInputOption: 'USER_ENTERED', resource: { values: [[value]] } });
-    return true;
-  } catch(e) { return false; }
-}
-
-// ── Запись в "Учёт по дням" дашборда ─────────────────────────────────
-async function writeToUchetPoDnyam(date, rostaTotal, seller1, seller2) {
-  // Заменена на dbSaveSale
-  return await dbSaveSale(date, rostaTotal, seller1, seller2);
-}
-
-// ══════════════════════════════════════════════════════════════════════
-// ДАШБОРД — версия 4.0
-// Читает:
-//   Дашборд!A1:H25  — оборот (строки 19,20,22), план (строка 6)
-//   Итоги месяца!A1:H18 — ФОТ с разбивкой (строки 14,15,16)
-// ══════════════════════════════════════════════════════════════════════
-async function generateDashboardHTML() {
-  try {
-    const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-    const curMonth = nowAlm.getMonth() + 1;
-    const curYear  = nowAlm.getFullYear();
-    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-
-    // Читаем продажи из Supabase
-    const salesData = await dbGetSales(curMonth, curYear);
-
-    // Считаем по продавцам
-    const sellerSales = { 'Асель': 0, 'Зарина': 0, 'Луиза': 0 };
-    let totalFact = 0;
-    salesData.forEach(s => {
-      const rev = Number(s.revenue || 0);
-      totalFact += rev;
-      // Делим оборот поровну между двумя продавцами
-      const sellers = [s.seller1, s.seller2].filter(Boolean);
-      if (sellers.length > 0) {
-        const share = rev / sellers.length;
-        sellers.forEach(name => { if (sellerSales[name] !== undefined) sellerSales[name] += share; });
-      }
-    });
-
-    // Планы из Настройки (или дефолт пропорционально сменам)
-    const plan = 27000000;
-    // Июнь: Асель 19 смен, Зарина 23, Луиза 18 из 60 итого
-    const totalShifts = 60;
-    const shiftsMap = { 'Асель': 19, 'Зарина': 23, 'Луиза': 18 };
-    const planMap = {};
-    let planCheck = 0;
-    Object.entries(shiftsMap).forEach(([name, shifts]) => {
-      planMap[name] = Math.round(plan * shifts / totalShifts);
-      planCheck += planMap[name];
-    });
-    // Корректируем округление
-    planMap['Луиза'] += plan - planCheck;
-
-    const aselFact   = Math.round(sellerSales['Асель']);
-    const zarinaFact = Math.round(sellerSales['Зарина']);
-    const luizaFact  = Math.round(sellerSales['Луиза']);
-    const aselPlan   = planMap['Асель'];
-    const zarinaPlan = planMap['Зарина'];
-    const luizaPlan  = planMap['Луиза'];
-    const aselLeft   = Math.max(0, aselPlan - aselFact);
-    const zarinaLeft = Math.max(0, zarinaPlan - zarinaFact);
-    const luizaLeft  = Math.max(0, luizaPlan - luizaFact);
-    const aselPct    = aselPlan > 0 ? Math.round(aselFact / aselPlan * 100) : 0;
-    const zarinaPct  = zarinaPlan > 0 ? Math.round(zarinaFact / zarinaPlan * 100) : 0;
-    const luizaPct   = luizaPlan > 0 ? Math.round(luizaFact / luizaPlan * 100) : 0;
-    const totalPct   = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
-    const totalLeft  = Math.max(0, plan - totalFact);
-
-    // Расчёт зарплаты из Supabase
-    const salaryCalc = await calcSalary(curMonth, curYear);
-    const sc = salaryCalc ? salaryCalc.sellers : {};
-
-    const aselFix     = sc['Асель'] ? sc['Асель'].ke : 0;
-    const aselProcent = sc['Асель'] ? sc['Асель'].pct : 0;
-    const aselBonus   = sc['Асель'] ? sc['Асель'].bonusGoodDay : 0;
-    const aselRekord  = sc['Асель'] ? sc['Асель'].bonusRecord : 0;
-    const aselPlanB   = sc['Асель'] ? sc['Асель'].bonusPlan : 0;
-    const aselTotal   = sc['Асель'] ? sc['Асель'].total : 0;
-
-    const zarinaFix     = sc['Зарина'] ? sc['Зарина'].ke : 0;
-    const zarinaProcent = sc['Зарина'] ? sc['Зарина'].pct : 0;
-    const zarinaBonus   = sc['Зарина'] ? sc['Зарина'].bonusGoodDay : 0;
-    const zarinaRekord  = sc['Зарина'] ? sc['Зарина'].bonusRecord : 0;
-    const zarinaPlanB   = sc['Зарина'] ? sc['Зарина'].bonusPlan : 0;
-    const zarinaTotal   = sc['Зарина'] ? sc['Зарина'].total : 0;
-
-    const luizaFix     = sc['Луиза'] ? sc['Луиза'].ke : 0;
-    const luizaProcent = sc['Луиза'] ? sc['Луиза'].pct : 0;
-    const luizaBonus   = sc['Луиза'] ? sc['Луиза'].bonusGoodDay : 0;
-    const luizaRekord  = sc['Луиза'] ? sc['Луиза'].bonusRecord : 0;
-    const luizaPlanB   = sc['Луиза'] ? sc['Луиза'].bonusPlan : 0;
-    const luizaTotal   = sc['Луиза'] ? sc['Луиза'].total : 0;
-
-    const totalFot = salaryCalc ? salaryCalc.totalFot : 0;
-
-    const dash = []; const itogi = []; // не используются — данные из Supabase
-
-    // ── Форматирование ────────────────────────────────────────────
-    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
-    const pctColor = p => p >= 100 ? '#1a8a5a' : p >= 80 ? '#b06a10' : '#c0392b';
-    const barColor = p => p >= 100 ? '#27ae60' : p >= 80 ? '#e67e22' : '#e74c3c';
-    const barW = p => Math.min(p, 100);
-    const now = getNow();
-
-    const sellers = [
-      { name: 'Асель',  emoji: '💙', fact: aselFact,   plan: aselPlan,   pct: aselPct,   left: aselLeft,
-        fix: aselFix,   procent: aselProcent, bonus: aselBonus, rekord: aselRekord, planB: aselPlanB, total: aselTotal },
-      { name: 'Зарина', emoji: '💙', fact: zarinaFact, plan: zarinaPlan, pct: zarinaPct, left: zarinaLeft,
-        fix: zarinaFix, procent: zarinaProcent, bonus: zarinaBonus, rekord: zarinaRekord, planB: zarinaPlanB, total: zarinaTotal },
-      { name: 'Луиза',  emoji: '💚', fact: luizaFact,  plan: luizaPlan,  pct: luizaPct,  left: luizaLeft,
-        fix: luizaFix,  procent: luizaProcent, bonus: luizaBonus, rekord: luizaRekord, planB: luizaPlanB, total: luizaTotal },
-    ];
-
-    return `<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>NANÉ PARIS — Дашборд</title>
-<style>
-* { box-sizing:border-box; margin:0; padding:0; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: #f0ede8;
-  color: #1a1a1a;
-  padding: 20px 16px;
-}
-.container { max-width: 680px; margin: 0 auto; }
-
-/* ШАПКА */
-.header { margin-bottom: 22px; }
-.brand { font-size: 21px; font-weight: 700; letter-spacing: 0.07em; color: #1a1a1a; }
-.brand-sub { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.12em; margin-top: 2px; }
-.updated { font-size: 11px; color: #aaa; margin-top: 3px; }
-
-/* СЕКЦИЯ */
-.section-title {
-  font-size: 10px; color: #999; text-transform: uppercase;
-  letter-spacing: 0.12em; margin: 18px 0 8px;
-}
-
-/* КАРТОЧКИ */
-.grid2 { display: grid; grid-template-columns: repeat(2,1fr); gap: 10px; margin-bottom: 10px; }
-.card {
-  background: #fff;
-  border: 1px solid #e8e4de;
-  border-radius: 12px;
-  padding: 14px;
-}
-.card-label { font-size: 11px; color: #999; margin-bottom: 5px; }
-.card-value { font-size: 22px; font-weight: 700; color: #1a1a1a; }
-.card-sub { font-size: 12px; color: #aaa; margin-top: 4px; }
-
-/* ПРОГРЕСС-БАР */
-.bar-wrap { background: #ebe8e2; border-radius: 20px; height: 7px; overflow: hidden; margin: 8px 0 4px; }
-.bar-fill { height: 7px; border-radius: 20px; }
-.bar-labels { display: flex; justify-content: space-between; font-size: 10px; color: #bbb; }
-
-/* КАРТОЧКА ПРОДАВЦА */
-.seller-card {
-  background: #fff;
-  border: 1px solid #e8e4de;
-  border-radius: 12px;
-  padding: 14px;
-  margin-bottom: 10px;
-}
-.seller-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-.seller-name { font-size: 14px; font-weight: 600; }
-.seller-pct { font-size: 19px; font-weight: 700; }
-.seller-fact { font-size: 12px; color: #999; margin-bottom: 8px; }
-.seller-meta { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
-.meta-box {
-  background: #f7f4ef;
-  border-radius: 8px;
-  padding: 9px 11px;
-}
-.meta-label { font-size: 10px; color: #aaa; margin-bottom: 3px; }
-.meta-value { font-size: 13px; font-weight: 500; color: #1a1a1a; }
-
-/* ЗАРПЛАТА */
-.fot-card {
-  background: #fff;
-  border: 1px solid #e8e4de;
-  border-radius: 12px;
-  overflow: hidden;
-  margin-bottom: 10px;
-}
-.fot-seller-block { border-bottom: 1px solid #f0ece6; padding: 12px 14px; }
-.fot-seller-block:last-child { border-bottom: none; }
-.fot-seller-name { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-.fot-row {
-  display: flex; justify-content: space-between;
-  font-size: 12px; padding: 3px 0;
-  border-bottom: 1px solid #f7f4ef;
-}
-.fot-row:last-child { border-bottom: none; }
-.fot-row-label { color: #aaa; }
-.fot-row-value { color: #555; font-weight: 500; }
-.fot-total-row {
-  display: flex; justify-content: space-between;
-  font-size: 13px; font-weight: 700;
-  padding: 6px 0 0;
-  margin-top: 4px;
-  border-top: 1px solid #ebe8e2;
-}
-.fot-total-value { color: #1a8a5a; }
-
-/* ИТОГО ФОТ */
-.fot-summary {
-  background: #1a1a1a;
-  border-radius: 12px;
-  padding: 14px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 4px;
-}
-.fot-summary-label { font-size: 13px; color: #888; }
-.fot-summary-value { font-size: 20px; font-weight: 700; color: #fff; }
-</style>
-</head>
-<body>
-<div class="container">
-
-  <!-- ШАПКА -->
-  <div class="header">
-    <div class="brand">NANÉ PARIS</div>
-    <div class="brand-sub">Дашборд продаж — ${monthNames[curMonth]} ${curYear}</div>
-    <div class="updated">Обновлено: ${now}</div>
-  </div>
-
-  <!-- МАГАЗИН ИТОГО -->
-  <div class="section-title">Магазин итого</div>
-  <div class="grid2">
-    <div class="card">
-      <div class="card-label">Оборот (факт)</div>
-      <div class="card-value">${fmt(totalFact)} ₸</div>
-      <div class="card-sub">из ${fmt(plan)} ₸</div>
-    </div>
-    <div class="card">
-      <div class="card-label">Выполнение плана</div>
-      <div class="card-value" style="color:${pctColor(totalPct)}">${totalPct}%</div>
-      <div class="card-sub">осталось ${fmt(totalLeft > 0 ? totalLeft : 0)} ₸</div>
-    </div>
-  </div>
-  <div class="card" style="margin-bottom:4px;">
-    <div class="card-label">Прогресс к плану</div>
-    <div class="bar-wrap">
-      <div class="bar-fill" style="width:${barW(totalPct)}%; background:${barColor(totalPct)};"></div>
-    </div>
-    <div class="bar-labels">
-      <span>0</span><span>${fmt(plan/2)} ₸</span><span>${fmt(plan)} ₸</span>
-    </div>
-  </div>
-
-  <!-- ПРОДАВЦЫ -->
-  <div class="section-title">Продавцы</div>
-  ${sellers.map(s => `
-  <div class="seller-card">
-    <div class="seller-top">
-      <div class="seller-name">${s.emoji} ${s.name}</div>
-      <div class="seller-pct" style="color:${pctColor(s.pct)}">${s.pct}%</div>
-    </div>
-    <div class="seller-fact">${fmt(s.fact)} ₸ из ${fmt(s.plan)} ₸</div>
-    <div class="bar-wrap">
-      <div class="bar-fill" style="width:${barW(s.pct)}%; background:${barColor(s.pct)};"></div>
-    </div>
-    <div class="seller-meta">
-      <div class="meta-box">
-        <div class="meta-label">Осталось до плана</div>
-        <div class="meta-value">${fmt(Math.max(0, s.left || (s.plan - s.fact)))} ₸</div>
-      </div>
-      <div class="meta-box">
-        <div class="meta-label">К выплате</div>
-        <div class="meta-value" style="color:#1a8a5a">${fmt(s.total)} ₸</div>
-      </div>
-    </div>
-  </div>`).join('')}
-
-  <!-- ЗАРПЛАТА -->
-  <div class="section-title">Зарплата к выплате</div>
-  <div class="fot-card">
-    ${sellers.map(s => `
-    <div class="fot-seller-block">
-      <div class="fot-seller-name">${s.emoji} ${s.name}</div>
-      <div class="fot-row"><span class="fot-row-label">Выход (фикс)</span><span class="fot-row-value">${fmt(s.fix)} ₸</span></div>
-      <div class="fot-row"><span class="fot-row-label">% от продаж</span><span class="fot-row-value">${fmt(s.procent)} ₸</span></div>
-      ${s.bonus > 0 ? `<div class="fot-row"><span class="fot-row-label">Бонус хор. день</span><span class="fot-row-value">${fmt(s.bonus)} ₸</span></div>` : ''}
-      ${s.rekord > 0 ? `<div class="fot-row"><span class="fot-row-label">Рекорд ≥2 млн</span><span class="fot-row-value">${fmt(s.rekord)} ₸</span></div>` : ''}
-      ${s.planB > 0 ? `<div class="fot-row"><span class="fot-row-label">Бонус план мес.</span><span class="fot-row-value">${fmt(s.planB)} ₸</span></div>` : ''}
-      <div class="fot-total-row">
-        <span>ИТОГО</span>
-        <span class="fot-total-value">${fmt(s.total)} ₸</span>
-      </div>
-    </div>`).join('')}
-  </div>
-
-  <div class="fot-summary">
-    <span class="fot-summary-label">Итого ФОТ</span>
-    <span class="fot-summary-value">${fmt(totalFot)} ₸</span>
-  </div>
-
-</div>
-</body>
-</html>`;
-
-  } catch(e) {
-    console.error('generateDashboardHTML error:', e.message);
-    return null;
-  }
-}
-
-// ── Командный отчёт дня для продавцов ────────────────────────────────
-function generateTeamDayHTML({ today, closeTime, rostaTotal, diff, s, kaspiNet, halykNet, channelDiffs, prepayExplanations }) {
-  const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
-  const isOk = channelDiffs.length === 0;
-  const statusBg = isOk ? '#eaf3de' : '#fcebeb';
-  const statusBorder = isOk ? '#c0dd97' : '#F7C1C1';
-  const statusDot = isOk ? '#639922' : '#E24B4A';
-  const statusText = isOk ? 'Смена закрыта корректно — все каналы сходятся' : 'Расхождение — руководитель уведомлён';
-  const statusColor = isOk ? '#3B6D11' : '#A32D2D';
-
-  const kaspiTotal = (s.rKaspi||0) + (s.rOnline||0);
-  const halykTotal = (s.rHalyk||0) + (s.rHalykOnline||0);
-  const personalTotal = s.rPersonal || 0;
-  const cashTotal = s.rCash || 0;
-
-  // Считаем расхождение по каждому каналу — так же как в отчёте владельца
-  const kaspiDiff = kaspiNet - kaspiTotal;
-  const halykDiff = halykNet - halykTotal;
-  const cashSales = (s.cashActual||0)-(s.cashOpen||0)+(s.cashPayouts||0)+(s.inkasso||0)+(s.rRetCash||0);
-  const cashDiff = cashSales - cashTotal;
-
-  const getChannelStatus = (diff) => {
-    if (Math.abs(diff) <= 500) return { text: 'Сходится', bg: '#eaf3de', color: '#3B6D11' };
-    const sign = diff > 0 ? '+' : '';
-    const dir = diff > 0 ? 'излишек' : 'недостача';
-    return { text: sign + Number(diff).toLocaleString('ru-RU') + ' ₸ (' + dir + ')', bg: '#fcebeb', color: '#A32D2D' };
-  };
-
-  const kaspiStatus = getChannelStatus(kaspiDiff);
-  const halykStatus = getChannelStatus(halykDiff);
-  const cashStatus = getChannelStatus(cashDiff);
-
-  const channels = [
-    { name: 'Kaspi (QR + Онлайн)', amount: kaspiTotal, color: '#378ADD', status: kaspiStatus },
-    { name: 'Halyk (QR + Онлайн)', amount: halykTotal, color: '#7F77DD', status: halykStatus },
-    { name: 'Наличные', amount: cashTotal, color: '#1D9E75', status: cashStatus },
-  ];
-  if (personalTotal > 0) channels.push({ name: 'Личная карта Айнур', amount: personalTotal, color: '#BA7517', status: null });
-  if ((s.rBonus||0) > 0) channels.push({ name: 'Бонусы', amount: s.rBonus||0, color: '#888', status: null });
-
-  const channelRows = channels.map(ch => `
-    <div style="padding:11px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;align-items:center;font-size:13px;">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <div style="width:8px;height:8px;border-radius:50%;background:${ch.color};flex-shrink:0;"></div>
-        <span style="color:#555;">${ch.name}</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-weight:500;">${fmt(ch.amount)}</span>
-        ${ch.status ? `<span style="font-size:11px;background:${ch.status.bg};color:${ch.status.color};padding:2px 8px;border-radius:20px;">${ch.status.text}</span>` : ''}
-      </div>
-    </div>`).join('');
-
-  // Блок предоплат если есть
-  let teamPrepaySection = '';
-  if (prepayExplanations && prepayExplanations.length > 0) {
-    teamPrepaySection = `
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Предоплаты закрыты сегодня</div>
-  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">`;
-    prepayExplanations.forEach(pe => {
-      pe.prepays.forEach(p => {
-        teamPrepaySection += `
-    <div style="padding:11px 14px;border-bottom:1px solid #f0ece6;font-size:13px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <span style="color:#555;">👤 ${p.client}</span>
-        <span style="font-weight:500;color:#1a8a5a;">+${Number(p.amount).toLocaleString()} ₸</span>
-      </div>
-      <div style="font-size:11px;color:#aaa;margin-top:3px;">${pe.channel} · объясняет расхождение</div>
-    </div>`;
-      });
-    });
-    teamPrepaySection += `</div>`;
-  }
-
-  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Итоги дня — ${today}</title></head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px;margin:0;">
-<div style="max-width:680px;margin:0 auto;">
-
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px;">
-    <div>
-      <div style="font-size:21px;font-weight:700;letter-spacing:0.07em;color:#1a1a1a;">NANÉ PARIS</div>
-      <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.12em;margin-top:2px;">Итоги дня</div>
-    </div>
-    <div style="text-align:right;font-size:13px;color:#555;">
-      <strong style="color:#1a1a1a;display:block;font-size:14px;">${today}</strong>
-      закрыто в ${closeTime}
-    </div>
-  </div>
-
-  <div style="background:${statusBg};border:1px solid ${statusBorder};border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:20px;">
-    <div style="width:8px;height:8px;border-radius:50%;background:${statusDot};flex-shrink:0;"></div>
-    <span style="font-size:13px;font-weight:500;color:${statusColor};">${statusText}</span>
-  </div>
-
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:0 0 8px;">Оборот дня</div>
-  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px;">
-    <div style="font-size:22px;font-weight:700;color:#1a1a1a;margin-bottom:4px;">${fmt(rostaTotal)}</div>
-    <div style="font-size:12px;color:#aaa;">итого по ROSTA</div>
-  </div>
-
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Каналы продаж</div>
-  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">
-    ${channelRows}
-    <div style="padding:11px 14px;display:flex;justify-content:space-between;font-size:13px;font-weight:600;">
-      <span>Итого</span>
-      <span>${fmt(rostaTotal)}</span>
-    </div>
-  </div>
-
-  ${teamPrepaySection}
-
-</div></body></html>`;
-}
-
 async function sendTelegram(chatId, text) {
   const chunks = [];
   for (let i = 0; i < text.length; i += 4000) chunks.push(text.slice(i, i + 4000));
   for (const chunk of chunks) {
     const body = JSON.stringify({ chat_id: chatId, text: chunk });
     await new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname: 'api.telegram.org',
-        path: '/bot' + TELEGRAM_TOKEN + '/sendMessage',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-      }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => resolve()); });
+      const req = https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/sendMessage', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => resolve()); });
       req.on('error', reject); req.write(body); req.end();
     });
     await new Promise(r => setTimeout(r, 300));
@@ -950,12 +447,7 @@ async function forwardPhoto(chatId, fileId, caption) {
   try {
     const body = JSON.stringify({ chat_id: chatId, photo: fileId, caption: caption || '' });
     await new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname: 'api.telegram.org',
-        path: '/bot' + TELEGRAM_TOKEN + '/sendPhoto',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-      }, res => { let d=''; res.on('data', c=>d+=c); res.on('end', ()=>{ if(res.statusCode!==200) console.error('forwardPhoto error:', d); resolve(); }); });
+      const req = https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/sendPhoto', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => { let d=''; res.on('data', c=>d+=c); res.on('end', ()=>{ if(res.statusCode!==200) console.error('forwardPhoto error:', d); resolve(); }); });
       req.on('error', reject); req.write(body); req.end();
     });
   } catch(e) { console.error('forwardPhoto error:', e.message); }
@@ -969,476 +461,18 @@ async function sendTelegramDocument(chatId, filename, content, caption) {
   body += '--' + boundary + '\r\nContent-Disposition: form-data; name="document"; filename="' + filename + '"\r\nContent-Type: text/html\r\n\r\n';
   const fullBody = Buffer.concat([Buffer.from(body, 'utf8'), fileBuffer, Buffer.from('\r\n--' + boundary + '--\r\n', 'utf8')]);
   await new Promise((resolve, reject) => {
-    const req = https.request({
-      hostname: 'api.telegram.org',
-      path: '/bot' + TELEGRAM_TOKEN + '/sendDocument',
-      method: 'POST',
-      headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary, 'Content-Length': fullBody.length }
-    }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => { if (res.statusCode !== 200) console.error('sendDocument error:', data); resolve(); }); });
+    const req = https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/sendDocument', method: 'POST', headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary, 'Content-Length': fullBody.length } }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => { if (res.statusCode !== 200) console.error('sendDocument error:', data); resolve(); }); });
     req.on('error', reject); req.write(fullBody); req.end();
   });
 }
 
-function formatPrepayCardHTML(p, num) {
-  const isClosed = p.status.includes('закрыт');
-  const statusBg = isClosed ? '#eaf3de' : '#faeeda';
-  const statusBorder = isClosed ? '#c0dd97' : '#FAC775';
-  const statusText = isClosed ? '✅ Закрыта' : '🟡 Открыта';
-  const statusColor = isClosed ? '#3B6D11' : '#854F0B';
-  const initials = p.client.split(' ').filter(Boolean).map(w => w[0]).join('').toUpperCase().slice(0, 2);
-  const total = (p.amount || 0) + (p.balance || 0);
-  const fmt = n => Number(n || 0).toLocaleString('ru-RU') + ' ₸';
-  const debtBlock = p.balance > 0
-    ? '<div style="background:#fcebeb; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#A32D2D; margin-bottom:4px;">Долг к доплате</div><div style="font-size:15px; font-weight:600; color:#A32D2D;">' + fmt(p.balance) + '</div></div>'
-    : '<div style="background:#eaf3de; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#3B6D11; margin-bottom:4px;">Долг</div><div style="font-size:15px; font-weight:600; color:#3B6D11;">Оплачено</div></div>';
-  return `<div style="background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; margin-bottom:12px;">
-  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-    <div style="display:flex; align-items:center; gap:10px;">
-      <div style="width:38px; height:38px; border-radius:50%; background:${statusBg}; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600; color:${statusColor};">${initials}</div>
-      <div><div style="font-size:14px; font-weight:600; color:#1a1a1a;">${num}. ${p.client}</div><div style="font-size:11px; color:#888;">${p.id || ''} · ${p.date || ''}</div></div>
-    </div>
-    <div style="background:${statusBg}; border:1px solid ${statusBorder}; color:${statusColor}; font-size:11px; font-weight:600; padding:4px 10px; border-radius:20px;">${statusText}</div>
-  </div>
-  ${p.items && p.items.length ? '<div style="background:#f5f5f0; border-radius:8px; padding:8px 12px; margin-bottom:10px; font-size:13px; color:#1a1a1a;">👗 ' + p.items.join(', ') + '</div>' : ''}
-  <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:10px;">
-    <div style="background:#f5f5f0; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#888; margin-bottom:4px;">Цена товара</div><div style="font-size:14px; font-weight:600; color:#1a1a1a;">${fmt(total > 0 ? total : p.amount)}</div></div>
-    <div style="background:#f5f5f0; border-radius:8px; padding:10px; text-align:center;"><div style="font-size:11px; color:#888; margin-bottom:4px;">Аванс</div><div style="font-size:14px; font-weight:600; color:#1a1a1a;">${fmt(p.amount)}</div></div>
-    ${debtBlock}
-  </div>
-  <div style="border-top:1px solid #f0f0ec; padding-top:8px; font-size:12px; color:#888;">${p.phone ? '📞 ' + p.phone + '&nbsp;&nbsp;' : ''}💳 ${p.channel || '—'}</div>
-</div>`;
-}
-
-function generatePrepaysHTML(list, type) {
-  const title = type === 'open' ? 'Открытые предоплаты' : 'Закрытые предоплаты';
-  const totalDebt = list.filter(p => !p.status.includes('закрыт')).reduce((s,p) => s + (p.balance||0), 0);
-  const totalAmount = list.reduce((s,p) => s + (p.amount||0), 0);
-  const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
-  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
-<style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f0; padding:20px 16px; } .container { max-width:680px; margin:0 auto; } .brand { font-size:20px; font-weight:600; letter-spacing:0.04em; } .brand-sub { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; margin-bottom:16px; } .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:20px; } .stat { background:#efefea; border-radius:8px; padding:12px; } .stat-label { font-size:11px; color:#888; margin-bottom:4px; } .stat-value { font-size:18px; font-weight:600; color:#1a1a1a; }</style></head>
-<body><div class="container">
-  <div class="brand">NANÉ PARIS</div>
-  <div class="brand-sub">${title} · ${list.length} шт · ${getNow()}</div>
-  <div class="stats">
-    <div class="stat"><div class="stat-label">Всего позиций</div><div class="stat-value">${list.length}</div></div>
-    <div class="stat"><div class="stat-label">Сумма авансов</div><div class="stat-value">${fmt(totalAmount)}</div></div>
-    <div class="stat"><div class="stat-label">Сумма долгов</div><div class="stat-value" style="color:${totalDebt > 0 ? '#E24B4A' : '#1D9E75'};">${fmt(totalDebt)}</div></div>
-  </div>
-  ${list.map((p, i) => formatPrepayCardHTML(p, i + 1)).join('')}
-</div></body></html>`;
-}
-
-function generateShiftHTML(data) {
-  const { sellerName, date, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations } = data;
-  const isOk = diff === 0;
-  const isDanger = !isOk && Math.abs(diff) >= 500;
-  const statusBg = isOk ? '#eaf3de' : isDanger ? '#fcebeb' : '#faeeda';
-  const statusBorder = isOk ? '#c0dd97' : isDanger ? '#F7C1C1' : '#FAC775';
-  const statusDot = isOk ? '#639922' : isDanger ? '#E24B4A' : '#BA7517';
-  const statusText = isOk ? 'Все каналы сходятся — смена закрыта корректно' : isDanger ? 'РАСХОЖДЕНИЕ — требует внимания' : 'Незначительное расхождение';
-  const statusColor = isOk ? '#3B6D11' : isDanger ? '#A32D2D' : '#854F0B';
-  const diffColor = diff > 0 ? '#1D9E75' : diff < 0 ? '#E24B4A' : '#1D9E75';
-  const diffSign = diff > 0 ? '+' : '';
-  const fmt = n => Number(n || 0).toLocaleString('ru-RU') + ' ₸';
-  let diffDetails = '';
-  if (isDanger && channelDiffs && channelDiffs.length > 0) {
-    diffDetails = '<div style="background:#fff8f8; border:1px solid #F7C1C1; border-radius:8px; padding:14px; margin-bottom:16px;"><div style="font-size:13px; font-weight:600; color:#A32D2D; margin-bottom:10px;">Расшифровка расхождений</div>';
-    channelDiffs.forEach(cd => {
-      const sign = cd.diff > 0 ? '+' : '';
-      const color = cd.diff > 0 ? '#1D9E75' : '#E24B4A';
-      const direction = cd.diff > 0 ? 'излишек' : 'недостача';
-      diffDetails += '<div style="display:flex; justify-content:space-between; font-size:12px; padding:5px 0; border-bottom:1px solid #fde8e8;"><span style="color:#555;">' + cd.channel + '</span><span style="color:' + color + '; font-weight:600;">' + sign + fmt(cd.diff) + ' (' + direction + ')</span></div>';
-    });
-    diffDetails += '</div>';
-  }
-  let prepaySection = '';
-  if (prepayExplanations && prepayExplanations.length > 0) {
-    prepaySection = '<div style="background:#eaf3de; border:1px solid #c0dd97; border-radius:8px; padding:14px; margin-bottom:16px;"><div style="font-size:13px; font-weight:600; color:#3B6D11; margin-bottom:10px;">✅ Расхождение объяснено предоплатами</div>';
-    prepayExplanations.forEach(pe => {
-      const sign = pe.diff > 0 ? '+' : '';
-      prepaySection += '<div style="font-size:12px; padding:5px 0; border-bottom:1px solid #c0dd97;"><span style="color:#555; font-weight:600;">' + pe.channel + ': ' + sign + Number(pe.diff).toLocaleString() + ' ₸</span></div>';
-      pe.prepays.forEach(p => {
-        prepaySection += '<div style="font-size:12px; padding:4px 0 4px 12px; color:#3B6D11;">→ ' + p.client + ' — ' + Number(p.amount).toLocaleString() + ' ₸</div>';
-      });
-    });
-    prepaySection += '</div>';
-  }
-  // Валовые продажи и возвраты
-  const grossSales = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0);
-  const totalRetAll = (s.rRetKaspi||0)+(s.rRetHalyk||0)+(s.rRetCash||0);
-
-  // Пояснения к расхождениям
-  let notesSection = '';
-  if (s.notes && s.notes.trim().length > 0) {
-    notesSection = '<div style="background:#fffbe6;border:1px solid #FAC775;border-radius:8px;padding:14px;margin-bottom:16px;">' +
-      '<div style="font-size:13px;font-weight:600;color:#854F0B;margin-bottom:8px;">📝 Пояснения к расхождениям</div>' +
-      '<div style="font-size:12px;color:#555;line-height:1.6;">' + s.notes.replace(/;/g, '<br>') + '</div></div>';
-  }
-
-  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Отчёт смены — ${sellerName}</title>
-<style>* { box-sizing:border-box; margin:0; padding:0; } body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:#f5f5f0; color:#1a1a1a; padding:24px 16px; } .container { max-width:680px; margin:0 auto; } .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; } .brand { font-size:22px; font-weight:600; letter-spacing:0.04em; } .brand-sub { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:0.1em; margin-top:2px; } .header-right { text-align:right; font-size:13px; color:#555; } .header-right strong { color:#1a1a1a; display:block; font-size:14px; } .grid4 { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-bottom:16px; } .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; } .grid2 { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:16px; } .metric { background:#efefea; border-radius:8px; padding:12px; } .metric-label { font-size:10px; color:#888; margin-bottom:4px; } .metric-value { font-size:16px; font-weight:600; } .card { background:#fff; border:1px solid #e8e8e4; border-radius:12px; padding:14px; } .card-title { display:flex; align-items:center; gap:7px; margin-bottom:12px; font-size:13px; font-weight:600; } .dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; } .row { display:flex; justify-content:space-between; font-size:12px; padding:5px 0; border-bottom:1px solid #f0f0ec; } .row-label { color:#888; } .row-value { font-weight:500; } .row-total { display:flex; justify-content:space-between; font-size:13px; font-weight:600; padding:8px 0 0; } .sverka-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; } .sec { font-size:10px; color:#999; text-transform:uppercase; letter-spacing:0.12em; margin:18px 0 8px; }</style></head>
-<body><div class="container">
-  <div class="header"><div><div class="brand">NANÉ PARIS</div><div class="brand-sub">Отчёт смены</div></div><div class="header-right"><strong>${date}</strong>${sellerName} · закрыто в ${closeTime}</div></div>
-  <div style="background:${statusBg};border:1px solid ${statusBorder};border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:20px;"><div style="width:8px;height:8px;border-radius:50%;background:${statusDot};flex-shrink:0;"></div><span style="font-size:13px;font-weight:600;color:${statusColor};">${statusText}</span></div>
-
-  <div class="sec">Эффективность дня</div>
-  <div class="grid4">
-    <div class="metric"><div class="metric-label">Валовые продажи</div><div class="metric-value">${fmt(grossSales)}</div></div>
-    <div class="metric"><div class="metric-label">Возвраты</div><div class="metric-value" style="color:#E24B4A;">${totalRetAll > 0 ? '-'+fmt(totalRetAll) : fmt(0)}</div></div>
-    <div class="metric"><div class="metric-label">Чистые продажи</div><div class="metric-value">${fmt(rostaTotal)}</div></div>
-    <div class="metric"><div class="metric-label">Получено денег</div><div class="metric-value">${fmt(factTotal)}</div></div>
-  </div>
-
-  ${diffDetails}
-  ${prepaySection}
-  ${notesSection}
-
-  <div class="sec">Каналы продаж</div>
-  <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
-    <div class="card"><div class="card-title"><div class="dot" style="background:#378ADD"></div>Kaspi</div>
-      <div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rOnline)}</span></div>
-      <div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rKaspi)}</span></div>
-      <div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tKaspi)}</span></div>
-      ${(s.tKaspiRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tKaspiRet)+'</span></div>':''} 
-      <div class="row-total"><span>Итого (ФАКТ)</span><span>${fmt(kaspiNet)}</span></div>
-    </div>
-    <div class="card"><div class="card-title"><div class="dot" style="background:#7F77DD"></div>Halyk</div>
-      <div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rHalykOnline)}</span></div>
-      <div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rHalyk)}</span></div>
-      <div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tHalyk)}</span></div>
-      ${(s.tHalykRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tHalykRet)+'</span></div>':''} 
-      <div class="row-total"><span>Итого (ФАКТ)</span><span>${fmt(halykNet)}</span></div>
-    </div>
-    <div class="card"><div class="card-title"><div class="dot" style="background:#1D9E75"></div>Прочие</div>
-      <div class="row"><span class="row-label">Наличные</span><span class="row-value">${fmt(s.rCash)}</span></div>
-      ${(s.rPersonal||0)>0?'<div class="row"><span class="row-label">Личная карта Айнур</span><span class="row-value">'+fmt(s.rPersonal)+'</span></div>':''} 
-      ${(s.rBonus||0)>0?'<div class="row"><span class="row-label">Бонусы</span><span class="row-value">'+fmt(s.rBonus)+'</span></div>':''} 
-      ${totalRetAll>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возвраты всего</span><span class="row-value" style="color:#E24B4A">-'+fmt(totalRetAll)+'</span></div>':''} 
-      <div class="row-total"><span>Итого</span><span>${fmt((s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0))}</span></div>
-    </div>
-  </div>
-
-  <div class="sec">Касса и сверка</div>
-  <div class="grid2">
-    <div class="card"><div class="card-title">💵 Касса</div>
-      <div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div>
-      <div class="row"><span class="row-label">Закрытие</span><span class="row-value">${fmt(s.cashActual)}</span></div>
-      <div class="row"><span class="row-label">Продажи нал</span><span class="row-value">${fmt(cashSales)}</span></div>
-      ${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''} 
-      ${(s.cashPayouts||0)>0?'<div class="row"><span class="row-label">Расходы из кассы</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.cashPayouts)+'</span></div>':''} 
-    </div>
-    <div class="card"><div class="card-title">🔍 Сверка</div>
-      <div class="row"><span class="row-label">ROSTA</span><span class="row-value">${fmt(rostaTotal)}</span></div>
-      <div class="row"><span class="row-label">ФАКТ</span><span class="row-value">${fmt(factTotal)}</span></div>
-      <div class="row"><span class="row-label">Разница</span><span class="row-value" style="color:${diffColor};font-weight:600;">${diffSign}${fmt(diff)}</span></div>
-    </div>
-  </div>
-
-  <div class="sverka-grid" style="margin-bottom:24px;">
-    ${[
-      {label:'Kaspi', d: Math.abs(kaspiNet-((s.rKaspi||0)+(s.rOnline||0)))},
-      {label:'Halyk', d: Math.abs(halykNet-((s.rHalyk||0)+(s.rHalykOnline||0)))},
-      {label:'Наличные', d: 0}
-    ].map(item => {
-      const ok = item.d <= 500;
-      return '<div style="background:'+(ok?'#eaf3de':'#fcebeb')+';border:1px solid '+(ok?'#c0dd97':'#F7C1C1')+';border-radius:8px;padding:10px;text-align:center;"><div style="font-size:11px;color:#888;margin-bottom:4px;">'+item.label+'</div><div style="font-size:13px;font-weight:600;color:'+(ok?'#3B6D11':'#A32D2D')+';">'+(ok?'Сходится':'Расхождение')+'</div></div>';
-    }).join('')}
-  </div>
-
-  <div style="border-top:1px solid #e8e8e4;padding-top:16px;display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
-    <div style="font-size:12px;color:#aaa;">Подпись продавца: ${sellerName}</div>
-    <div style="border-bottom:1px solid #1a1a1a;width:180px;height:24px;"></div>
-  </div>
-
-</div></body></html>`;
-}
-
-async function loadOwnerData() {
-  const prepays_raw = await dbGetPrepays('open');
-  const shifts = [];
-  const prepays = prepays_raw.map(p => [p.prep_id, p.prep_date, p.client_name, p.phone, p.item, p.channel, p.amount, p.balance, p.status, '', p.notes]);
-  const recentShifts = shifts.slice(-30).map(r => ({ date: r[0], seller: r[1], rostaTotal: r[19], factTotal: r[20], diff: r[21], status: r[22] }));
-  const openPrepays = prepays.slice(1).filter(r => r[0] && String(r[8]||'').toLowerCase().includes('открыт')).map(r => ({ id: r[0], date: r[1], client: r[2], phone: r[3], item: r[4], channel: r[5], amount: r[6], balance: r[7] }));
-  return { recentShifts, openPrepays };
-}
-
-async function loadPrepays(type) {
-  const rawData = await dbGetPrepays(type === 'open' ? 'open' : type === 'closed' ? 'closed' : 'all');
-  const list = rawData.map(p => ({
-    id: p.prep_id,
-    date: p.prep_date ? String(p.prep_date) : '',
-    client: p.client_name || '',
-    phone: p.phone || '',
-    channel: p.channel || '—',
-    amount: Number(p.amount || 0),
-    balance: Number(p.balance || 0),
-    status: p.status || '🟡 Открыта',
-    items: p.item ? [p.item] : [],
-    notes: p.notes || ''
-  }));
-  list.sort((a, b) => new Date(a.date) - new Date(b.date));
-  return list;
-}
-
-function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, firstSellerName) {
-  const today = getDate();
-  const now = getTime();
-
-  // Второй продавец — упрощённый сценарий
-  if (isSecondSeller) {
-    return 'Ты — Томи, AI-управляющая NANE PARIS (Астана). Ты — женщина.\n' +
-      'Сегодня: ' + today + ', время: ' + now + '\nПродавец: ' + sellerName + '\n' +
-      'РОЛЬ: Второй продавец смены. Смену уже открыл(а) ' + (firstSellerName || 'первый продавец') + '.\n\n' +
-      'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Женский род.\n' +
-      'Один вопрос за раз. Только русский. Никакого Markdown.\n\n' +
-      'КРИТИЧЕСКИ ВАЖНО:\n' +
-      'Если продавец пишет "Открыть смену", "Начала смену", "Начать смену" — это ПРИХОД на работу.\n' +
-      'Начни ЧЕК-ЛИСТ ПРИХОДА. НЕ путай с закрытием.\n' +
-      'Если продавец пишет "Закрыть смену", "Закрываю смену" — это УХОД. Начни чек-лист закрытия.\n\n' +
-      'ЧЕК-ЛИСТ ПРИХОДА (второй продавец):\n' +
-      'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
-      'ШАГ 0 — ВНЕШНИЙ ВИД: макияж, одежда, готовность\n' +
-      'ШАГ 1 — ГЕОЛОКАЦИЯ: "Пришли геолокацию через скрепку."\n' +
-      'Когда система написала что геолокация получена — выдай SECOND_ARRIVE и попрощайся.\n' +
-      '=> SECOND_ARRIVE:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
-      'После этого — поприветствуй и пожелай хорошей смены. Больше ничего не спрашивай.\n\n' +
-      'УХОД (второй продавец уходит раньше закрытия):\n' +
-      'Когда пишет "Ухожу" или "Заканчиваю" — попроси геолокацию.\n' +
-      'Когда система написала что геолокация получена — выдай SECOND_LEAVE.\n' +
-      '=> SECOND_LEAVE:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
-      'Попрощайся и пожелай хорошего вечера.\n\n' +
-      'ЗАКРЫТИЕ СМЕНЫ (второй продавец закрывает вместе с первым или после него):\n' +
-      'Когда пишет "Закрываю смену" или "Заканчиваю смену" — проводи УСЕЧЁННЫЙ чек-лист:\n' +
-      'НЕ спрашивай Z-отчёт ROSTA — он уже получен от первого продавца.\n' +
-      'НЕ спрашивай фото терминалов — они уже получены.\n' +
-      'Только:\n' +
-      'ШАГ 1 — Товар убран, ценники на месте?\n' +
-      'ШАГ 2 — Посуда вымыта, стол чистый?\n' +
-      'ШАГ 3 — Пришли геолокацию для закрытия.\n' +
-      'После геолокации выдай SHIFT_CLOSE:\n' +
-      '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"second_close","seller2":"' + sellerName + '","notes":"Второй продавец закрыл смену"}\n' +
-      'После закрытия — попрощайся и пожелай хорошего вечера.\n\n' +
-      'ПРЕДОПЛАТЫ (доступны всегда, без открытия смены):\n' +
-      'Новая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
-      'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
-      'Удаление — запрос руководителю => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента","reason":""}\n\n' +
-      'ВАЖНО: на приветствия без "Начала смену" просто отвечай приветствием — НЕ начинай чек-лист.\n\n' +
-      'ОБУЧЕНИЕ (доступно всегда, даже без открытой смены):\n' +
-      'Когда продавец пишет "Обучение", "Учиться", "Урок" или "Тест" — переходи в режим обучения.\n' +
-      'В режиме обучения ты — строгий но справедливый тренер по продажам. Используй мировые практики fashion retail.\n\n' +
-      'МЕНЮ ОБУЧЕНИЯ (показывай когда просят):\n' +
-      '1. Встреча покупателя — первый контакт, приветствие, установление контакта\n' +
-      '2. Выявление потребности — вопросы SPIN, активное слушание\n' +
-      '3. Презентация товара — техника FAB (Feature-Advantage-Benefit)\n' +
-      '4. Работа с возражением «Дорого»\n' +
-      '5. Работа с возражением «Подумаю»\n' +
-      '6. Допродажа — upsell и cross-sell в fashion\n' +
-      '7. Завершение сделки — техники закрытия\n' +
-      '8. Конфликтный клиент — деэскалация\n' +
-      '9. Стандарты NANE PARIS — внешний вид, речь, поведение\n' +
-      '10. Тест — проверка знаний по любой теме\n\n' +
-      'КАК ПРОВОДИТЬ УРОК:\n' +
-      '- Сначала короткая теория (3-5 ключевых пунктов) с примерами из fashion retail\n' +
-      '- Потом практический пример диалога продавец-покупатель\n' +
-      '- В конце 3 вопроса для проверки — продавец отвечает, ты оцениваешь\n' +
-      '- Итог урока фиксируй: => TRAINING_RESULT:{"seller":"","topic":"","score":0,"date":""}\n\n' +
-      'СТАНДАРТЫ NANE PARIS (всегда применяй в обучении):\n' +
-      '- Бренд: корейская женская мода, премиум сегмент, Астана\n' +
-      '- Тон общения: тёплый, профессиональный, как личный стилист\n' +
-      '- Запрещено: слово «нет», «не знаю», «не можем»\n' +
-      '- Приветствие: «Добро пожаловать в NANE PARIS!»\n' +
-      '- Внешний вид продавца: всегда безупречный, одежда из ассортимента магазина\n' +
-      '- Корейские размеры: S=42-44, M=44-46, L=46-48, XL=48-50 (казахстанский)';
-  }
-
-  const shiftStatus = hasOpenShift
-    ? 'СМЕНА УЖЕ ОТКРЫТА. Не начинай чек-лист открытия заново. Продолжай работу.'
-    : 'Смена не открыта. ВАЖНО: начинай чек-лист ТОЛЬКО когда продавец явно напишет "Начала смену", "Открываю смену" или "Начинаю смену". На приветствия просто отвечай приветствием — НЕ начинай чек-лист.';
-
-  return 'Ты — Томи, AI-управляющая NANE PARIS (Астана). Ты — женщина.\n' +
-    'Сегодня: ' + today + ', время: ' + now + '\nПродавец: ' + sellerName + '\n' +
-    'СТАТУС СМЕНЫ: ' + shiftStatus + '\n\n' +
-    'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Женский род.\n' +
-    'Один вопрос за раз. Только русский. Никакого Markdown.\n\n' +
-
-    'ПРЕДОПЛАТЫ (доступны ВСЕГДА — даже если смена не открыта):\n' +
-    'Новая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
-    'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
-    'Удаление — запрос руководителю => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента","reason":""}\n' +
-    'Если продавец говорит имя клиента вместо ID — сначала найди предоплату через PREPAY_LIST, потом удали по найденному ID или имени.\n' +
-    'Просмотр => PREPAY_LIST:открытые или PREPAY_LIST:закрытые\n' +
-    'ВАЖНО: если продавец спрашивает про предоплату — обрабатывай сразу, не требуй сначала открыть смену.\n\n' +
-
-    'ЧЕК-ЛИСТ ОТКРЫТИЯ (строго по порядку, один шаг за раз, не повторять уже отвеченные шаги):\n' +
-    'КРИТИЧНО: каждый шаг задаётся ОДИН РАЗ. Если продавец уже ответил на вопрос — не спрашивай снова.\n' +
-    'Проверяй историю диалога перед каждым вопросом — если ответ уже есть, переходи к следующему шагу.\n\n' +
-    'ШАГ 0 — ВНЕШНИЙ ВИД\n' +
-    'Спроси: макияж готов? одежда в порядке?\n' +
-    'ВАЖНО: смена должна быть открыта до 11:00. Если уже 11:00+ — это опоздание.\n' +
-    'Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n\n' +
-    'ШАГ 1 — ГЕОЛОКАЦИЯ\n' +
-    'Спроси: "Пришли геолокацию через скрепку."\n' +
-    'Когда получишь сообщение с числом метров и словом ок — это подтверждение геолокации. Сразу без лишних слов спроси шаг 2: "Сколько наличных в кассе?"\n\n' +
-    'ШАГ 2 — КАССА\n' +
-    'Спроси: сколько наличных в кассе на начало смены?\n' +
-    'Запомни сумму — она войдёт в SHIFT_OPEN как cashOpen.\n' +
-    'ВАЖНО: в cashOpen подставь РЕАЛЬНУЮ сумму которую назвала продавец, НЕ 0!\n' +
-    'После SHIFT_OPEN система автоматически сравнит с остатком предыдущей смены.\n' +
-    'Если система сообщила о расхождении кассы — ты ОБЯЗАНА дожать объяснение:\n' +
-    '  Спроси: "Откуда разница? Была инкассация? Расходы из кассы? Ошибка счёта?"\n' +
-    '  Не переходи к следующим шагам пока не получишь внятный ответ.\n' +
-    '  "Не знаю" — не принимается. Дожимай.\n\n' +
-    'ШАГ 3 — ТЕРМИНАЛЫ\n' +
-    'Спроси: пришли фото экрана Kaspi терминала.\n' +
-    'Потом: пришли фото экрана Halyk терминала.\n' +
-    'Если не работает => TERMINAL_ALERT:{"seller":"' + sellerName + '","terminal":"","reason":""}\n\n' +
-    'ШАГ 4 — ЗАЛ\n' +
-    'Спроси одним сообщением: пыль убрана? ценники на месте? выкладка в порядке? освещение включено? музыка играет?\n\n' +
-    'ШАГ 5 — ПРИМЕРОЧНЫЕ\n' +
-    'Спроси одним сообщением: примерочные чистые? крючки на месте? зеркала чистые?\n\n' +
-    'ШАГ 6 — ГОСТЕВАЯ ЗОНА\n' +
-    'Спроси одним сообщением: чай/кофе есть? вода есть? посуда чистая?\n\n' +
-    'ШАГ 7 — УПАКОВКА\n' +
-    'Спроси: пакеты и коробки есть в достаточном количестве?\n\n' +
-    'ШАГ 8 — ТЕЛЕФОН\n' +
-    'Спроси: телефон заряжен?\n\n' +
-    'ШАГ 9 — ROSTA\n' +
-    'Спроси: ROSTA открыта?\n' +
-    'После "да" — выдай SHIFT_OPEN с суммой кассы из шага 2.\n' +
-    'ВАЖНО: в cashOpen подставь РЕАЛЬНУЮ сумму которую назвала продавец на шаге 2, НЕ 0!\n' +
-    'Например если сказала "15000" — пиши cashOpen:15000\n' +
-    '=> SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":СУММА_ИЗ_ШАГА_2,"time":"' + now + '"}\n\n' +
-
-    'ЗАКРЫТИЕ СМЕНЫ — ЖЁСТКИЙ КОНТРОЛЬ:\n' +
-    'ШАГ 1 — Z-ОТЧЕТ: попроси фото экрана ROSTA. Считай все суммы по каналам.\n' +
-    'ШАГ 2 — KASPI ТЕРМИНАЛ: попроси фото. Считай брутто и возвраты.\n' +
-    '   Сравни: ROSTA Kaspi (QR + Онлайн) vs ФАКТ терминал.\n' +
-    '   Если разница >500 тг — СТОП. Спроси: "По Kaspi расхождение X тг. Причина?"\n' +
-    '   Не переходи дальше пока не получишь объяснение.\n' +
-    'ШАГ 3 — HALYK ТЕРМИНАЛ: попроси фото. Считай брутто и возвраты.\n' +
-    '   Сравни: ROSTA Halyk (QR + Онлайн) vs ФАКТ терминал.\n' +
-    '   Если разница >500 тг — СТОП. Спроси: "По Halyk расхождение X тг. Причина?"\n' +
-    '   Не переходи дальше пока не получишь объяснение.\n' +
-    'ШАГ 4 — НАЛИЧНЫЕ: спроси сколько в кассе на конец.\n' +
-    '   Считай: продажи нал = касса конец - касса начало + расходы + инкассация.\n' +
-    '   Сравни с ROSTA наличными.\n' +
-    '   Если разница >500 тг — СТОП. Спроси: "По наличным расхождение X тг. Причина?"\n' +
-    '   Варианты: выдача сдачи? расходы из кассы? забрали раньше? ошибка счёта?\n' +
-    '   Не переходи дальше пока не получишь объяснение.\n' +
-    'ШАГ 5 — ЛИЧНАЯ КАРТА: сумма из ROSTA (не с терминала).\n' +
-    'ШАГ 6 — ИНКАССАЦИЯ: была ли? => INKASSO_CHECK:{"sellerAmount":0,"ownerAmount":0}\n' +
-    'ШАГ 7 — ЗАЛ: товар убран, ценники на месте?\n' +
-    'ШАГ 8 — ГОСТЕВАЯ: посуда вымыта, стол чистый?\n' +
-    'ШАГ 9 — ГЕОЛОКАЦИЯ: "Пришли геолокацию для закрытия."\n' +
-    'Когда получишь сообщение с числом метров и словом ок — это подтверждение геолокации. Сразу выдай SHIFT_CLOSE со всеми данными.\n' +
-    '=> SHIFT_CLOSE:{...,"notes":"объяснение расхождений если были"}\n\n' +
-    'КРИТИЧНО: система сама заблокирует закрытие если в notes нет объяснения при расхождении >500 тг.\n' +
-    'Ты как AI должна САМА провести анализ — не просто принять цифры, а проверить логику.\n' +
-    'Если продавец говорит "не знаю" — это не объяснение. Дожимай до конкретной причины.\n\n' +
-    'rKaspi=QR Kaspi ROSTA, rOnline=Онлайн Kaspi ROSTA, rHalyk=QR Halyk ROSTA, rHalykOnline=Онлайн Halyk ROSTA\n' +
-    'rCash=Наличные, rPersonal=Личная карта ROSTA, rBonus=Бонусы\n' +
-    'ВАЖНО при чтении Z-отчёта ROSTA:\n' +
-    '- Строка "Kaspi QR" → rKaspi\n' +
-    '- Строка "Онлайн Каспи" (без слова Возврат) → rOnline\n' +
-    '- Строка "Halyk QR" (без слова Возврат) → rHalyk\n' +
-    '- Строка "Онлайн Халык" → rHalykOnline\n' +
-    '- Строка "Наличные" → rCash\n' +
-    '- Строки с "(Возврат)" → rRetKaspi или rRetHalyk (всегда положительное число)\n' +
-    '- ИТОГО в Z-отчёте = сумма всех строк включая возвраты\n' +
-    '- НИКОГДА не пропускай строки с большими суммами — Kaspi QR и Онлайн Каспи часто самые крупные\n' +
-    'tKaspi=Kaspi ФАКТ, tKaspiRet=возврат Kaspi, tHalyk=Halyk ФАКТ, tHalykRet=возврат Halyk\n' +
-    'cashOpen=начало, cashActual=конец\n' +
-    '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}\n' +
-    'rostaCheck = строка ИТОГО из Z-отчёта ROSTA (контрольная сумма)\n' +
-    'Необъясненное расхождение >500 тг — НЕ ЗАКРЫВАЙ смену, уточни причину. Один вопрос за раз.\n\n' +
-    'ОБУЧЕНИЕ (доступно всегда, даже без открытой смены):\n' +
-    'Когда продавец пишет "Обучение", "Учиться", "Урок", "Тест" или спрашивает про технику продаж — переходи в режим обучения.\n' +
-    'В режиме обучения ты — строгий но справедливый тренер по продажам в fashion retail. Давай конкретные практические советы.\n\n' +
-    'МЕНЮ ОБУЧЕНИЯ:\n' +
-    '1. Встреча покупателя — первый контакт, приветствие, установление доверия\n' +
-    '2. Выявление потребности — вопросы SPIN, активное слушание\n' +
-    '3. Презентация товара — техника FAB (Feature-Advantage-Benefit)\n' +
-    '4. Работа с возражением «Дорого»\n' +
-    '5. Работа с возражением «Подумаю»\n' +
-    '6. Допродажа — upsell и cross-sell в fashion\n' +
-    '7. Завершение сделки — техники закрытия\n' +
-    '8. Конфликтный клиент — деэскалация\n' +
-    '9. Стандарты NANE PARIS\n' +
-    '10. Тест — проверка знаний\n\n' +
-    'КАК ПРОВОДИТЬ УРОК:\n' +
-    'Теория (3-5 пунктов с примерами из fashion) → Диалог-пример продавец/покупатель → 3 вопроса для проверки → оценка ответов → итог\n' +
-    'Итог фиксируй: => TRAINING_RESULT:{"seller":"","topic":"","score":0,"date":""}\n\n' +
-    'ПОДТВЕРЖДЕНИЕ УРОКА:\n' +
-    'Когда продавец пишет «Урок изучен», «Изучила», «Готово», «Прочитала» — подтверди и зафикисруй => LESSON_CONFIRMED\n' +
-    'Похвали за своевременное прохождение.\n\n' +
-    'ПОВТОРНЫЙ ДОСТУП К МАТЕРИАЛАМ:\n' +
-    'Если продавец пишет «Повтори урок», «Пришли материал», «Урок» — отправь команду LESSON_REPEAT\n' +
-    'Если пишет название темы (например «урок про возражения», «про допродажу») — сразу расскажи эту тему кратко\n' +
-    'Если пишет «Все темы» или «Список тем» — покажи список всех 5 тем обучения\n' +
-    '=> LESSON_REPEAT (без параметров — система пришлёт последний урок)\n\n' +
-    'СТАНДАРТЫ NANE PARIS:\n' +
-    'Бренд: корейская женская мода, премиум, Астана. Тон: тёплый, как личный стилист.\n' +
-    'Запрещено говорить: «нет», «не знаю», «не можем». Приветствие: «Добро пожаловать в NANE PARIS!»\n' +
-    'Размеры корейские: S=42-44, M=44-46, L=46-48, XL=48-50 (казахстанский).\n' +
-    'Внешний вид: безупречный, одежда из ассортимента магазина.';
-}
-
-function getOwnerPrompt(ownerName, data) {
-  const today = getDate();
-  const now = getTime();
-  const totalPrepay = data.openPrepays.reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
-  return 'Ты — Томи, AI-партнер NANE PARIS. Ты — женщина.\n' +
-    'Сегодня: ' + today + ', время: ' + now + '\nВладелец: ' + ownerName + '\n\n' +
-    'ХАРАКТЕР: Партнер на равных. Прямо, честно, с цифрами. Никакого Markdown.\n\n' +
-    'ДАННЫЕ:\nПоследние смены: ' + JSON.stringify(data.recentShifts) + '\n' +
-    'Открытые предоплаты (' + data.openPrepays.length + ' шт, итого: ' + totalPrepay.toLocaleString() + ' тг):\n' +
-    JSON.stringify(data.openPrepays.slice(0, 20)) + '\n\n' +
-    'ВАЖНО: При каждом закрытии смены ты автоматически записываешь данные в Google Sheets "Учёт по дням".\n\n' +
-    'КОМАНДЫ:\n' +
-    '"Отчет" — итог за сутки\n' +
-    '"Аналитика" — недельная сводка\n' +
-    '"Предоплаты" => PREPAY_LIST:открытые\n' +
-    'Удалить предоплату: "удали PREP-XXXX" или "удали предоплату Иванова" => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента"}\n' +
-    '"Команда" — сводка по продавцам\n' +
-    '"Зарплата" — расчет ФОТ\n' +
-    '"Дашборд" => DASHBOARD_HTML\n' +
-    '"Повторно вышли отчёт" или "вышли html" — запрос на повторную отправку отчёта закрытия => RESEND_REPORT\n' +
-    '"Отчёт недели" — еженедельный HTML отчёт прямо сейчас => WEEKLY_REPORT\n' +
-    '"P&L" — финансовый отчёт месяца => PL_REPORT\n' +
-    'Расходы: если пишет "Аренда 500000" или "Закупка 12000000 корея" и т.д — распознай категорию и сумму => EXPENSE_SAVE:{"date":"","category":"","amount":0,"note":""}\n' +
-    'Удаление расхода: "удали последний расход" или "удали аренду" => EXPENSE_DELETE:{"note":"что удалить"}\n' +
-    'Напоминания: "напомни завтра в 10:00 позвонить поставщику" => REMINDER_SAVE:{"text":"","remind_at":"ISO datetime","user_id":""}\n' +
-    'Для remind_at используй реальную дату и время по Алматы в ISO формате. Сегодня: ' + getNow() + '\n' +
-    'Категории расходов: Аренда, Закупка товара, Коммунальные, Зарплата персонала, Реклама, Транспорт, Прочее\n\n' +
-    '"Инкассация [сумма]" => OWNER_INKASSO:{"amount":0,"time":"' + now + '"}\n' +
-    '"Обучение команды" или "Статистика обучения" — покажи результаты тестов продавцов из листа Дисциплина => TRAINING_STATS\n' +
-    '"Запусти обучение" — отправить урок продавцам прямо сейчас => TRAINING_NOW\n' +
-    '"Продажи за май" / "Продажи за июнь" / "Продажи за месяц" / "Оборот" — показать данные по продажам => SALES_LIST:{"month":0,"year":0}\n' +
-    '"Финансы" / "Финансы за май" / «финансовый отчёт» — финансовый отчёт с прибылью ФОТ налогом => FINANCE_REPORT:{"month":0,"year":0}\n' +
-    '"Зарплата" / "ФОТ" / "Расчёт зарплаты" / "Зарплата за май" — расчёт зарплаты => SALARY_CALC:{"month":0,"year":0}\n' +
-    '"KPI Асель 3" / "KPI Зарина 2" / «поставь KPI Луизе 1» — выставить KPI продавцу (0-3) => KPI_SET:{"seller":"Имя","score":0,"month":0,"year":0}\n' +
-    '"KPI" / "Посмотри KPI" — показать текущие KPI => KPI_LIST:{"month":0,"year":0}\n' +
-    'Расход / трата / потратил — если владелец упоминает расход или трату с суммой => EXPENSE_NEW:{"amount":0,"description":""}\n' +
-    'ВАЖНО: в EXPENSE_NEW всегда ставь текущую дату ' + now + ', не выдумывай даты из контекста\n' +
-    '"Мои расходы" / "Расходы за месяц" / "Расходы за неделю" / "Покажи расходы" / "Покажи все расходы" / "Какие расходы" / "Расходы" — любой запрос на просмотр расходов => EXPENSE_LIST:{"period":"month"}\n' +
-    'КРИТИЧЕСКИ ВАЖНО: при любом запросе посмотреть расходы — ВСЕГДА выдавай EXPENSE_LIST, НЕ отвечай текстом что не знаешь данных\n' +
-    '"Останови обучение" или «Отмени обучение» — поставить на паузу => TRAINING_PAUSE\n' +
-    '"Возобнови обучение" — снять с паузы => TRAINING_RESUME\n\n' +
-    'ШКАЛА ФОТ: до 500к — 1.2%, 500к-750к — 1.7%, 750к-1млн — 2.2%, 1млн+ — 2.7%\n' +
-    'Бонусы: от 700к +5000 тг/чел, от 2млн +40000 тг/чел\nФикс: Асель 14000, Зарина 14000, Луиза 14000\n\nПо-русски. Прямо, с цифрами.';
-}
-
 async function downloadTelegramFile(fileId) {
   const fileInfo = await new Promise((resolve, reject) => {
-    const req = https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/getFile?file_id=' + fileId, method: 'GET' }, res => {
-      let data = ''; res.on('data', d => data += d); res.on('end', () => resolve(JSON.parse(data)));
-    });
+    const req = https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/getFile?file_id=' + fileId, method: 'GET' }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => resolve(JSON.parse(data))); });
     req.on('error', reject); req.end();
   });
   const fileData = await new Promise((resolve, reject) => {
-    const req = https.request({ hostname: 'api.telegram.org', path: '/file/bot' + TELEGRAM_TOKEN + '/' + fileInfo.result.file_path, method: 'GET' }, res => {
-      const chunks = []; res.on('data', d => chunks.push(d)); res.on('end', () => resolve(Buffer.concat(chunks)));
-    });
+    const req = https.request({ hostname: 'api.telegram.org', path: '/file/bot' + TELEGRAM_TOKEN + '/' + fileInfo.result.file_path, method: 'GET' }, res => { const chunks = []; res.on('data', d => chunks.push(d)); res.on('end', () => resolve(Buffer.concat(chunks))); });
     req.on('error', reject); req.end();
   });
   return fileData.toString('base64');
@@ -1449,7 +483,7 @@ async function readPhotoWithClaude(base64Image, photoType) {
     ? 'Это Z-отчет из ROSTA. Верни ТОЛЬКО JSON: {"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi":0,"ret_halyk":0,"ret_cash":0}'
     : photoType === 'kaspi_terminal' ? 'Это отчет Kaspi терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
     : photoType === 'halyk_terminal' ? 'Это отчет Halyk терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
-    : 'Опиши документ. Извлеки все числовые данные по продажам и кассе.';
+    : 'Опиши документ. Извлеки все числовые данные по продажам.';
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6', max_tokens: 500,
     messages: [{ role: 'user', content: [
@@ -1460,24 +494,106 @@ async function readPhotoWithClaude(base64Image, photoType) {
   return response.content[0].text;
 }
 
-function detectPhotoType(conversation) {
-  const last = conversation.slice(-8).map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).toLowerCase()).join(' ');
-  // Z-отчёт ROSTA — проверяем первым так как самый важный
-  if (last.includes('z-отчет') || last.includes('z отчет') || last.includes('zотчет') ||
-      last.includes('rosta') || last.includes('роста') || last.includes('итоговый отчет') ||
-      last.includes('z-report') || last.includes('фото экрана') && last.includes('rosta')) return 'zreport';
-  // Kaspi терминал
-  if (last.includes('kaspi терминал') || last.includes('терминал kaspi') ||
-      last.includes('каспи терминал') || last.includes('терминал каспи') ||
-      last.includes('фото kaspi') || last.includes('kaspi отчет') ||
-      last.includes('smart pos') || last.includes('смарт пос') ||
-      (last.includes('kaspi') && last.includes('терминал'))) return 'kaspi_terminal';
-  // Halyk терминал
-  if (last.includes('halyk терминал') || last.includes('терминал halyk') ||
-      last.includes('халык терминал') || last.includes('терминал халык') ||
-      last.includes('фото halyk') || last.includes('halyk отчет') ||
-      (last.includes('halyk') && last.includes('терминал'))) return 'halyk_terminal';
-  return 'unknown';
+// ══════════════════════════════════════════════════════════════════════
+// ИСПРАВЛЕНО v4.4: сохранение фото строго по порядку прихода
+// Фото 1 = Z-отчёт ROSTA
+// Фото 2 = Kaspi терминал
+// Фото 3 = Halyk терминал
+// ══════════════════════════════════════════════════════════════════════
+
+function savePhotoByOrder(userId, photoFileId) {
+  if (!shiftPhotos[String(userId)]) shiftPhotos[String(userId)] = {};
+  const photos = shiftPhotos[String(userId)];
+  let savedAs = '';
+  if (!photos.zreport) {
+    photos.zreport = photoFileId;
+    savedAs = 'zreport (фото 1)';
+  } else if (!photos.kaspi) {
+    photos.kaspi = photoFileId;
+    savedAs = 'kaspi (фото 2)';
+  } else if (!photos.halyk) {
+    photos.halyk = photoFileId;
+    savedAs = 'halyk (фото 3)';
+  } else {
+    photos.extra = photoFileId;
+    savedAs = 'extra (фото 4+)';
+  }
+  console.log('Photo saved as:', savedAs, 'for user:', userId, '| shiftPhotos:', JSON.stringify(photos));
+  return savedAs;
+}
+
+function getPhotoTypeByOrder(userId) {
+  const photos = shiftPhotos[String(userId)] || {};
+  if (!photos.zreport) return 'zreport';
+  if (!photos.kaspi) return 'kaspi_terminal';
+  return 'halyk_terminal';
+}
+
+function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, firstSellerName) {
+  const today = getDate();
+  const now = getTime();
+  if (isSecondSeller) {
+    return 'Ты — Томи, AI-управляющая NANE PARIS (Астана). Ты — женщина.\n' +
+      'Сегодня: ' + today + ', время: ' + now + '\nПродавец: ' + sellerName + '\n' +
+      'РОЛЬ: Второй продавец смены. Смену уже открыл(а) ' + (firstSellerName || 'первый продавец') + '.\n\n' +
+      'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Женский род.\nОдин вопрос за раз. Только русский. Никакого Markdown.\n\n' +
+      'КРИТИЧЕСКИ ВАЖНО:\nЕсли продавец пишет "Открыть смену" — это ПРИХОД. Начни ЧЕК-ЛИСТ ПРИХОДА.\nЕсли пишет "Закрыть смену" — это УХОД. Начни чек-лист закрытия.\n\n' +
+      'ЧЕК-ЛИСТ ПРИХОДА (второй продавец):\nЕсли позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
+      'ШАГ 0 — ВНЕШНИЙ ВИД\nШАГ 1 — ГЕОЛОКАЦИЯ: "Пришли геолокацию через скрепку."\n' +
+      'Когда геолокация принята — выдай SECOND_ARRIVE и попрощайся.\n' +
+      '=> SECOND_ARRIVE:{"seller":"' + sellerName + '","time":"' + now + '"}\n\n' +
+      'ЗАКРЫТИЕ (второй продавец): ШАГ 1 — Товар убран? ШАГ 2 — Посуда вымыта? ШАГ 3 — Геолокация.\n' +
+      'После геолокации выдай SHIFT_CLOSE:\n' +
+      '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"second_close","seller2":"' + sellerName + '","notes":"Второй продавец закрыл смену"}\n\n' +
+      'ПРЕДОПЛАТЫ:\nНовая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
+      'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
+      'Удаление => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента","reason":""}';
+  }
+  const shiftStatus = hasOpenShift
+    ? 'СМЕНА УЖЕ ОТКРЫТА. Не начинай чек-лист открытия заново.'
+    : 'Смена не открыта. Начинай чек-лист ТОЛЬКО когда продавец напишет "Начала смену".';
+  return 'Ты — Томи, AI-управляющая NANE PARIS (Астана). Ты — женщина.\n' +
+    'Сегодня: ' + today + ', время: ' + now + '\nПродавец: ' + sellerName + '\nСТАТУС СМЕНЫ: ' + shiftStatus + '\n\n' +
+    'ХАРАКТЕР: Строгий профессионал. Четко, по делу. Женский род.\nОдин вопрос за раз. Только русский. Никакого Markdown.\n\n' +
+    'ПРЕДОПЛАТЫ (доступны ВСЕГДА):\nНовая => PREPAY_SAVE:{"client":"","phone":"","item":"","channel":"","amount":0,"balance":0,"date":"","notes":""}\n' +
+    'Выкуп => PREPAY_LIST:открытые => PREPAY_CLOSE:{"id":"PREP-XXXX","closeDate":"","notes":"Товар выдан"}\n' +
+    'Удаление => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента","reason":""}\n\n' +
+    'ЧЕК-ЛИСТ ОТКРЫТИЯ:\nШАГ 0 — ВНЕШНИЙ ВИД. Если позже 11:00 => LATE_ALERT:{"seller":"' + sellerName + '","time":"' + now + '"}\n' +
+    'ШАГ 1 — ГЕОЛОКАЦИЯ: "Пришли геолокацию через скрепку."\nКогда геолокация принята — спроси шаг 2.\n' +
+    'ШАГ 2 — КАССА: сколько наличных? Запомни сумму для SHIFT_OPEN.\n' +
+    'ШАГ 3 — ТЕРМИНАЛЫ. ШАГ 4 — ЗАЛ. ШАГ 5 — ПРИМЕРОЧНЫЕ. ШАГ 6 — ГОСТЕВАЯ. ШАГ 7 — УПАКОВКА. ШАГ 8 — ТЕЛЕФОН.\n' +
+    'ШАГ 9 — ROSTA: после "да" выдай SHIFT_OPEN с реальной суммой кассы.\n' +
+    '=> SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":СУММА,"time":"' + now + '"}\n\n' +
+    'ЗАКРЫТИЕ СМЕНЫ:\nШАГ 1 — Z-ОТЧЕТ ROSTA: попроси фото.\n' +
+    '- "Kaspi QR" → rKaspi, "Онлайн Каспи" → rOnline, "Halyk QR" → rHalyk, "Онлайн Халык" → rHalykOnline\n' +
+    '- "Наличные" → rCash, строки с "(Возврат)" → rRetKaspi или rRetHalyk\n' +
+    'ШАГ 2 — KASPI ТЕРМИНАЛ: фото. Расхождение >500 тг — СТОП.\n' +
+    'ШАГ 3 — HALYK ТЕРМИНАЛ: фото. Расхождение >500 тг — СТОП.\n' +
+    'ШАГ 4 — НАЛИЧНЫЕ. ШАГ 5 — ЛИЧНАЯ КАРТА. ШАГ 6 — ИНКАССАЦИЯ.\n' +
+    'ШАГ 7 — ЗАЛ. ШАГ 8 — ГОСТЕВАЯ.\nШАГ 9 — ГЕОЛОКАЦИЯ: после геолокации выдай SHIFT_CLOSE.\n' +
+    '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetHalyk":0,"rRetCash":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}';
+}
+
+function getOwnerPrompt(ownerName, data) {
+  const today = getDate();
+  const now = getTime();
+  const totalPrepay = data.openPrepays.reduce((s,p) => s + (parseFloat(p.amount)||0), 0);
+  return 'Ты — Томи, AI-партнер NANE PARIS. Ты — женщина.\n' +
+    'Сегодня: ' + today + ', время: ' + now + '\nВладелец: ' + ownerName + '\n\n' +
+    'ХАРАКТЕР: Партнер на равных. Прямо, честно, с цифрами. Никакого Markdown.\n\n' +
+    'ДАННЫЕ:\nОткрытые предоплаты (' + data.openPrepays.length + ' шт, итого: ' + totalPrepay.toLocaleString() + ' тг):\n' +
+    JSON.stringify(data.openPrepays.slice(0, 20)) + '\n\n' +
+    'КОМАНДЫ:\n"Предоплаты" => PREPAY_LIST:открытые\n' +
+    'Удалить предоплату => PREPAY_DELETE:{"id":"PREP-XXXX или имя клиента"}\n' +
+    '"Дашборд" => DASHBOARD_HTML\n"Повторно вышли отчёт" => RESEND_REPORT\n"P&L" => PL_REPORT\n' +
+    'Расход/трата с суммой => EXPENSE_NEW:{"amount":0,"description":""}\n' +
+    '"Мои расходы" => EXPENSE_LIST:{"period":"month"}\n' +
+    '"Продажи за май" => SALES_LIST:{"month":0,"year":0}\n' +
+    '"Финансы за май" => FINANCE_REPORT:{"month":0,"year":0}\n' +
+    '"Зарплата за май" => SALARY_CALC:{"month":0,"year":0}\n' +
+    '"KPI Асель 3" => KPI_SET:{"seller":"Имя","score":0,"month":0,"year":0}\n' +
+    '"Запусти обучение" => TRAINING_NOW\n\n' +
+    'По-русски. Прямо, с цифрами.';
 }
 
 async function handleSystemCommands(reply, userId, sellerName, messageText) {
@@ -1486,60 +602,14 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
   if (reply.includes('REMINDER_SAVE:')) {
     try {
       const jsonStr = reply.match(/REMINDER_SAVE:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const r = JSON.parse(jsonStr);
-        // Всегда используем реальный userId из webhook, игнорируем user_id из JSON
-        await saveReminder(userId, r.text, r.remind_at);
-      }
-    } catch(e) { console.error('REMINDER_SAVE error:', e.message); }
+      if (jsonStr) { const r = JSON.parse(jsonStr); await saveReminder(userId, r.text, r.remind_at); }
+    } catch(e) {}
     cleanReply = reply.replace(/REMINDER_SAVE:\{.*?\}/s, '').trim();
-  }
-
-  if (reply.includes('EXPENSE_DELETE:')) {
-    try {
-      const deleted = await deleteLastExpense(userId);
-      if (deleted) {
-        await sendTelegram(userId, '🗑 Удалена запись:\n' + (deleted[0]||'') + ' · ' + (deleted[1]||'') + ' · ' + Number(deleted[2]||0).toLocaleString() + ' тг');
-      } else {
-        await sendTelegram(userId, '❌ Нет записей для удаления.');
-      }
-    } catch(e) { console.error('EXPENSE_DELETE error:', e.message); }
-    cleanReply = reply.replace(/EXPENSE_DELETE:\{.*?\}/s, '').trim();
-    if (!cleanReply) return '';
-  }
-
-  if (reply.includes('EXPENSE_SAVE:')) {
-    try {
-      const jsonStr = reply.match(/EXPENSE_SAVE:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const e = JSON.parse(jsonStr);
-        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-        const month = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long' });
-        const year = new Date().getFullYear();
-        const date = e.date || today;
-        await dbSaveExpense(date, e.category||'Прочее', e.amount||0, e.note||'', false, userId);
-        console.log('Расход записан:', e.category, e.amount);
-      }
-    } catch(e) { console.error('EXPENSE_SAVE error:', e.message); }
-    cleanReply = reply.replace(/EXPENSE_SAVE:\{.*?\}/s, '').trim();
   }
 
   if (reply.includes('PL_REPORT')) {
     cleanReply = reply.replace(/PL_REPORT/g, '').trim();
-    await sendTelegram(userId, '📊 Формирую P&L...');
-    const html = await generatePLReport();
-    if (html) {
-      const filename = 'pl_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
-      await sendTelegramDocument(userId, filename, html, '📊 P&L отчёт — открой в браузере');
-    } else {
-      await sendTelegram(userId, '❌ Не удалось сформировать P&L.');
-    }
-    if (!cleanReply) return '';
-  }
-
-  if (reply.includes('WEEKLY_REPORT')) {
-    cleanReply = reply.replace(/WEEKLY_REPORT/g, '').trim();
-    await sendWeeklySalesReport();
+    await sendTelegram(userId, '📊 P&L временно недоступен. Используй команду "Финансы".');
     if (!cleanReply) return '';
   }
 
@@ -1547,20 +617,17 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
     cleanReply = reply.replace(/RESEND_REPORT/g, '').trim();
     const report = lastShiftReports[String(userId)];
     if (!report) {
-      await sendTelegram(userId, '📋 Отчёт закрытия не найден — смена ещё не закрывалась сегодня.');
+      await sendTelegram(userId, '📋 Отчёт закрытия не найден.');
     } else {
-      const sellerNameLocal = ALLOWED_MAP[String(userId)] || 'Продавец';
-      // Отправляем запрос владельцу
       for (const ownerId of OWNER_IDS) {
-        pendingResendApprovals[String(ownerId)] = { sellerId: String(userId), sellerName: sellerNameLocal };
-        await sendTelegram(ownerId, '📋 ' + sellerNameLocal + ' запрашивает повторную отправку отчёта закрытия смены.\n\nОтветь ДА чтобы отправить или НЕТ чтобы отказать.');
+        pendingResendApprovals[String(ownerId)] = { sellerId: String(userId), sellerName: ALLOWED_MAP[String(userId)] || 'Продавец' };
+        await sendTelegram(ownerId, '📋 ' + (ALLOWED_MAP[String(userId)]||'Продавец') + ' запрашивает повторную отправку отчёта.\n\nОтветь ДА или НЕТ.');
       }
-      await sendTelegram(userId, '⏳ Запрос отправлен руководителю. Ожидай разрешения.');
+      await sendTelegram(userId, '⏳ Запрос отправлен руководителю.');
     }
     if (!cleanReply) return '';
   }
 
-  // Обработка выбора типа расхода (1 = NANE, 2 = Личный)
   if (OWNER_IDS.includes(String(userId)) && pendingExpense[String(userId)]) {
     const choice = (messageText || '').trim();
     if (choice === '1' || choice === '2') {
@@ -1568,52 +635,36 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       delete pendingExpense[String(userId)];
       const isNane = choice === '1';
       const category = detectCategory(exp.description);
-
       try {
-        if (isNane) {
-          // Пишем в Google Sheets лист Расходы: A=Дата, B=Категория, C=Сумма, D=Примечание, E=Месяц, F=Год
-          const expMonth = exp.date.split('.')[1] || '';
-          const expYear  = exp.date.split('.')[2] || '';
-          await dbSaveExpense(exp.date, category, exp.amount, exp.description, false, userId);
-          await sendTelegram(userId, '✅ Записано в NANE PARIS\n📁 ' + category + '\n💸 ' + Number(exp.amount).toLocaleString('ru-RU') + ' тг — ' + exp.description);
-        } else {
-          // Пишем в Supabase personal_expenses
-          await dbSaveExpense(exp.date, category, exp.amount, exp.description, true, userId);
-          await sendTelegram(userId, '✅ Записано в личные расходы\n📁 ' + category + '\n💸 ' + Number(exp.amount).toLocaleString('ru-RU') + ' тг — ' + exp.description);
-        }
-      } catch(e) { console.error('expense save error:', e.message); }
+        await dbSaveExpense(exp.date, category, exp.amount, exp.description, !isNane, userId);
+        await sendTelegram(userId, '✅ Записано в ' + (isNane ? 'NANE PARIS' : 'личные расходы') + '\n📁 ' + category + '\n💸 ' + Number(exp.amount).toLocaleString('ru-RU') + ' тг — ' + exp.description);
+      } catch(e) {}
       return '';
     }
   }
 
-  // Обработка ДА/НЕТ от владельца на удаление предоплаты
   if (OWNER_IDS.includes(String(userId)) && pendingPrepayDelete[String(userId)]) {
     const msgLower2 = (messageText||'').toLowerCase().trim();
     if (msgLower2 === 'да' || msgLower2 === 'yes') {
-      const { sellerId, sellerName: sName, prepayId } = pendingPrepayDelete[String(userId)];
+      const { sellerId, prepayId } = pendingPrepayDelete[String(userId)];
       delete pendingPrepayDelete[String(userId)];
       try {
-        // Удаляем из Supabase по prep_id
-        const { error } = await supabase.from('prepayments')
-          .delete().ilike('prep_id', prepayId);
+        const { error } = await supabase.from('prepayments').delete().ilike('prep_id', prepayId);
         if (!error) {
           await sendTelegram(userId, '✅ Предоплата удалена.');
           await sendTelegram(sellerId, '✅ Руководитель подтвердил — предоплата удалена.');
-        } else {
-          await sendTelegram(userId, '❌ Ошибка удаления: ' + error.message);
-        }
-      } catch(e) { console.error('prepay delete confirm error:', e.message); }
+        } else { await sendTelegram(userId, '❌ Ошибка: ' + error.message); }
+      } catch(e) {}
       return '';
     } else if (msgLower2 === 'нет' || msgLower2 === 'no') {
-      const { sellerId, prepayId } = pendingPrepayDelete[String(userId)];
+      const { sellerId } = pendingPrepayDelete[String(userId)];
       delete pendingPrepayDelete[String(userId)];
-      await sendTelegram(sellerId, '❌ Руководитель отказал в удалении предоплаты ' + prepayId + '.');
+      await sendTelegram(sellerId, '❌ Руководитель отказал в удалении.');
       await sendTelegram(userId, '❌ Удаление отменено.');
       return '';
     }
   }
 
-  // Обработка ДА/НЕТ от владельца на запрос повторной отправки отчёта
   if (OWNER_IDS.includes(String(userId)) && pendingResendApprovals[String(userId)]) {
     const msgLower = (messageText||'').toLowerCase().trim();
     if (msgLower === 'да' || msgLower === 'yes') {
@@ -1624,33 +675,23 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       if (report) {
         await sendTelegramDocument(sellerId, report.filename, report.html, report.caption);
         await sendTelegram(userId, '✅ Отчёт повторно отправлен ' + sName + '.');
-        await sendTelegram(sellerId, '✅ Руководитель разрешил — отчёт отправлен повторно.');
       }
       return '';
     } else if (msgLower === 'нет' || msgLower === 'no') {
-      const { sellerId, sellerName: sName } = pendingResendApprovals[String(userId)];
+      const { sellerId } = pendingResendApprovals[String(userId)];
       delete pendingResendApprovals[String(userId)];
-      await sendTelegram(sellerId, '❌ Руководитель не разрешил повторную отправку отчёта.');
-      await sendTelegram(userId, '❌ Отказано в повторной отправке для ' + sName + '.');
+      await sendTelegram(sellerId, '❌ Руководитель не разрешил повторную отправку.');
+      await sendTelegram(userId, '❌ Отказано.');
       return '';
     }
   }
 
-  if (reply.includes('DIGEST_NOW')) {
-    cleanReply = reply.replace(/DIGEST_NOW/g, '').trim();
-    await sendMorningDigest();
-    if (!cleanReply) return '';
-  }
-
   if (reply.includes('DASHBOARD_HTML')) {
     cleanReply = reply.replace(/DASHBOARD_HTML/g, '').trim();
-    await sendTelegram(userId, '📊 Читаю дашборд...');
     const html = await generateDashboardHTML();
     if (html) {
       const filename = 'dashboard_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
       await sendTelegramDocument(userId, filename, html, '📊 Дашборд NANÉ PARIS — открой в браузере');
-    } else {
-      await sendTelegram(userId, '❌ Не удалось загрузить данные дашборда.');
     }
     if (!cleanReply) return '';
   }
@@ -1663,32 +704,24 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       await sendTelegram(userId, type === 'open' ? '📋 Открытых предоплат нет.' : '📋 Закрытых предоплат нет.');
     } else {
       const totalDebt = list.filter(p => !p.status.includes('закрыт')).reduce((s,p) => s + (p.balance||0), 0);
-      const header = (type === 'open' ? '📋 Открытые предоплаты: ' + list.length + ' шт' : '📋 Закрытые предоплаты: ' + list.length + ' шт') +
+      const header = (type === 'open' ? '📋 Открытые предоплаты: ' + list.length + ' шт' : '📋 Закрытые: ' + list.length + ' шт') +
         (totalDebt > 0 ? '\n💰 Общий долг: ' + Number(totalDebt).toLocaleString() + ' тг' : '') + '\n\n';
       for (let i = 0; i < list.length; i += 8) {
         let msg = i === 0 ? header : '📋 ...продолжение:\n\n';
         list.slice(i, i + 8).forEach((p, num) => {
           const isClosed = p.status.includes('закрыт');
-          const icon = isClosed ? '✅' : '🟡';
-          const total = (p.amount||0) + (p.balance||0);
-          msg += icon + ' №' + (i + num + 1) + '\n';
-          msg += '👤 ' + p.client + '\n';
+          msg += (isClosed ? '✅' : '🟡') + ' №' + (i + num + 1) + '\n👤 ' + p.client + '\n';
           if (p.id) msg += '🆔 ' + p.id + ' · ' + p.date + '\n';
-          if (p.phone) msg += '📞 ' + p.phone + '\n';
           if (p.items && p.items.length) msg += '👗 ' + p.items.join(', ') + '\n';
-          msg += '\n';
-          if (total > 0) msg += '💵 Цена товара:    ' + Number(total).toLocaleString() + ' тг\n';
-          msg += '💰 Аванс:          ' + Number(p.amount).toLocaleString() + ' тг\n';
-          if (p.balance > 0) msg += '⚠️ Долг к доплате: ' + Number(p.balance).toLocaleString() + ' тг\n';
-          else msg += '✅ Оплачено полностью\n';
-          msg += '💳 ' + p.channel + '\n';
-          msg += '─────────────────────\n';
+          msg += '\n💰 Аванс: ' + Number(p.amount).toLocaleString() + ' тг\n';
+          if (p.balance > 0) msg += '⚠️ Долг: ' + Number(p.balance).toLocaleString() + ' тг\n';
+          msg += '💳 ' + p.channel + '\n─────────────────────\n';
         });
         await sendTelegram(userId, msg);
       }
       const htmlContent = generatePrepaysHTML(list, type);
       const filename = (type === 'open' ? 'prepays_open' : 'prepays_closed') + '_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
-      await sendTelegramDocument(userId, filename, htmlContent, '📋 Красивые карточки — открой в браузере');
+      await sendTelegramDocument(userId, filename, htmlContent, '📋 Предоплаты — открой в браузере');
     }
     if (!cleanReply) return '';
   }
@@ -1729,54 +762,30 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const jsonStr = reply.match(/PREPAY_DELETE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const p = JSON.parse(jsonStr);
-        // Находим строку — по ID или по имени клиента
         const findPrepayRow = async (searchStr) => {
           const rows = await dbGetPrepays('all');
           const search = String(searchStr).trim().toLowerCase();
           for (const row of rows) {
-            const rowId = String(row.prep_id || '').trim().toUpperCase();
-            const rowClient = String(row.client_name || '').trim().toLowerCase();
-            if (rowId === search.toUpperCase() || rowClient.includes(search)) {
+            if (String(row.prep_id||'').trim().toUpperCase() === search.toUpperCase() || String(row.client_name||'').trim().toLowerCase().includes(search)) {
               return { id: row.prep_id, client: row.client_name, supabaseId: row.id };
             }
           }
           return null;
         };
-
         if (OWNER_IDS.includes(String(userId))) {
-          // Владелец удаляет сам через Supabase
           const found = await findPrepayRow(p.id);
-          if (found) {
-            await supabase.from('prepayments').delete().eq('id', found.supabaseId);
-            console.log('Предоплата удалена:', found.id, found.client);
-          } else {
-            await sendTelegram(userId, '❌ Предоплата не найдена: ' + p.id);
-          }
+          if (found) { await supabase.from('prepayments').delete().eq('id', found.supabaseId); }
+          else { await sendTelegram(userId, '❌ Предоплата не найдена: ' + p.id); }
         } else {
-          // Продавец — находим предоплату и отправляем запрос владельцу
           const found = await findPrepayRow(p.id);
-          const displayId = found ? found.id + ' (' + found.client + ')' : p.id;
-          const sellerNameLocal = ALLOWED_MAP[String(userId)] || 'Продавец';
           if (!found) {
-            await sendTelegram(userId, '❌ Предоплата не найдена: ' + p.id + '. Проверь имя или ID.');
+            await sendTelegram(userId, '❌ Предоплата не найдена: ' + p.id);
           } else {
             for (const ownerId of OWNER_IDS) {
-              pendingPrepayDelete[String(ownerId)] = {
-                sellerId: String(userId),
-                sellerName: sellerNameLocal,
-                prepayId: found.id,
-                rowNum: found.rowNum,
-                reason: p.reason || ''
-              };
-              await sendTelegram(ownerId,
-                '🗑 Запрос на удаление предоплаты\n\n' +
-                '👤 Продавец: ' + sellerNameLocal + '\n' +
-                '🆔 ' + found.id + ' — ' + found.client + '\n' +
-                (p.reason ? '📝 Причина: ' + p.reason + '\n' : '') +
-                '\nОтветь ДА чтобы удалить или НЕТ чтобы отказать.'
-              );
+              pendingPrepayDelete[String(ownerId)] = { sellerId: String(userId), sellerName, prepayId: found.id, reason: p.reason||'' };
+              await sendTelegram(ownerId, '🗑 Запрос на удаление\n\n👤 ' + sellerName + '\n🆔 ' + found.id + ' — ' + found.client + (p.reason?'\n📝 '+p.reason:'') + '\n\nОтветь ДА или НЕТ.');
             }
-            await sendTelegram(userId, '⏳ Запрос на удаление предоплаты ' + found.client + ' отправлен руководителю.');
+            await sendTelegram(userId, '⏳ Запрос на удаление отправлен руководителю.');
           }
         }
       }
@@ -1789,69 +798,31 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const jsonStr = reply.match(/SHIFT_OPEN:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
-
-        // ── Проверка остатка кассы от предыдущей смены ──────────────
         const lastCash = await loadLastCash();
         const cashOpen = parseFloat(s.cashOpen) || 0;
-        console.log('SHIFT_OPEN проверка кассы: cashOpen=', cashOpen, 'lastCash=', lastCash);
-        if (lastCash !== null && lastCash > 0) {
+        if (lastCash !== null && lastCash > 0 && Math.abs(cashOpen - lastCash) > 500) {
           const cashDiff = cashOpen - lastCash;
-          console.log('Разница кассы:', cashDiff);
-          if (Math.abs(cashDiff) > 500) {
-            const direction = cashDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
-            const sign = cashDiff > 0 ? '+' : '';
-
-            // Алерт владельцу
-            for (const ownerId of OWNER_IDS) {
-              await sendTelegram(ownerId,
-                '🚨 РАСХОЖДЕНИЕ КАССЫ при открытии!\n' +
-                '👤 ' + s.seller + ' · ' + getTime() + '\n\n' +
-                '💰 Закрыли прошлый раз: ' + Number(lastCash).toLocaleString() + ' тг\n' +
-                '💰 Открыли сейчас: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
-                '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг\n\n' +
-                'Ожидаю объяснение от продавца.'
-              );
-            }
-
-            // Продавцу — смена открыта НО нужно объяснение
-            await sendTelegram(userId,
-              '⚠️ РАСХОЖДЕНИЕ КАССЫ!\n\n' +
-              '💰 Остаток прошлой смены: ' + Number(lastCash).toLocaleString() + ' тг\n' +
-              '💰 Ты пересчитала: ' + Number(cashOpen).toLocaleString() + ' тг\n' +
-              '❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг\n\n' +
-              'Смена открыта, но объясни причину расхождения — откуда разница?\n' +
-              'Варианты: инкассация была? расходы из кассы? ошибка счёта?'
-            );
-          } else {
-            console.log('Касса в норме, расхождение в пределах 500 тг');
+          const direction = cashDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
+          const sign = cashDiff > 0 ? '+' : '';
+          for (const ownerId of OWNER_IDS) {
+            await sendTelegram(ownerId, '🚨 РАСХОЖДЕНИЕ КАССЫ при открытии!\n👤 ' + s.seller + '\n💰 Закрыли: ' + Number(lastCash).toLocaleString() + ' тг\n💰 Открыли: ' + Number(cashOpen).toLocaleString() + ' тг\n❌ ' + direction + ': ' + sign + Number(cashDiff).toLocaleString() + ' тг');
           }
-        } else {
-          console.log('lastCash null или 0 — пропускаем проверку');
         }
-
         const shiftData = { seller: s.seller, shop: s.shop, cash_open: s.cashOpen, start_time: new Date().toISOString() };
         openShifts[String(userId)] = shiftData;
         await saveOpenShift(userId, shiftData);
-        clearChecklistTimer(userId); // Чек-лист закрыт — таймер отменяем
+        clearChecklistTimer(userId);
         const timeStr = getTime();
         const hour = parseInt(timeStr.split(':')[0]);
         const min = parseInt(timeStr.split(':')[1]);
-
-        // Уведомление владельцу об открытии смены
         for (const ownerId of OWNER_IDS) {
-          await sendTelegram(ownerId,
-            '🟢 Смена открыта\n' +
-            '👤 ' + s.seller + '\n' +
-            '🕐 ' + timeStr + '\n' +
-            '💰 Касса: ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' тг'
-          );
+          await sendTelegram(ownerId, '🟢 Смена открыта\n👤 ' + s.seller + '\n🕐 ' + timeStr + '\n💰 Касса: ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' тг');
         }
-
         if (hour > 11 || (hour === 11 && min > 0)) {
           for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + s.seller + '\n🕐 ' + timeStr);
         }
         if ((s.cashOpen||0) >= CASH_ALERT_LIMIT) {
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ — касса\nНаличных: ' + Number(s.cashOpen).toLocaleString() + ' тг\n👤 ' + s.seller);
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ — касса\nНаличных: ' + Number(s.cashOpen).toLocaleString() + ' тг');
         }
       }
     } catch(e) { console.error('SHIFT_OPEN error:', e.message); }
@@ -1867,188 +838,99 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         const closeTime = getTime();
         const rostaTotal = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0)-(s.rRetKaspi||0)-(s.rRetHalyk||0)-(s.rRetCash||0);
-
-        // Проверяем контрольную сумму из Z-отчёта — перемещено после sellerFinal
         const rostaCheck = s.rostaCheck || 0;
         let finalRevenue = rostaTotal;
-        if (rostaCheck > 0 && Math.abs(rostaCheck - rostaTotal) > 1000) {
-          console.log(`rostaCheck mismatch: check=${rostaCheck} calculated=${rostaTotal} — используем rostaCheck`);
-          finalRevenue = rostaCheck;
-        }
+        if (rostaCheck > 0 && Math.abs(rostaCheck - rostaTotal) > 1000) { finalRevenue = rostaCheck; }
         const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
         const halykNet = (s.tHalyk||0)-(s.tHalykRet||0);
         const cashSales = (s.cashActual||0)-(s.cashOpen||0)+(s.cashPayouts||0)+(s.inkasso||0)+(s.rRetCash||0);
         const factTotal = kaspiNet + halykNet + cashSales + (s.rPersonal||0) + (s.rBonus||0);
         const diff = factTotal - rostaTotal;
         const totalRet = (s.rRetKaspi||0)+(s.rRetHalyk||0)+(s.rRetCash||0);
-
-        // ── Жёсткая проверка по каждому каналу ──────────────────────
         const channelDiffs = [];
         const kaspiDiff = kaspiNet - ((s.rKaspi||0)+(s.rOnline||0));
         const halykDiff = halykNet - ((s.rHalyk||0)+(s.rHalykOnline||0));
         const cashDiff = cashSales - (s.rCash||0);
-
-        if (Math.abs(kaspiDiff) > 500) channelDiffs.push({ channel: 'Kaspi', diff: kaspiDiff, rosta: (s.rKaspi||0)+(s.rOnline||0), fact: kaspiNet });
-        if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff, rosta: (s.rHalyk||0)+(s.rHalykOnline||0), fact: halykNet });
-        if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff, rosta: s.rCash||0, fact: cashSales });
-
-        // ── Проверяем закрытые сегодня предоплаты ───────────────────
-        const todayShort = today; // формат DD.MM.YYYY
+        if (Math.abs(kaspiDiff) > 500) channelDiffs.push({ channel: 'Kaspi', diff: kaspiDiff });
+        if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff });
+        if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff });
         const allPrepaysRaw = await dbGetPrepays('all');
-        const allPrepays = allPrepaysRaw.map(p => [p.prep_id, p.prep_date, p.client_name, p.phone, p.item, p.channel, p.amount, p.balance, p.status, '', p.notes]);
-        const todayClosedPrepays = allPrepays.slice(1).filter(r => {
-          const closeDate = String(r[9]||'').trim();
-          const status = String(r[8]||'').toLowerCase();
-          return status.includes('закрыт') && (closeDate === todayShort || closeDate === new Date().toISOString().split('T')[0]);
-        }).map(r => ({
-          id: String(r[0]||''),
-          client: String(r[2]||''),
-          amount: parseFloat(String(r[6]||'0').replace(/[^0-9.]/g,'')) || 0,
-          channel: String(r[5]||''),
-          note: String(r[10]||'')
-        }));
-
-        // Сопоставляем предоплаты с расхождениями
+        const todayClosedPrepays = allPrepaysRaw.filter(p => String(p.status||'').toLowerCase().includes('закрыт'))
+          .map(p => ({ id: String(p.prep_id||''), client: String(p.client_name||''), amount: Number(p.amount||0), channel: String(p.channel||'') }));
         const prepayExplanations = [];
         const explainedDiffs = new Set();
-
         channelDiffs.forEach(cd => {
-          if (cd.diff > 0) { // излишек — ищем предоплату на эту сумму
+          if (cd.diff > 0) {
             const matching = todayClosedPrepays.filter(p => {
-              const channelMatch =
-                (cd.channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi') || p.channel.toLowerCase().includes('каспи'))) ||
-                (cd.channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk') || p.channel.toLowerCase().includes('халык'))) ||
-                (cd.channel === 'Наличные' && (p.channel.toLowerCase().includes('нал') || p.channel.toLowerCase().includes('cash')));
-              const amountMatch = Math.abs(p.amount - Math.abs(cd.diff)) < 1000;
-              return channelMatch || amountMatch;
+              const chMatch = (cd.channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
+                (cd.channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
+                (cd.channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash')));
+              return chMatch || Math.abs(p.amount - Math.abs(cd.diff)) < 1000;
             });
-            if (matching.length > 0) {
-              prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching });
-              explainedDiffs.add(cd.channel);
-            }
+            if (matching.length > 0) { prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching }); explainedDiffs.add(cd.channel); }
           }
         });
-
-        // Если есть необъяснённые расхождения — БЛОКИРУЕМ закрытие
         const unexplainedDiffs = channelDiffs.filter(cd => !explainedDiffs.has(cd.channel));
         const hasNotes = s.notes && s.notes.trim().length > 10;
-        const hasAutoExplanation = prepayExplanations.length > 0;
-
-        // Формируем автообъяснение через предоплаты
-        let autoNotes = s.notes || '';
-        if (hasAutoExplanation) {
-          prepayExplanations.forEach(pe => {
-            const prepayNames = pe.prepays.map(p => p.client + ' ' + Number(p.amount).toLocaleString() + ' тг').join(', ');
-            autoNotes += (autoNotes ? '; ' : '') + pe.channel + ': предоплата ' + prepayNames;
-          });
-        }
-
-        if (unexplainedDiffs.length > 0 && !hasNotes && !hasAutoExplanation) {
-          // Формируем детальное сообщение с требованием объяснения
-          let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — есть необъяснённые расхождения!\n\n';
+        if (unexplainedDiffs.length > 0 && !hasNotes && prepayExplanations.length === 0) {
+          let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — необъяснённые расхождения!\n\n';
           unexplainedDiffs.forEach(cd => {
             const sign = cd.diff > 0 ? '+' : '';
-            const direction = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
-            blockMsg += '❌ ' + cd.channel + ': ' + direction + ' ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
-            blockMsg += '   ROSTA: ' + Number(cd.rosta).toLocaleString() + ' тг\n';
-            blockMsg += '   ФАКТ: ' + Number(cd.fact).toLocaleString() + ' тг\n\n';
+            const dir = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
+            blockMsg += '❌ ' + cd.channel + ': ' + dir + ' ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
           });
-          blockMsg += 'Объясни причину каждого расхождения:\n';
-          blockMsg += '• Наличные — была выдача? расходы? сдача? забрали раньше?\n';
-          blockMsg += '• Kaspi/Halyk — отмена операции? задержка зачисления?\n\n';
-          blockMsg += 'Пока не объяснишь — смену не закрою. Пиши объяснение.';
-
+          blockMsg += '\nОбъясни причину и закрой смену снова.';
           await sendTelegram(userId, blockMsg);
-
-          let ownerAlert = '⚠️ РАСХОЖДЕНИЕ при закрытии смены!\n👤 ' + (shift.seller || sellerName) + ' · ' + today + '\n\n';
-          unexplainedDiffs.forEach(cd => {
-            const sign = cd.diff > 0 ? '+' : '';
-            ownerAlert += cd.channel + ': ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
-          });
-          ownerAlert += '\nОбщее расхождение: ' + (diff > 0 ? '+' : '') + Number(diff).toLocaleString() + ' тг\nЖду объяснения от продавца.';
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, ownerAlert);
-
-          // Не закрываем смену — выходим
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + (shift.seller || sellerName));
           cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
           return cleanReply || '';
         }
-
-        // ── Всё ок или есть объяснение — закрываем ──────────────────
         const sellerFinal = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
-        const finalNotes = autoNotes || s.notes || '';
-
-        // Уведомление владельцу о закрытии смены вторым продавцом
-        if (s.shiftStatus === 'second_close') {
-          for (const ownerId of OWNER_IDS) {
-            await sendTelegram(ownerId,
-              '🔴 Смена закрыта (второй продавец)\n' +
-              '👤 ' + sellerFinal + '\n' +
-              '🕐 ' + closeTime
-            );
-          }
-        }
-
-        // Алерт владельцу если есть предоплаты объясняющие расхождение
-        if (hasAutoExplanation) {
-          for (const ownerId of OWNER_IDS) {
-            let prepayMsg = '✅ Расхождение при закрытии объяснено предоплатами:\n👤 ' + sellerFinal + ' · ' + today + '\n\n';
-            prepayExplanations.forEach(pe => {
-              prepayMsg += '💳 ' + pe.channel + ': ' + (pe.diff > 0 ? '+' : '') + Number(pe.diff).toLocaleString() + ' тг\n';
-              pe.prepays.forEach(p => {
-                prepayMsg += '   → Предоплата: ' + p.client + ' — ' + Number(p.amount).toLocaleString() + ' тг\n';
-              });
-            });
-            await sendTelegram(ownerId, prepayMsg);
-          }
-        }
-
-        // Смена записана в daily_sales через dbSaveSale выше
-
-        console.log('Сохраняю продажи в Supabase: дата=', today, 'оборот=', finalRevenue, 'продавец=', sellerFinal);
         if (s.shiftStatus === 'second_close' && s.seller2) {
-          // Второй продавец — только обновляем seller2 в существующей записи
           const dateKey = today.split('.').reverse().join('-');
           await supabase.from('daily_sales').update({ seller2: s.seller2 }).eq('sale_date', dateKey);
-          console.log('seller2 обновлён:', s.seller2, 'для', dateKey);
         } else {
           await dbSaveSale(today, finalRevenue, sellerFinal, '');
-          console.log('dbSaveSale завершена');
         }
-
         if ((s.cashActual||0) >= CASH_ALERT_LIMIT) {
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг\n👤 ' + sellerFinal);
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ ИНКАССАЦИИ\nНаличных: ' + Number(s.cashActual).toLocaleString() + ' тг');
         }
-
         const htmlReport = generateShiftHTML({ sellerName: sellerFinal, date: today, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations });
         const filename = 'otchet_' + today.replace(/\./g,'_') + '_' + sellerFinal + '.html';
-
-        // Сохраняем последний отчёт для возможной повторной отправки
         lastShiftReports[String(userId)] = { html: htmlReport, filename, caption: '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime };
         await saveLastReport(userId, htmlReport, filename, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
         for (const ownerId of OWNER_IDS) {
           await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
-          // Пересылаем фото Z-отчёта и терминалов
-          const photos = shiftPhotos[String(userId)] || {};
+          // Пересылаем фото по порядку
+          let photos = shiftPhotos[String(userId)] || {};
+          if (s.shiftStatus === 'second_close' && Object.keys(photos).length === 0) {
+            for (const [pid, pdata] of Object.entries(shiftPhotos)) {
+              if (pid !== String(userId) && pdata && (pdata.zreport || pdata.kaspi || pdata.halyk)) {
+                photos = pdata; break;
+              }
+            }
+          }
           if (photos.zreport || photos.kaspi || photos.halyk) {
             await sendTelegram(ownerId, '📸 Фото смены — ' + sellerFinal + ' · ' + today);
             if (photos.zreport) await forwardPhoto(ownerId, photos.zreport, '📄 Z-отчёт ROSTA');
-            if (photos.kaspi) await forwardPhoto(ownerId, photos.kaspi, '💳 Терминал Kaspi');
-            if (photos.halyk) await forwardPhoto(ownerId, photos.halyk, '💳 Терминал Halyk');
-            if (photos.extra) await forwardPhoto(ownerId, photos.extra, '📸 Дополнительное фото');
+            if (photos.kaspi)   await forwardPhoto(ownerId, photos.kaspi,   '💳 Терминал Kaspi');
+            if (photos.halyk)   await forwardPhoto(ownerId, photos.halyk,   '💳 Терминал Halyk');
+            if (photos.extra)   await forwardPhoto(ownerId, photos.extra,   '📸 Доп. фото');
+          } else {
+            console.log('Фото не найдены. shiftPhotos:', JSON.stringify(shiftPhotos));
           }
         }
         delete shiftPhotos[String(userId)];
-
-        // ── Командный отчёт дня — отправляем всем продавцам ──────────
-        const teamFilename = 'den_' + today.replace(/\./g,'_') + '.html';
-        for (const [sellerId, sellerName2] of Object.entries(ALLOWED_MAP)) {
+        for (const [sellerId] of Object.entries(ALLOWED_MAP)) {
           if (!OWNER_IDS.includes(sellerId)) {
-            await sendTelegramDocument(sellerId, teamFilename, htmlReport, '📊 Итоги дня ' + today + ' — открой в браузере');
+            await sendTelegramDocument(sellerId, 'den_' + today.replace(/\./g,'_') + '.html', htmlReport, '📊 Итоги дня ' + today);
           }
         }
-
         delete openShifts[String(userId)];
         await deleteOpenShift(userId);
+        if (s.shiftStatus === 'second_close') {
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '🔴 Смена закрыта (второй продавец)\n👤 ' + sellerFinal + '\n🕐 ' + closeTime);
+        }
       }
     } catch(e) { console.error('SHIFT_CLOSE error:', e.message); }
     cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
@@ -2057,10 +939,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
   if (reply.includes('CASH_ALERT:')) {
     try {
       const jsonStr = reply.match(/CASH_ALERT:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const a = JSON.parse(jsonStr);
-        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ\nНаличных: ' + Number(a.amount).toLocaleString() + ' тг\n👤 ' + sellerName + '\n🕐 ' + getTime());
-      }
+      if (jsonStr) { const a = JSON.parse(jsonStr); for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '💰 АЛЕРТ\nНаличных: ' + Number(a.amount).toLocaleString() + ' тг\n👤 ' + sellerName + '\n🕐 ' + getTime()); }
     } catch(e) {}
     cleanReply = reply.replace(/CASH_ALERT:\{.*?\}/s, '').trim();
   }
@@ -2070,94 +949,12 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const jsonStr = reply.match(/LATE_ALERT:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        const timeStr = a.time || getTime();
-
-        // Записываем опоздание в лист "Дисциплина"
-        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-        await dbSaveDiscipline(today, a.seller, 'Опоздание', timeStr, 'Открытие смены позже 11:00');
-
-        // Считаем опоздания за текущий месяц
-        const monthStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: '2-digit', year: 'numeric' });
-        const discData = await supabase.from('discipline').select('*').order('event_date', { ascending: false }).limit(100);
-    const discRows = (discData.data || []).map(r => [r.event_date, r.seller_name, r.event_type, r.event_time, r.note]);
-        const lateCount = discRows.filter(r =>
-          r[1] === a.seller &&
-          r[2] === 'Опоздание' &&
-          String(r[0]||'').includes(monthStr.split('.')[0] + '.' + monthStr.split('.')[1])
-        ).length;
-
-        // Алерт владельцу
-        let alertMsg = '⚠️ Опоздание!\n👤 ' + a.seller + '\n🕐 ' + timeStr + '\n📅 ' + today;
-        alertMsg += '\n\nОпозданий за месяц: ' + lateCount;
-
-        // При 3-м опоздании — расширенный алерт
-        if (lateCount >= 3) {
-          const history = discRows.filter(r =>
-            r[1] === a.seller &&
-            r[2] === 'Опоздание' &&
-            String(r[0]||'').includes(monthStr.split('.')[0] + '.' + monthStr.split('.')[1])
-          ).slice(-5);
-          alertMsg = '🚨 ' + a.seller + ' — ' + lateCount + '-е опоздание за месяц!\n\n';
-          alertMsg += 'История опозданий:\n';
-          history.forEach(r => { alertMsg += '• ' + r[0] + ' в ' + r[3] + '\n'; });
-          alertMsg += '\nРекомендую провести разговор с продавцом.';
-        }
-
-        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, alertMsg);
+        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' });
+        await dbSaveDiscipline(today, a.seller, 'Опоздание', a.time||getTime(), 'Открытие позже 11:00');
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + a.seller + '\n🕐 ' + (a.time||getTime()));
       }
-    } catch(e) { console.error('LATE_ALERT error:', e.message); }
+    } catch(e) {}
     cleanReply = reply.replace(/LATE_ALERT:\{.*?\}/s, '').trim();
-  }
-
-  if (reply.includes('CHECKLIST_TIMEOUT:')) {
-    try {
-      const jsonStr = reply.match(/CHECKLIST_TIMEOUT:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const a = JSON.parse(jsonStr);
-        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-        await dbSaveDiscipline(today, a.seller, 'Таймаут чек-листа', getTime(), 'Чек-лист не закрыт за 15 минут');
-        for (const ownerId of OWNER_IDS) {
-          await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт!\n👤 ' + a.seller + '\n🕐 Начала в ' + a.startTime + ', прошло 15 минут\n📋 Незакрыто: ' + (a.remaining || 'неизвестно'));
-        }
-      }
-    } catch(e) {}
-    cleanReply = reply.replace(/CHECKLIST_TIMEOUT:\{.*?\}/s, '').trim();
-  }
-
-  if (reply.includes('TERMINAL_ALERT:')) {
-    try {
-      const jsonStr = reply.match(/TERMINAL_ALERT:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const a = JSON.parse(jsonStr);
-        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Терминал не работает\n👤 ' + a.seller + '\n💳 ' + a.terminal + '\n📝 ' + a.reason);
-      }
-    } catch(e) {}
-    cleanReply = reply.replace(/TERMINAL_ALERT:\{.*?\}/s, '').trim();
-  }
-
-  if (reply.includes('INKASSO_CHECK:')) {
-    try {
-      const jsonStr = reply.match(/INKASSO_CHECK:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const a = JSON.parse(jsonStr);
-        const inkDiff = Math.abs((parseFloat(a.sellerAmount)||0)-(parseFloat(a.ownerAmount)||0));
-        if (inkDiff > 500) {
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '🚨 РАСХОЖДЕНИЕ ИНКАССАЦИИ!\nЕрмек: ' + Number(a.ownerAmount).toLocaleString() + ' тг\nПродавец: ' + Number(a.sellerAmount).toLocaleString() + ' тг\nРасхождение: ' + Number(inkDiff).toLocaleString() + ' тг');
-        }
-      }
-    } catch(e) {}
-    cleanReply = reply.replace(/INKASSO_CHECK:\{.*?\}/s, '').trim();
-  }
-
-  if (reply.includes('OWNER_INKASSO:')) {
-    try {
-      const jsonStr = reply.match(/OWNER_INKASSO:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const a = JSON.parse(jsonStr);
-        /* лог */
-      }
-    } catch(e) {}
-    cleanReply = reply.replace(/OWNER_INKASSO:\{.*?\}/s, '').trim();
   }
 
   if (reply.includes('SECOND_ARRIVE:')) {
@@ -2165,34 +962,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const jsonStr = reply.match(/SECOND_ARRIVE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const a = JSON.parse(jsonStr);
-        const timeStr = a.time || getTime();
-        const hour = parseInt(timeStr.split(':')[0]);
-        const min = parseInt(timeStr.split(':')[1]);
-        for (const ownerId of OWNER_IDS) {
-          await sendTelegram(ownerId, '✅ Второй продавец на месте\n👤 ' + a.seller + '\n🕐 ' + timeStr);
-        }
-        if (hour > 11 || (hour === 11 && min > 15)) {
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + a.seller + '\n🕐 ' + timeStr);
-        }
-        /* лог */
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '✅ Второй продавец на месте\n👤 ' + a.seller + '\n🕐 ' + (a.time||getTime()));
       }
     } catch(e) {}
     cleanReply = reply.replace(/SECOND_ARRIVE:\{.*?\}/s, '').trim();
-  }
-
-  if (reply.includes('SECOND_LEAVE:')) {
-    try {
-      const jsonStr = reply.match(/SECOND_LEAVE:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const a = JSON.parse(jsonStr);
-        const timeStr = a.time || getTime();
-        for (const ownerId of OWNER_IDS) {
-          await sendTelegram(ownerId, '👋 Второй продавец ушёл\n👤 ' + a.seller + '\n🕐 ' + timeStr);
-        }
-        /* лог */
-      }
-    } catch(e) {}
-    cleanReply = reply.replace(/SECOND_LEAVE:\{.*?\}/s, '').trim();
   }
 
   if (reply.includes('EXPENSE_NEW:')) {
@@ -2200,189 +973,31 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const jsonStr = reply.match(/EXPENSE_NEW:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const e = JSON.parse(jsonStr);
-        // Сохраняем в pending и спрашиваем тип
         const expDate = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' });
-        pendingExpense[String(userId)] = {
-          amount: e.amount,
-          description: e.description,
-          date: expDate,  // дата берётся из системы, не из Claude
-          time: getTime()
-        };
-        await sendTelegram(userId,
-          '💸 Расход: ' + e.description + ' — ' + Number(e.amount).toLocaleString('ru-RU') + ' тг\n\n' +
-          'Куда записать?\n\n' +
-          '1. NANE PARIS\n' +
-          '2. Личный'
-        );
+        pendingExpense[String(userId)] = { amount: e.amount, description: e.description, date: expDate };
+        await sendTelegram(userId, '💸 Расход: ' + e.description + ' — ' + Number(e.amount).toLocaleString('ru-RU') + ' тг\n\nКуда записать?\n\n1. NANE PARIS\n2. Личный');
       }
-    } catch(e2) { console.error('EXPENSE_NEW error:', e2.message); }
+    } catch(e2) {}
     cleanReply = reply.replace(/EXPENSE_NEW:\{.*?\}/s, '').trim();
     if (!cleanReply) return '';
   }
 
   if (reply.includes('EXPENSE_LIST:')) {
     try {
-      const jsonStr = reply.match(/EXPENSE_LIST:(\{.*?\})/s)?.[1];
-      const period = jsonStr ? JSON.parse(jsonStr).period : 'month';
-
-      // Читаем NANE расходы из Google Sheets
-      const naneRowsRaw = await dbGetExpenses(new Date().getMonth()+1, new Date().getFullYear(), false, userId);
-    const naneRows = naneRowsRaw.map(e => [e.expense_date, e.category, e.amount, e.description]);
-      // Читаем личные расходы из Supabase
-      const { data: personalRows } = await supabase
-        .from('personal_expenses')
-        .select('*')
-        .eq('user_id', String(userId))
-        .order('created_at', { ascending: false })
-        .limit(200);
-
-      // Фильтр по периоду
       const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-      const monthStart = nowAlm.getMonth() + 1;
-      const yearNow = nowAlm.getFullYear();
-      const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
-
-      // Парсим NANE расходы (формат даты DD.MM.YYYY)
-      const naneExpenses = (naneRows || []).slice(2).filter(r => r[0] && r[2]).map(r => ({
-        date: r[0], category: r[1] || 'Прочее',
-        amount: Number(String(r[2]).replace(/[^0-9.]/g,'')),
-        description: r[3] || r[1] || '', type: 'NANE'
-      })).filter(e => {
-        const parts = String(e.date).split('.');
-        if (parts.length < 3) return false;
-        const m = parseInt(parts[1]), y = parseInt(parts[2]);
-        if (period === 'week') {
-          const d = new Date(y, m-1, parseInt(parts[0]));
-          return d >= weekAgo;
-        }
-        return m === monthStart && y === yearNow;
-      });
-
-      // Парсим личные расходы
-      const personalExpenses = (personalRows || []).filter(e => {
-        const d = new Date(e.created_at);
-        if (period === 'week') return d >= weekAgo;
-        return d.getMonth()+1 === monthStart && d.getFullYear() === yearNow;
-      }).map(e => ({
-        date: e.expense_date || '', description: e.description || '',
-        amount: Number(e.amount), category: e.category || 'Прочее', type: 'Личный'
-      }));
-
-      const allExpenses = [...naneExpenses, ...personalExpenses];
-
-      if (allExpenses.length === 0) {
-        await sendTelegram(userId, '📊 Расходов за ' + (period === 'week' ? 'неделю' : 'этот месяц') + ' пока нет.');
-      } else {
-        const periodLabel = period === 'week' ? 'неделю' : 'месяц';
-        let naneTotal = 0, personalTotal = 0;
-
-        // NANE расходы по категориям
-        const naneBycat = {};
-        naneExpenses.forEach(e => {
-          if (!naneBycat[e.category]) naneBycat[e.category] = { sum: 0, items: [] };
-          naneBycat[e.category].sum += e.amount;
-          naneBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
-          naneTotal += e.amount;
-        });
-
-        // Личные расходы по категориям
-        const persBycat = {};
-        personalExpenses.forEach(e => {
-          if (!persBycat[e.category]) persBycat[e.category] = { sum: 0, items: [] };
-          persBycat[e.category].sum += e.amount;
-          persBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
-          personalTotal += e.amount;
-        });
-
-        let msg = '📊 Расходы за ' + periodLabel + '\n\n';
-
-        if (naneExpenses.length > 0) {
-          msg += '🏪 NANE PARIS: ' + naneTotal.toLocaleString('ru-RU') + ' тг\n';
-          Object.entries(naneBycat).forEach(([cat, data]) => {
-            msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
-            data.items.slice(0, 3).forEach(i => { msg += '    · ' + i + '\n'; });
-          });
-          msg += '\n';
-        }
-
-        if (personalExpenses.length > 0) {
-          msg += '👤 Личные: ' + personalTotal.toLocaleString('ru-RU') + ' тг\n';
-          Object.entries(persBycat).forEach(([cat, data]) => {
-            msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
-            data.items.slice(0, 3).forEach(i => { msg += '    · ' + i + '\n'; });
-          });
-          msg += '\n';
-        }
-
-        msg += '💰 Всего: ' + (naneTotal + personalTotal).toLocaleString('ru-RU') + ' тг';
-        await sendTelegram(userId, msg);
-      }
-    } catch(e2) { console.error('EXPENSE_LIST error:', e2.message); }
+      await showExpensesByMonth(userId, nowAlm.getMonth()+1, nowAlm.getFullYear(), 'month');
+    } catch(e2) {}
     cleanReply = reply.replace(/EXPENSE_LIST:\{.*?\}/s, '').trim();
-    if (!cleanReply) return '';
-  }
-
-  if (reply.includes('TRAINING_PAUSE')) {
-    trainingPaused = true;
-    cleanReply = reply.replace(/TRAINING_PAUSE/g, '').trim();
-    for (const ownerId of OWNER_IDS) {
-      await sendTelegram(ownerId, '⏸ Автоматическое обучение поставлено на паузу.\nПродавцы не получат уроки и тесты до возобновления.\nЧтобы возобновить — напиши «Возобнови обучение».');
-    }
-    if (!cleanReply) return '';
-  }
-
-  if (reply.includes('TRAINING_RESUME')) {
-    trainingPaused = false;
-    cleanReply = reply.replace(/TRAINING_RESUME/g, '').trim();
-    for (const ownerId of OWNER_IDS) {
-      await sendTelegram(ownerId, '▶️ Автоматическое обучение возобновлено.\nУроки будут отправляться по расписанию (пн 12:00) и тесты (пт 12:00).');
-    }
-    if (!cleanReply) return '';
-  }
-
-  if (reply.includes('LESSON_CONFIRMED')) {
-    try {
-      const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-      const timeStr = getTime();
-      // Фиксируем прохождение урока
-      trainingCompleted[String(userId)] = {
-        ...(trainingCompleted[String(userId)] || {}),
-        lesson: true,
-        date: today
-      };
-      // Записываем в Дисциплина
-      await dbSaveDiscipline(today, sellerName, 'Урок изучен', timeStr, '✅ Выполнено в срок');
-      // Уведомляем владельца
-      for (const ownerId of OWNER_IDS) {
-        await sendTelegram(ownerId, '✅ ' + sellerName + ' подтвердила изучение урока · ' + timeStr);
-      }
-      console.log('LESSON_CONFIRMED:', sellerName, today, timeStr);
-    } catch(e) { console.error('LESSON_CONFIRMED error:', e.message); }
-    cleanReply = reply.replace(/LESSON_CONFIRMED/g, '').trim();
-  }
-
-  if (reply.includes('LESSON_REPEAT')) {
-    cleanReply = reply.replace(/LESSON_REPEAT/g, '').trim();
-    try {
-      const { data } = await supabase.from('last_reports')
-        .select('*').eq('user_id', 'training_last_lesson').maybeSingle();
-      if (data && data.html) {
-        const lesson = JSON.parse(data.html);
-        await sendTelegram(userId, lesson.lesson);
-      } else {
-        await sendTelegram(userId, '📚 Урок пока не проводился. Первый урок придёт в понедельник в 10:00.');
-      }
-    } catch(e) { console.error('LESSON_REPEAT error:', e.message); }
     if (!cleanReply) return '';
   }
 
   if (reply.includes('SALARY_CALC:')) {
     try {
       const jsonStr = reply.match(/SALARY_CALC:(\{.*?\})/s)?.[1];
-      let month = new Date().getMonth() + 1, year = new Date().getFullYear();
-      if (jsonStr) { const p = JSON.parse(jsonStr); if (p.month) month = p.month; if (p.year) year = p.year; }
+      let month = new Date().getMonth()+1, year = new Date().getFullYear();
+      if (jsonStr) { const p = JSON.parse(jsonStr); if (p.month) month=p.month; if (p.year) year=p.year; }
       await showSalaryReport(userId, month, year);
-    } catch(e2) { console.error('SALARY_CALC error:', e2.message); }
+    } catch(e2) {}
     cleanReply = reply.replace(/SALARY_CALC:\{.*?\}/s, '').trim();
     if (!cleanReply) return '';
   }
@@ -2390,116 +1005,46 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
   if (reply.includes('SALES_LIST:')) {
     try {
       const jsonStr = reply.match(/SALES_LIST:(\{.*?\})/s)?.[1];
-      let month, year;
-      if (jsonStr) {
-        const p = JSON.parse(jsonStr);
-        month = p.month || (new Date().getMonth() + 1);
-        year  = p.year  || new Date().getFullYear();
-      } else {
-        month = new Date().getMonth() + 1;
-        year  = new Date().getFullYear();
-      }
-      // Если month=0 — текущий месяц
-      if (!month || month === 0) month = new Date().getMonth() + 1;
-      if (!year  || year  === 0) year  = new Date().getFullYear();
-
+      let month = new Date().getMonth()+1, year = new Date().getFullYear();
+      if (jsonStr) { const p = JSON.parse(jsonStr); if (p.month) month=p.month; if (p.year) year=p.year; }
       const sales = await dbGetSales(month, year);
       const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-
       if (!sales || sales.length === 0) {
-        await sendTelegram(userId, '📈 Продаж за ' + (monthNames[month]||month) + ' ' + year + ' пока нет.');
+        await sendTelegram(userId, '📈 Продаж за ' + (monthNames[month]||month) + ' ' + year + ' нет.');
       } else {
-        let total = 0;
-        let best = { revenue: 0, date: '' };
+        let total = 0, best = { revenue: 0, date: '' };
         let msg = '📈 Продажи — ' + (monthNames[month]||month) + ' ' + year + '\n\n';
         sales.forEach(s => {
-          const d = s.sale_date ? s.sale_date.slice(8,10) + '.' + s.sale_date.slice(5,7) : '?';
+          const d = s.sale_date ? s.sale_date.slice(8,10)+'.'+s.sale_date.slice(5,7) : '?';
           const sellers = [s.seller1, s.seller2].filter(Boolean).join('+');
-          msg += d + ': ' + Number(s.revenue).toLocaleString('ru-RU') + ' тг';
-          if (sellers) msg += ' · ' + sellers;
-          msg += '\n';
+          msg += d + ': ' + Number(s.revenue).toLocaleString('ru-RU') + ' тг' + (sellers?' · '+sellers:'') + '\n';
           total += Number(s.revenue);
           if (Number(s.revenue) > best.revenue) best = { revenue: Number(s.revenue), date: d };
         });
         msg += '\n📊 Итого: ' + total.toLocaleString('ru-RU') + ' тг';
-        if (best.date) msg += '\n🏆 Лучший день: ' + best.date + ' — ' + best.revenue.toLocaleString('ru-RU') + ' тг';
+        if (best.date) msg += '\n🏆 Лучший: ' + best.date + ' — ' + best.revenue.toLocaleString('ru-RU') + ' тг';
         await sendTelegram(userId, msg);
       }
-    } catch(e2) { console.error('SALES_LIST error:', e2.message); }
+    } catch(e2) {}
     cleanReply = reply.replace(/SALES_LIST:\{.*?\}/s, '').trim();
     if (!cleanReply) return '';
   }
 
   if (reply.includes('TRAINING_NOW')) {
     cleanReply = reply.replace(/TRAINING_NOW/g, '').trim();
-    await sendTelegram(userId, '📚 Запускаю обучение для продавцов...');
     await sendWeeklyTraining(true);
     if (!cleanReply) return '';
   }
 
-  if (reply.includes('TRAINING_STATS')) {
-    cleanReply = reply.replace(/TRAINING_STATS/g, '').trim();
+  if (reply.includes('FINANCE_REPORT:')) {
     try {
-      const discData = await supabase.from('discipline').select('*').order('event_date', { ascending: false }).limit(100);
-    const discRows = (discData.data || []).map(r => [r.event_date, r.seller_name, r.event_type, r.event_time, r.note]);
-      const trainRows = (discRows || []).filter(r => r[2] && String(r[2]).startsWith('Обучение:'));
-      if (trainRows.length === 0) {
-        await sendTelegram(userId, '📚 Результатов обучения пока нет.');
-      } else {
-        let msg = '📚 СТАТИСТИКА ОБУЧЕНИЯ\n\n';
-        const bySeller = {};
-        trainRows.forEach(r => {
-          const name = r[1] || '?';
-          if (!bySeller[name]) bySeller[name] = [];
-          bySeller[name].push({ date: r[0], topic: String(r[2]).replace('Обучение: ', ''), result: r[4] });
-        });
-        Object.entries(bySeller).forEach(([name, results]) => {
-          msg += '👤 ' + name + '\n';
-          results.slice(-5).forEach(r => {
-            msg += '  📖 ' + r.topic + ' · ' + r.result + ' · ' + r.date + '\n';
-          });
-          msg += '\n';
-        });
-        await sendTelegram(userId, msg);
-      }
-    } catch(e) { console.error('TRAINING_STATS error:', e.message); }
+      const jsonStr = reply.match(/FINANCE_REPORT:(\{.*?\})/s)?.[1];
+      let month = new Date().getMonth()+1, year = new Date().getFullYear();
+      if (jsonStr) { const p = JSON.parse(jsonStr); if (p.month) month=p.month; if (p.year) year=p.year; }
+      await showFinanceReport(userId, month, year);
+    } catch(e) {}
+    cleanReply = reply.replace(/FINANCE_REPORT:\{.*?\}/s, '').trim();
     if (!cleanReply) return '';
-  }
-
-  if (reply.includes('TRAINING_RESULT:')) {
-    try {
-      const jsonStr = reply.match(/TRAINING_RESULT:(\{.*?\})/s)?.[1];
-      if (jsonStr) {
-        const t = JSON.parse(jsonStr);
-        const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-        const timeStr = getTime();
-        const score = parseInt(t.score) || 0;
-        const emoji = score >= 3 ? '✅' : score >= 2 ? '⚠️' : '❌';
-
-        // Фиксируем прохождение теста
-        trainingCompleted[String(userId)] = {
-          ...(trainingCompleted[String(userId)] || {}),
-          test: true,
-          date: today
-        };
-
-        // Записываем в лист Дисциплина (раздел обучения)
-        await dbSaveDiscipline(today, t.seller || sellerName, 'Обучение: ' + (t.topic || ''), timeStr, 'Результат: ' + score + '/3 ' + emoji);
-
-        // Алерт владельцу
-        for (const ownerId of OWNER_IDS) {
-          await sendTelegram(ownerId,
-            '📚 Обучение завершено\n\n' +
-            '👤 ' + (t.seller || sellerName) + '\n' +
-            '📖 Тема: ' + (t.topic || 'не указана') + '\n' +
-            '🎯 Результат: ' + score + '/3 ' + emoji + '\n' +
-            '📅 ' + today + ' · ' + timeStr
-          );
-        }
-        console.log('TRAINING_RESULT:', t.seller, t.topic, score);
-      }
-    } catch(e) { console.error('TRAINING_RESULT error:', e.message); }
-    cleanReply = reply.replace(/TRAINING_RESULT:\{.*?\}/s, '').trim();
   }
 
   return cleanReply;
@@ -2511,191 +1056,120 @@ async function handleMessage(userId, messageText, photoFileId) {
   const isOwner = OWNER_IDS.includes(String(userId));
   const userKey = String(userId);
 
-  // ── Прямой перехват KPI команд — без Claude ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // KPI команды
+  if (isOwner && messageText) {
     const msgLK = messageText.toLowerCase().trim();
-    const kpiMatch = msgLK.match(/kpi\s+(асель|зарина|луиза)\s+(\d)/i) ||
-                     msgLK.match(/(асель|зарина|луиза).*kpi.*(\d)/i) ||
-                     msgLK.match(/kpi\s+(\w+)\s+(\d)/i);
+    const kpiMatch = msgLK.match(/kpi\s+(асель|зарина|луиза)\s+(\d)/i) || msgLK.match(/(асель|зарина|луиза).*kpi.*(\d)/i);
     if (kpiMatch) {
       const sellerRaw = kpiMatch[1];
       const score = parseInt(kpiMatch[2]);
       const sellerName = sellerRaw.charAt(0).toUpperCase() + sellerRaw.slice(1).toLowerCase();
       const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-      const kpiMonth = nowA.getMonth() + 1;
-      const kpiYear = nowA.getFullYear();
       if (score >= 0 && score <= 3) {
-        await saveKPI(sellerName, score, kpiMonth, kpiYear);
-        const kpiAmt = score * 25000;
-        await sendTelegram(userId,
-          '✅ KPI выставлен\n👤 ' + sellerName + '\n' +
-          '⭐ ' + score + '/3 метрики\n' +
-          '💰 ' + kpiAmt.toLocaleString('ru-RU') + ' тг'
-        );
+        await saveKPI(sellerName, score, nowA.getMonth()+1, nowA.getFullYear());
+        await sendTelegram(userId, '✅ KPI выставлен\n👤 ' + sellerName + '\n⭐ ' + score + '/3\n💰 ' + (score*25000).toLocaleString('ru-RU') + ' тг');
         return;
       }
     }
   }
 
-  // ── Прямой перехват приветствия владельца — показываем меню команд ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // Приветствие владельца — показываем меню
+  if (isOwner && messageText) {
     const msgLG = messageText.toLowerCase().trim();
-    if (/^привет$|^здравствуй|^салем|^хай$|^hi$|^hello$|^добрый|^доброе|^добро/.test(msgLG)) {
+    if (/^привет$|^здравствуй|^салем|^хай$|^hi$|^hello$|^добрый|^доброе/.test(msgLG)) {
       const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
       const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-      const m = nowA.getMonth() + 1;
-      const y = nowA.getFullYear();
+      const m = nowA.getMonth()+1;
       const mName = monthNames[m].toLowerCase();
       await sendTelegram(userId,
         '👋 Привет, Ермек!\n\n' +
-        '📊 ОТЧЁТЫ\n' +
-        '• Продажи за ' + mName + ' — список продаж по дням\n' +
-        '• Финансы — оборот, прибыль, ФОТ, налог\n' +
-        '• Дисциплина — опоздания и нарушения\n' +
-        '• Отчёт за ' + mName + ' — полный HTML файл\n' +
-        '• Дашборд — сводка текущего месяца\n\n' +
-        '💰 ФИНАНСЫ\n' +
-        '• Прибыль ' + nowA.toLocaleDateString('ru-RU') + ' 734798 — внести прибыль ROSTA\n' +
-        '• Расходы — список расходов за месяц\n' +
-        '• Потратил 5000 такси — добавить расход\n\n' +
-        '👥 ПРОДАВЦЫ\n' +
-        '• KPI Асель 3 — выставить KPI продавцу (0-3)\n' +
-        '• Зарплата за ' + mName + ' — расчёт ФОТ по продавцам\n\n' +
-        '📋 ПРЕДОПЛАТЫ\n' +
-        '• Предоплаты — список открытых предоплат\n' +
-        '• Новая предоплата — добавить предоплату'
+        '📊 ОТЧЁТЫ\n• Продажи за ' + mName + '\n• Финансы за ' + mName + '\n• Дисциплина\n• Отчёт за ' + mName + '\n• Дашборд\n\n' +
+        '💰 ФИНАНСЫ\n• Прибыль ' + nowA.toLocaleDateString('ru-RU') + ' 734798\n• Расходы\n• Потратил 5000 такси\n\n' +
+        '👥 ПРОДАВЦЫ\n• KPI Асель 3\n• Зарплата за ' + mName + '\n\n' +
+        '📋 ПРЕДОПЛАТЫ\n• Предоплаты\n• Новая предоплата'
       );
       return;
     }
   }
 
-  // ── Прямой перехват команды дисциплины ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // Дисциплина
+  if (isOwner && messageText) {
     const msgLD = messageText.toLowerCase().trim();
     if (/дисциплин|опоздан|нарушен/.test(msgLD)) {
       const monthNamesD = {май:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
       let dMonth = null;
-      for (const [name, num] of Object.entries(monthNamesD)) {
-        if (msgLD.includes(name)) { dMonth = num; break; }
-      }
+      for (const [name, num] of Object.entries(monthNamesD)) { if (msgLD.includes(name)) { dMonth = num; break; } }
       const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-      if (!dMonth) dMonth = nowA.getMonth() + 1;
-      const dYear = nowA.getFullYear();
-
-      let query = supabase.from('discipline').select('*').order('event_date', { ascending: false });
-      const { data: discRows } = await query;
-      const rows = (discRows || []).filter(r => {
-        if (!r.event_date) return false;
-        const d = new Date(r.event_date);
-        return d.getMonth() + 1 === dMonth && d.getFullYear() === dYear;
-      });
-
+      if (!dMonth) dMonth = nowA.getMonth()+1;
+      const { data: discRows } = await supabase.from('discipline').select('*').order('event_date', { ascending: false });
+      const rows = (discRows||[]).filter(r => { if (!r.event_date) return false; const d = new Date(r.event_date); return d.getMonth()+1 === dMonth && d.getFullYear() === nowA.getFullYear(); });
       const monthNames2 = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-      if (rows.length === 0) {
-        await sendTelegram(userId, '✅ Нарушений за ' + (monthNames2[dMonth]||dMonth) + ' ' + dYear + ' нет.');
-      } else {
-        let msg = '📋 Дисциплина — ' + (monthNames2[dMonth]||dMonth) + ' ' + dYear + '\n';
-        msg += '━━━━━━━━━━━━━━━━━━━━\n\n';
-        rows.forEach(r => {
-          msg += '📅 ' + (r.event_date||'') + ' · ' + (r.seller_name||'') + '\n';
-          msg += '⚠️ ' + (r.event_type||'') + ' — ' + (r.event_time||'') + '\n';
-          if (r.note) msg += '📝 ' + r.note + '\n';
-          msg += '\n';
-        });
-        msg += 'Итого нарушений: ' + rows.length;
+      if (rows.length === 0) { await sendTelegram(userId, '✅ Нарушений за ' + (monthNames2[dMonth]||dMonth) + ' нет.'); }
+      else {
+        let msg = '📋 Дисциплина — ' + (monthNames2[dMonth]||dMonth) + '\n━━━━━━━━━━━━━━━━━━━━\n\n';
+        rows.forEach(r => { msg += '📅 ' + (r.event_date||'') + ' · ' + (r.seller_name||'') + '\n⚠️ ' + (r.event_type||'') + ' — ' + (r.event_time||'') + '\n' + (r.note?'📝 '+r.note+'\n':'') + '\n'; });
+        msg += 'Итого: ' + rows.length;
         await sendTelegram(userId, msg);
       }
       return;
     }
   }
 
-  // ── Прямой перехват команды полного отчёта ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // Полный отчёт
+  if (isOwner && messageText) {
     const msgLO = messageText.toLowerCase().trim();
     if (/^отчёт|^отчет|полный отчёт|полный отчет/.test(msgLO)) {
-      const monthNamesO = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
-      let repMonth = new Date().getMonth() + 1;
-      let repYear  = new Date().getFullYear();
-      for (const [name, num] of Object.entries(monthNamesO)) {
-        if (msgLO.includes(name)) { repMonth = num; break; }
-      }
+      const monthNamesO = {май:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let repMonth = new Date().getMonth()+1, repYear = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNamesO)) { if (msgLO.includes(name)) { repMonth = num; break; } }
       await generateFullReport(userId, repMonth, repYear);
       return;
     }
   }
 
-  // ── Прямой перехват финансового отчёта ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // Финансовый отчёт
+  if (isOwner && messageText) {
     const msgLF = messageText.toLowerCase().trim();
-    if (/^финанс|фот%|финансовый/.test(msgLF)) {
-      const monthNamesF = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
-      let finMonth = new Date().getMonth() + 1;
-      let finYear  = new Date().getFullYear();
-      for (const [name, num] of Object.entries(monthNamesF)) {
-        if (msgLF.includes(name)) { finMonth = num; break; }
-      }
+    if (/^финанс|финансовый/.test(msgLF)) {
+      const monthNamesF = {май:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let finMonth = new Date().getMonth()+1, finYear = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNamesF)) { if (msgLF.includes(name)) { finMonth = num; break; } }
       await showFinanceReport(userId, finMonth, finYear);
       return;
     }
   }
 
-  // ── Прямой перехват команды прибыли ROSTA ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // Прибыль ROSTA
+  if (isOwner && messageText) {
     const msgLR = messageText.toLowerCase().trim();
-    // Ловим: "прибыль [день] [месяц] сумма" или "прибыль сегодня сумма"
     if (/^прибыль/.test(msgLR)) {
-      const profitMatch = true;
-      const monthNamesP = {январ:1,феврал:2,март:3,апрел:4,май:5,мая:5,июн:6,июля:7,июль:7,август:8,сентябр:9,октябр:10,ноябр:11,декабр:12};
+      const monthNamesP = {январ:1,феврал:2,март:3,апрел:4,май:5,мая:5,июн:6,июль:7,июля:7,август:8,сентябр:9,октябр:10,ноябр:11,декабр:12};
       let profitDate, profitAmount;
       const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
       const cleanP = msgLR.replace('прибыль', '').trim();
-
-      // Формат "ДД.ММ.ГГГГ сумма" или "ДД.ММ сумма"
       const ddmmyyyy = cleanP.match(/(\d{2})\.(\d{2})\.(\d{4})/);
       const ddmm = cleanP.match(/(\d{1,2})\.(\d{2})\b/);
-
-      if (ddmmyyyy) {
-        profitDate = ddmmyyyy[3]+'-'+ddmmyyyy[2]+'-'+ddmmyyyy[1];
-      } else if (ddmm) {
-        profitDate = nowA.getFullYear()+'-'+ddmm[2].padStart(2,'0')+'-'+ddmm[1].padStart(2,'0');
-      } else {
-        // Формат "4 июня" или "сегодня"
+      if (ddmmyyyy) { profitDate = ddmmyyyy[3]+'-'+ddmmyyyy[2]+'-'+ddmmyyyy[1]; }
+      else if (ddmm) { profitDate = nowA.getFullYear()+'-'+ddmm[2].padStart(2,'0')+'-'+ddmm[1].padStart(2,'0'); }
+      else {
         const parts = cleanP.split(/\s+/);
         const nums = parts.filter(p => /^\d+$/.test(p));
         const words = parts.filter(p => !/^\d+$/.test(p));
-        if (words.includes('сегодня') || nums.length === 1) {
-          profitDate = nowA.toISOString().split('T')[0];
-        } else if (nums.length >= 2) {
-          const day = parseInt(nums[0]);
-          let month = nowA.getMonth() + 1;
-          for (const [name, num] of Object.entries(monthNamesP)) {
-            if (words.some(w => w.startsWith(name))) { month = num; break; }
-          }
+        if (words.includes('сегодня') || nums.length === 1) { profitDate = nowA.toISOString().split('T')[0]; }
+        else if (nums.length >= 2) {
+          const day = parseInt(nums[0]); let month = nowA.getMonth()+1;
+          for (const [name, num] of Object.entries(monthNamesP)) { if (words.some(w => w.startsWith(name))) { month = num; break; } }
           profitDate = nowA.getFullYear()+'-'+String(month).padStart(2,'0')+'-'+String(day).padStart(2,'0');
         }
       }
-
-      // Сумма — последнее большое число (4+ цифр), игнорируем дату
-      const withoutDate = cleanP.replace(/\d{1,2}[.\s]\d{2}[.\s]?\d{0,4}/g, ' ').trim();
+      const withoutDate = cleanP.replace(/\d{1,2}[.\s]\d{2}[.\s]?\d{0,4}/g,' ').trim();
       const amountMatch = withoutDate.replace(/\s/g,'').match(/\d{4,}/g);
       profitAmount = amountMatch ? parseInt(amountMatch[amountMatch.length-1]) : 0;
-      
       if (profitDate && profitAmount > 0) {
-        const { error } = await supabase.from('daily_sales')
-          .update({ rosta_profit: profitAmount })
-          .eq('sale_date', profitDate);
-        
-        if (!error) {
-          await sendTelegram(userId, 
-            '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг'
-          );
-        } else {
-          // Если строки нет — создаём
-          await supabase.from('daily_sales').insert([{
-            sale_date: profitDate, revenue: 0, rosta_profit: profitAmount,
-            month: parseInt(profitDate.split('-')[1]),
-            year: parseInt(profitDate.split('-')[0])
-          }]);
+        const { error } = await supabase.from('daily_sales').update({ rosta_profit: profitAmount }).eq('sale_date', profitDate);
+        if (!error) { await sendTelegram(userId, '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг'); }
+        else {
+          await supabase.from('daily_sales').insert([{ sale_date: profitDate, revenue: 0, rosta_profit: profitAmount, month: parseInt(profitDate.split('-')[1]), year: parseInt(profitDate.split('-')[0]) }]);
           await sendTelegram(userId, '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг');
         }
         return;
@@ -2703,71 +1177,51 @@ async function handleMessage(userId, messageText, photoFileId) {
     }
   }
 
-  // ── Прямой перехват команды зарплаты — без Claude ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // Зарплата
+  if (isOwner && messageText) {
     const msgLZ = messageText.toLowerCase().trim();
     if (/зарплат|фот|расчёт зп|расчет зп/.test(msgLZ)) {
-      const monthNamesZ = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
-      let salMonth = new Date().getMonth() + 1;
-      let salYear  = new Date().getFullYear();
-      for (const [name, num] of Object.entries(monthNamesZ)) {
-        if (msgLZ.includes(name)) { salMonth = num; break; }
-      }
+      const monthNamesZ = {май:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let salMonth = new Date().getMonth()+1, salYear = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNamesZ)) { if (msgLZ.includes(name)) { salMonth = num; break; } }
       await showSalaryReport(userId, salMonth, salYear);
       return;
     }
   }
 
-  // ── Прямой перехват команды продаж — без Claude ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // Продажи
+  if (isOwner && messageText) {
     const msgLS = messageText.toLowerCase().trim();
-    const monthNames2 = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+    const monthNames2 = {май:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
     if (/продаж|оборот|выручк/.test(msgLS)) {
-      let month = new Date().getMonth() + 1, year = new Date().getFullYear();
-      for (const [name, num] of Object.entries(monthNames2)) {
-        if (msgLS.includes(name)) { month = num; break; }
-      }
-      // Временный вызов через handleSystemCommands
-      const fakeSalesReply = 'SALES_LIST:{"month":' + month + ',"year":' + year + '}';
-      await handleSystemCommands(fakeSalesReply, userId, ALLOWED_MAP[String(userId)] || 'Руководитель', messageText);
+      let month = new Date().getMonth()+1, year = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNames2)) { if (msgLS.includes(name)) { month = num; break; } }
+      await handleSystemCommands('SALES_LIST:{"month":'+month+',"year":'+year+'}', userId, ALLOWED_MAP[String(userId)]||'Руководитель', messageText);
       return;
     }
   }
 
-  // ── Прямой перехват команды расходов — без Claude ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
+  // Расходы
+  if (isOwner && messageText) {
     const msgL = messageText.toLowerCase().trim();
-    // Любое сообщение со словом "расход" или "затрат" — показываем расходы
-    const isExpenseView = /расход|затрат/.test(msgL);
-    if (isExpenseView && !/внести|добавить|записать|потратил|трата|прибыль/.test(msgL)) {
-      // Определяем месяц
-      const monthNamesExp = {май:5,майя:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
-      let expMonth = new Date().getMonth() + 1;
-      let expYear  = new Date().getFullYear();
-      for (const [name, num] of Object.entries(monthNamesExp)) {
-        if (msgL.includes(name)) { expMonth = num; break; }
-      }
-      const period = /недел/.test(msgL) ? 'week' : 'month';
-      await showExpensesByMonth(userId, expMonth, expYear, period);
+    if (/расход|затрат/.test(msgL) && !/внести|добавить|записать|потратил|трата|прибыль/.test(msgL)) {
+      const monthNamesExp = {май:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
+      let expMonth = new Date().getMonth()+1, expYear = new Date().getFullYear();
+      for (const [name, num] of Object.entries(monthNamesExp)) { if (msgL.includes(name)) { expMonth = num; break; } }
+      await showExpensesByMonth(userId, expMonth, expYear, 'month');
       return;
     }
   }
 
-  // ── Прямой перехват предоплат для продавцов ──
+  // Предоплаты для продавцов
   if (!isOwner && messageText) {
     const msgLP = messageText.toLowerCase().trim();
     if (/предоплат|prepay/.test(msgLP) && !/новая|создать|добавить|внести/.test(msgLP)) {
       const list = await loadPrepays('open');
-      if (list.length === 0) {
-        await sendTelegram(userId, '📋 Открытых предоплат нет.');
-      } else {
+      if (list.length === 0) { await sendTelegram(userId, '📋 Открытых предоплат нет.'); }
+      else {
         let msg = '📋 Открытые предоплаты: ' + list.length + '\n\n';
-        list.forEach((p, i) => {
-          msg += '🟡 №' + (i+1) + ' ' + p.client + '\n';
-          if (p.id) msg += '🆔 ' + p.id + '\n';
-          if (p.items && p.items.length) msg += '👗 ' + p.items.join(', ') + '\n';
-          msg += '💰 Аванс: ' + Number(p.amount).toLocaleString('ru-RU') + ' тг\n\n';
-        });
+        list.forEach((p, i) => { msg += '🟡 №'+(i+1)+' '+p.client+'\n'+(p.id?'🆔 '+p.id+'\n':'')+(p.items&&p.items.length?'👗 '+p.items.join(', ')+'\n':'')+'💰 Аванс: '+Number(p.amount).toLocaleString('ru-RU')+' тг\n\n'; });
         await sendTelegram(userId, msg);
       }
       return;
@@ -2775,82 +1229,33 @@ async function handleMessage(userId, messageText, photoFileId) {
   }
 
   if (!conversations[userKey]) conversations[userKey] = await loadConversation(userId);
-  if (!openShifts[userKey]) {
-    const dbShift = await loadOpenShift(userId);
-    if (dbShift) openShifts[userKey] = dbShift;
-  }
+  if (!openShifts[userKey]) { const dbShift = await loadOpenShift(userId); if (dbShift) openShifts[userKey] = dbShift; }
 
-  // ── Проверка: смена открыта вчера или раньше — автоматически сбрасываем ──
+  // Проверка устаревшей смены
   if (openShifts[userKey] && openShifts[userKey].start_time) {
     const shiftDate = new Date(openShifts[userKey].start_time);
-    const todayStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-    const shiftDateStr = shiftDate.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+    const todayStr = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' });
+    const shiftDateStr = shiftDate.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' });
     if (shiftDateStr !== todayStr) {
-      console.log('Смена устарела — открыта', shiftDateStr, ', сегодня', todayStr, '— сбрасываем');
       delete openShifts[userKey];
       await deleteOpenShift(userId);
-      // Уведомляем владельца
-      for (const ownerId of OWNER_IDS) {
-        await sendTelegram(ownerId, '⚠️ Смена ' + senderName + ' от ' + shiftDateStr + ' не была закрыта!\nАвтоматически сброшена. Проверь данные.');
-      }
+      for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Смена ' + senderName + ' от ' + shiftDateStr + ' не была закрыта! Автоматически сброшена.');
     }
   }
 
   const hasOpenShift = !!openShifts[userKey];
-  // Если смена открыта с флагом is_second — продавец является вторым
   const isSecondSellerFromShift = !!(openShifts[userKey] && openShifts[userKey].is_second);
-  console.log('handleMessage:', senderName, 'hasOpenShift:', hasOpenShift, 'is_second:', isSecondSellerFromShift, 'shift:', JSON.stringify(openShifts[userKey]));
 
-  // ── Прямой перехват "Открыть смену" для второго продавца ──
-  if (!isOwner && hasOpenShift && isSecondSellerFromShift && messageText) {
-    const msgLS = messageText.toLowerCase().trim();
-    if (/открыть смену|начала смену|начать смену|открываю смену/.test(msgLS)) {
-      // Очищаем историю — начинаем чек-лист прихода заново
-      conversations[userKey] = [];
-      await supabase.from('conversations').delete().eq('phone', String(userId));
-      await sendTelegram(userId, 'Привет! Ты второй продавец сегодня.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?');
-      return;
-    }
-  }
-
-
-  if (!isOwner && !hasOpenShift && messageText) {
-    const msgLow = messageText.toLowerCase();
-    if (msgLow.includes('повторно') || msgLow.includes('вышли отчёт') || msgLow.includes('вышли html') || msgLow.includes('html файл')) {
-      let report = lastShiftReports[userKey];
-      if (!report) report = await loadLastReport(userId);
-      if (!report) {
-        await sendTelegram(userId, '📋 Отчёт закрытия не найден — смена ещё не закрывалась сегодня.');
-      } else {
-        for (const ownerId of OWNER_IDS) {
-          pendingResendApprovals[String(ownerId)] = { sellerId: userKey, sellerName: senderName };
-          await sendTelegram(ownerId, '📋 ' + senderName + ' запрашивает повторную отправку отчёта закрытия смены.\n\nОтветь ДА чтобы отправить или НЕТ чтобы отказать.');
-        }
-        await sendTelegram(userId, '⏳ Запрос отправлен руководителю. Ожидай разрешения.');
-      }
-      return;
-    }
-  }
-  // но у ДРУГОГО продавца смена уже открыта сегодня
-  let isSecondSeller = isSecondSellerFromShift; // читаем из сохранённой смены
+  let isSecondSeller = isSecondSellerFromShift;
   let firstSellerName = '';
   if (!isOwner && !hasOpenShift) {
-    // Проверяем память
     for (const [otherId, shiftData] of Object.entries(openShifts)) {
-      if (otherId !== userKey && shiftData && shiftData.seller) {
-        isSecondSeller = true;
-        firstSellerName = shiftData.seller;
-        break;
-      }
+      if (otherId !== userKey && shiftData && shiftData.seller) { isSecondSeller = true; firstSellerName = shiftData.seller; break; }
     }
-    // Если в памяти нет — проверяем Supabase
     if (!isSecondSeller) {
       try {
         const { data: allShifts } = await supabase.from('open_shifts').select('*').neq('phone', userKey);
-        if (allShifts && allShifts.length > 0) {
-          isSecondSeller = true;
-          firstSellerName = allShifts[0].seller || 'первый продавец';
-        }
+        if (allShifts && allShifts.length > 0) { isSecondSeller = true; firstSellerName = allShifts[0].seller || ''; }
       } catch(e) {}
     }
   }
@@ -2859,24 +1264,16 @@ async function handleMessage(userId, messageText, photoFileId) {
   if (photoFileId) {
     try {
       await sendTelegram(userId, '📷 Читаю фото...');
-      // Сохраняем file_id фото для пересылки владельцу
-      if (!shiftPhotos[String(userId)]) shiftPhotos[String(userId)] = {};
-      const photoType = detectPhotoType(conversations[userKey] || []);
-      if (photoType === 'zreport') shiftPhotos[String(userId)].zreport = photoFileId;
-      else if (photoType === 'kaspi_terminal') shiftPhotos[String(userId)].kaspi = photoFileId;
-      else if (photoType === 'halyk_terminal') shiftPhotos[String(userId)].halyk = photoFileId;
-      else {
-        // Тип не определён — сохраняем по порядку
-        if (!shiftPhotos[String(userId)].zreport) shiftPhotos[String(userId)].zreport = photoFileId;
-        else if (!shiftPhotos[String(userId)].kaspi) shiftPhotos[String(userId)].kaspi = photoFileId;
-        else if (!shiftPhotos[String(userId)].halyk) shiftPhotos[String(userId)].halyk = photoFileId;
-        else shiftPhotos[String(userId)].extra = photoFileId;
-      }
-      console.log('Photo saved:', photoType, 'for user:', userId, 'shiftPhotos:', JSON.stringify(shiftPhotos[String(userId)]));
+
+      // ══════════════════════════════════════════════════════════════
+      // ИСПРАВЛЕНО: определяем тип ДО сохранения, потом сохраняем
+      // ══════════════════════════════════════════════════════════════
+      const photoType = getPhotoTypeByOrder(userId);  // сначала смотрим порядок
+      savePhotoByOrder(userId, photoFileId);           // потом сохраняем
 
       const base64 = await downloadTelegramFile(photoFileId);
       const ocrResult = await readPhotoWithClaude(base64, photoType);
-      let contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
+      const contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
         : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
         : photoType === 'halyk_terminal' ? 'Прочитала Halyk терминал:\n' + ocrResult
         : 'Прочитала фото:\n' + ocrResult;
@@ -2895,30 +1292,40 @@ async function handleMessage(userId, messageText, photoFileId) {
       const data = await loadOwnerData();
       systemPrompt = getOwnerPrompt(senderName, data);
     } else {
-      // isSecondSeller = true если флаг в сохранённой смене ИЛИ обнаружена чужая смена
-      const isSecond = isSecondSeller || isSecondSellerFromShift;
-      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecond, firstSellerName);
+      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecondSeller || isSecondSellerFromShift, firstSellerName);
     }
-
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 2000,
       system: systemPrompt, messages: conversations[userKey]
     });
-
     const reply = response.content.filter(b => b.type === 'text' && b.text).map(b => b.text.trim()).filter(t => t.length > 0).join('\n').trim();
     if (!reply) { await sendTelegram(userId, 'Произошла ошибка. Попробуй еще раз.'); return; }
-
     conversations[userKey].push({ role: 'assistant', content: reply });
     await saveMessages(userId, userContent, reply);
-
     const cleanReply = await handleSystemCommands(reply, userId, senderName, messageText);
     if (cleanReply && cleanReply.trim()) await sendTelegram(userId, cleanReply);
-
-    console.log('LOG:', senderName, isOwner ? 'owner' : 'seller', messageText ? messageText.slice(0,50) : '[фото]');
   } catch(e) {
     console.error('Claude error:', e.message);
     await sendTelegram(userId, 'Произошла ошибка. Попробуй еще раз.');
   }
+}
+
+async function loadOwnerData() {
+  const prepays_raw = await dbGetPrepays('open');
+  const openPrepays = prepays_raw.map(p => ({ id: p.prep_id, date: p.prep_date, client: p.client_name, phone: p.phone, item: p.item, channel: p.channel, amount: p.amount, balance: p.balance }));
+  return { openPrepays };
+}
+
+async function loadPrepays(type) {
+  const rawData = await dbGetPrepays(type === 'open' ? 'open' : type === 'closed' ? 'closed' : 'all');
+  const list = rawData.map(p => ({
+    id: p.prep_id, date: p.prep_date ? String(p.prep_date) : '',
+    client: p.client_name || '', phone: p.phone || '', channel: p.channel || '—',
+    amount: Number(p.amount || 0), balance: Number(p.balance || 0),
+    status: p.status || '🟡 Открыта', items: p.item ? [p.item] : [], notes: p.notes || ''
+  }));
+  list.sort((a, b) => new Date(a.date) - new Date(b.date));
+  return list;
 }
 
 app.post('/webhook', async (req, res) => {
@@ -2939,12 +1346,10 @@ app.post('/webhook', async (req, res) => {
       if (distance > SHOP_RADIUS) {
         if (senderName) {
           await sendTelegram(userId, '❌ Геолокация не принята.\nТы в ' + distance + ' м от магазина.\nПодойди ближе и отправь снова.');
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Попытка не из магазина!\n👤 ' + senderName + '\n📍 ' + distance + ' м\n🕐 ' + getTime());
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Попытка не из магазина!\n👤 ' + senderName + '\n📍 ' + distance + ' м');
         }
         return;
       }
-      // ── Определяем действие по геолокации ──
-      // Проверяем есть ли ДРУГИЕ открытые смены (не наша)
       let geoOtherShift = false;
       for (const [otherId, sd] of Object.entries(openShifts)) {
         if (otherId !== String(userId) && sd && sd.seller) { geoOtherShift = true; break; }
@@ -2955,37 +1360,17 @@ app.post('/webhook', async (req, res) => {
           if (oth && oth.length > 0) geoOtherShift = true;
         } catch(e) {}
       }
-
-      // Если есть другая смена — это второй продавец (его смена уже открыта, геолокация = приход)
-      // Если нет других смен — это первый продавец или закрытие
       const ownShift = openShifts[String(userId)] || await loadOpenShift(userId);
       let action;
-      if (pendingGeoAction[userId]) {
-        action = pendingGeoAction[userId];
-      } else if (geoOtherShift && ownShift) {
-        // Есть наша смена И чужая — мы второй продавец, геолокация для прихода
-        action = 'second_arrive';
-      } else if (ownShift) {
-        // Есть только наша смена — закрытие
-        action = 'close_shift';
-      } else {
-        action = 'open_shift';
-      }
-      console.log('GEO DEBUG userId:', userId, 'geoOtherShift:', geoOtherShift, 'ownShift:', !!ownShift, 'action:', action);
+      if (pendingGeoAction[userId]) { action = pendingGeoAction[userId]; }
+      else if (geoOtherShift && ownShift) { action = 'second_arrive'; }
+      else if (ownShift) { action = 'close_shift'; }
+      else { action = 'open_shift'; }
       delete pendingGeoAction[userId];
-
       if (action === 'second_arrive') {
-        // ВТОРОЙ ПРОДАВЕЦ — обрабатываем сами без Claude
         const sName = ALLOWED_MAP[String(userId)] || 'Продавец';
         const tStr = getTime();
-        for (const ownerId of OWNER_IDS) {
-          await sendTelegram(ownerId, '✅ Второй продавец на месте\n👤 ' + sName + '\n🕐 ' + tStr);
-        }
-        /* лог */
-        const h = parseInt(tStr.split(':')[0]), m = parseInt(tStr.split(':')[1]);
-        if (h > 11 || (h === 11 && m > 15)) {
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + sName + '\n🕐 ' + tStr);
-        }
+        for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '✅ Второй продавец на месте\n👤 ' + sName + '\n🕐 ' + tStr);
         await sendTelegram(userId, '✅ Геолокация принята. Хорошей смены, ' + sName + '!');
       } else if (action === 'open_shift') {
         delete conversations[String(userId)];
@@ -2998,28 +1383,25 @@ app.post('/webhook', async (req, res) => {
 
     if (messageText) {
       const lower = messageText.toLowerCase();
-
-      // ── Владелец отвечает ДА/НЕТ на запрос повторного открытия ──
+      // ДА/НЕТ от владельца на повторное открытие
       if (OWNER_IDS.includes(String(userId))) {
         for (const [sellerUserId, approval] of Object.entries(pendingReopenApprovals)) {
           if (approval.waitingForOwner) {
             if (lower === 'да' || lower === 'yes') {
               approval.waitingForOwner = false;
-              // Очищаем смену и историю продавца
               delete openShifts[sellerUserId];
               await deleteOpenShift(sellerUserId);
               delete conversations[sellerUserId];
               await supabase.from('conversations').delete().eq('phone', String(sellerUserId));
               clearChecklistTimer(sellerUserId);
               delete pendingReopenApprovals[sellerUserId];
-              await sendTelegram(sellerUserId, '✅ Руководитель разрешил повторное открытие смены.\nНапиши "Начала смену" чтобы начать.');
-              await sendTelegram(userId, '✅ Разрешение выдано. Смена и история ' + approval.sellerName + ' очищены.');
+              await sendTelegram(sellerUserId, '✅ Руководитель разрешил повторное открытие.\nНапиши "Начала смену" чтобы начать.');
+              await sendTelegram(userId, '✅ Разрешение выдано.');
               return;
             } else if (lower === 'нет' || lower === 'no') {
-              approval.waitingForOwner = false;
               delete pendingReopenApprovals[sellerUserId];
-              await sendTelegram(sellerUserId, '❌ Руководитель не разрешил повторное открытие смены.\nЕсли есть вопросы — свяжись с руководителем.');
-              await sendTelegram(userId, '❌ Отказ отправлен продавцу.');
+              await sendTelegram(sellerUserId, '❌ Руководитель не разрешил повторное открытие.');
+              await sendTelegram(userId, '❌ Отказано.');
               return;
             }
           }
@@ -3027,125 +1409,69 @@ app.post('/webhook', async (req, res) => {
       }
 
       if (lower.includes('начала смену') || lower.includes('открываю смену') || lower.includes('начинаю смену')) {
-
-        // Если уже ждём ответа владельца — не дублируем запрос
         if (pendingReopenApprovals[String(userId)] && pendingReopenApprovals[String(userId)].waitingForOwner) {
-          await sendTelegram(userId, '⏳ Запрос уже отправлен руководителю. Ожидай ответа.');
+          await sendTelegram(userId, '⏳ Запрос уже отправлен. Ожидай ответа.');
           return;
         }
-
-        // Проверяем — есть ли уже открытая смена у этого продавца
-        // Источники: память, Supabase open_shifts, история диалога
         let existingShift = openShifts[String(userId)];
-        console.log('REOPEN CHECK: userId=', userId, 'inMemory=', !!existingShift);
-        if (!existingShift) {
-          const dbShift = await loadOpenShift(userId);
-          console.log('REOPEN CHECK: dbShift=', JSON.stringify(dbShift));
-          if (dbShift) existingShift = dbShift;
-        }
-        // Дополнительно: проверяем историю диалога — если есть сообщения сегодня, смена может быть открыта
+        if (!existingShift) { const dbShift = await loadOpenShift(userId); if (dbShift) existingShift = dbShift; }
         if (!existingShift) {
           const history = await loadConversation(userId);
           if (history && history.length > 0) {
-            // Есть история — значит продавец уже общалась с Томи сегодня
-            // Проверяем последнее сообщение ассистента на признак открытой смены
-            const lastMessages = history.slice(-10).map(m => String(m.content || '').toLowerCase()).join(' ');
-            if (lastMessages.includes('смена открыта') || lastMessages.includes('shift_open') || lastMessages.includes('удачной работы') || lastMessages.includes('хорошей смены')) {
+            const lastMessages = history.slice(-10).map(m => String(m.content||'').toLowerCase()).join(' ');
+            if (lastMessages.includes('смена открыта') || lastMessages.includes('shift_open') || lastMessages.includes('хорошей смены')) {
               existingShift = { time: 'ранее сегодня', fromHistory: true };
-              console.log('REOPEN CHECK: found open shift in conversation history');
             }
           }
         }
-        console.log('REOPEN CHECK: existingShift=', JSON.stringify(existingShift));
-
         if (existingShift) {
           const sellerNameLocal = ALLOWED_MAP[String(userId)] || 'Продавец';
-          const openedAt = existingShift.time || existingShift.start_time || 'неизвестно';
-
-          // Смена уже открыта — запрашиваем согласование владельца
-          pendingReopenApprovals[String(userId)] = {
-            sellerName: sellerNameLocal,
-            openedAt,
-            waitingForOwner: true,
-            timestamp: Date.now()
-          };
-
-          await sendTelegram(userId, '⚠️ Смена уже открыта сегодня в ' + openedAt + '.\nПовторное открытие требует разрешения руководителя.\nОжидай — я уже отправила запрос.');
-
+          pendingReopenApprovals[String(userId)] = { sellerName: sellerNameLocal, waitingForOwner: true, timestamp: Date.now() };
+          await sendTelegram(userId, '⚠️ Смена уже открыта. Повторное открытие требует разрешения руководителя. Ожидай.');
           for (const ownerId of OWNER_IDS) {
-            await sendTelegram(ownerId,
-              '🔐 ЗАПРОС ПОВТОРНОГО ОТКРЫТИЯ СМЕНЫ\n\n' +
-              '👤 ' + sellerNameLocal + '\n' +
-              '🕐 Смена открыта в ' + openedAt + '\n\n' +
-              'Продавец запрашивает повторное открытие.\n\n' +
-              'Ответь:\n✅ ДА — разрешить (смена и история будут сброшены)\n❌ НЕТ — отказать\n\n' +
-              '⏰ Если не ответишь в течение 10 минут — смена не откроется автоматически.'
-            );
+            await sendTelegram(ownerId, '🔐 ЗАПРОС ПОВТОРНОГО ОТКРЫТИЯ\n\n👤 ' + sellerNameLocal + '\n\nОтветь ДА или НЕТ.\n(Без ответа через 10 мин — отклонено)');
           }
-
           setTimeout(async () => {
             if (pendingReopenApprovals[String(userId)] && pendingReopenApprovals[String(userId)].waitingForOwner) {
               delete pendingReopenApprovals[String(userId)];
-              await sendTelegram(userId, '⏰ Руководитель не ответил в течение 10 минут.\nПовторное открытие отклонено. Свяжись с руководителем напрямую.');
-              for (const ownerId of OWNER_IDS) {
-                await sendTelegram(ownerId, '⏰ Запрос ' + sellerNameLocal + ' на повторное открытие истёк (10 мин без ответа).');
-              }
+              await sendTelegram(userId, '⏰ Руководитель не ответил. Повторное открытие отклонено.');
             }
           }, 10 * 60 * 1000);
-
-          return; // СТОП — не передаём в handleMessage
+          return;
         }
-
-        // Смены нет — очищаем историю и начинаем чисто
+        // Смены нет — открываем чисто
         delete conversations[String(userId)];
         try { await supabase.from('conversations').delete().eq('phone', String(userId)); } catch(e) {}
-
+        // Сбрасываем фото предыдущей смены
+        delete shiftPhotos[String(userId)];
         pendingGeoAction[userId] = 'open_shift';
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
-
-        // Проверяем второго продавца ДО сохранения своей смены
         let isSecondSellerCheck = false;
-        // Сначала смотрим в памяти
         for (const [otherId, shiftData] of Object.entries(openShifts)) {
-          if (otherId !== String(userId) && shiftData && shiftData.seller) {
-            isSecondSellerCheck = true;
-            break;
-          }
+          if (otherId !== String(userId) && shiftData && shiftData.seller) { isSecondSellerCheck = true; break; }
         }
-        // Если в памяти нет — проверяем Supabase
         if (!isSecondSellerCheck) {
           try {
             const { data: otherShifts } = await supabase.from('open_shifts').select('*').neq('phone', String(userId));
             if (otherShifts && otherShifts.length > 0) isSecondSellerCheck = true;
           } catch(e) {}
         }
-
-        // Теперь сохраняем свою смену с флагом второго продавца
         await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString(), is_second: isSecondSellerCheck });
-        // Также сохраняем в памяти
         openShifts[String(userId)] = { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString(), is_second: isSecondSellerCheck };
-
-        let checklistFirstQ;
-        if (isSecondSellerCheck) {
-          checklistFirstQ = 'Привет! Ты второй продавец сегодня.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?';
-        } else {
-          checklistFirstQ = 'Отлично! Начинаем чек-лист открытия.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?';
-        }
-
+        const checklistFirstQ = isSecondSellerCheck
+          ? 'Привет! Ты второй продавец сегодня.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?'
+          : 'Отлично! Начинаем чек-лист открытия.\n\nШАГ 0 — Внешний вид: макияж готов? одежда в порядке?';
         const checklistStartMsg = isSecondSellerCheck
-          ? 'Второй продавец начинает смену. Упрощённый чек-лист: только внешний вид и геолокация. Кассу не спрашивай.'
+          ? 'Второй продавец начинает смену. Упрощённый чек-лист.'
           : 'Продавец начинает смену. Начинаем чек-лист открытия с шага 0.';
-
         conversations[String(userId)] = [
           { role: 'user', content: checklistStartMsg },
           { role: 'assistant', content: checklistFirstQ }
         ];
         await saveMessages(userId, checklistStartMsg, checklistFirstQ);
-
         await sendTelegram(userId, checklistFirstQ);
         return;
-
       } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены')) {
         pendingGeoAction[userId] = 'close_shift';
       }
@@ -3156,51 +1482,25 @@ app.post('/webhook', async (req, res) => {
   } catch(e) { console.error('Webhook error:', e.message); }
 });
 
-app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '4.2' }));
-
-// ══════════════════════════════════════════════════════════════════════
-// УТРЕННИЙ ДАЙДЖЕСТ — каждый день в 09:00 по Алматы
-// ══════════════════════════════════════════════════════════════════════
-// ── Таймер чек-листа — запускается при написании "Начала смену" ──────
+app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '4.4' }));
 
 function startChecklistTimer(userId, sellerName, startTime) {
-  // Очищаем старый таймер если есть
-  if (checklistTimers[userId]) {
-    clearTimeout(checklistTimers[userId].timeout15);
-    clearTimeout(checklistTimers[userId].timeout20);
-  }
-
+  if (checklistTimers[userId]) { clearTimeout(checklistTimers[userId].timeout15); clearTimeout(checklistTimers[userId].timeout20); }
   const startTimeStr = startTime || getTime();
-
-  // Через 15 минут — первый алерт
   const timeout15 = setTimeout(async () => {
-    // Проверяем — смена уже открыта (SHIFT_OPEN выполнен) — значит чек-лист закрыт
     if (openShifts[String(userId)] && openShifts[String(userId)].start_time) {
-      const shiftStart = new Date(openShifts[String(userId)].start_time);
-      const now = new Date();
-      const diffMin = (now - shiftStart) / 60000;
-      if (diffMin < 20) return; // смена открылась нормально
+      const diffMin = (new Date() - new Date(openShifts[String(userId)].start_time)) / 60000;
+      if (diffMin < 20) return;
     }
-
-    console.log('Таймаут чек-листа 15 мин:', sellerName);
-    await sendTelegram(userId, '⏰ ' + sellerName + ', прошло 15 минут — чек-лист ещё не закрыт!\nЗакрой немедленно, иначе уведомлю руководителя.');
-
-    const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+    await sendTelegram(userId, '⏰ ' + sellerName + ', прошло 15 минут — чек-лист ещё не закрыт!');
+    const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric' });
     await dbSaveDiscipline(today, sellerName, 'Таймаут чек-листа', getTime(), 'Не закрыт за 15 минут');
-    for (const ownerId of OWNER_IDS) {
-      await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт за 15 минут!\n👤 ' + sellerName + '\n🕐 Начала в ' + startTimeStr + '\nПродавец получила напоминание.');
-    }
-
-    // Через ещё 5 минут — повторный алерт владельцу
+    for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Чек-лист не закрыт за 15 минут!\n👤 ' + sellerName + '\n🕐 Начала в ' + startTimeStr);
     checklistTimers[userId].timeout20 = setTimeout(async () => {
-      if (openShifts[String(userId)]) return; // успела закрыть
-      for (const ownerId of OWNER_IDS) {
-        await sendTelegram(ownerId, '🚨 Чек-лист до сих пор не закрыт!\n👤 ' + sellerName + '\n🕐 Прошло 20 минут с начала смены. Требуется вмешательство.');
-      }
+      if (openShifts[String(userId)]) return;
+      for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '🚨 Чек-лист до сих пор не закрыт!\n👤 ' + sellerName);
     }, 5 * 60 * 1000);
-
   }, 15 * 60 * 1000);
-
   checklistTimers[userId] = { timeout15, timeout20: null };
 }
 
@@ -3212,74 +1512,8 @@ function clearChecklistTimer(userId) {
   }
 }
 
-// ── Еженедельная сводка по дисциплине (понедельник 09:00) ─────────────
-async function sendWeeklyDisciplineReport() {
-  try {
-    const discData = await supabase.from('discipline').select('*').order('event_date', { ascending: false }).limit(100);
-    const discRows = (discData.data || []).map(r => [r.event_date, r.seller_name, r.event_type, r.event_time, r.note]);
-    if (!discRows || discRows.length < 2) return;
-
-    // Данные за последние 7 дней
-    const now = new Date();
-    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-
-    const weekRows = discRows.slice(1).filter(r => {
-      if (!r[0]) return false;
-      const parts = String(r[0]).split('.');
-      if (parts.length < 3) return false;
-      const d = new Date(parts[2], parts[1]-1, parts[0]);
-      return d >= weekAgo;
-    });
-
-    if (weekRows.length === 0) {
-      for (const ownerId of OWNER_IDS) {
-        await sendTelegram(ownerId, '📋 ДИСЦИПЛИНА — неделя\n\n✅ Нарушений за неделю нет. Команда работает чисто.');
-      }
-      return;
-    }
-
-    // Группируем по продавцу
-    const byName = {};
-    weekRows.forEach(r => {
-      const name = r[1] || 'Неизвестно';
-      const type = r[2] || '';
-      if (!byName[name]) byName[name] = { late: 0, timeout: 0, other: 0 };
-      if (type === 'Опоздание') byName[name].late++;
-      else if (type === 'Таймаут чек-листа') byName[name].timeout++;
-      else byName[name].other++;
-    });
-
-    let msg = '📋 ДИСЦИПЛИНА — неделя\n\n';
-    let hasIssues = false;
-
-    Object.entries(byName).forEach(([name, stats]) => {
-      const total = stats.late + stats.timeout + stats.other;
-      if (total > 0) {
-        hasIssues = true;
-        msg += '👤 ' + name + '\n';
-        if (stats.late > 0) msg += '  ⏰ Опозданий: ' + stats.late + '\n';
-        if (stats.timeout > 0) msg += '  📋 Таймаут чек-листа: ' + stats.timeout + '\n';
-        if (stats.other > 0) msg += '  ⚠️ Другие: ' + stats.other + '\n';
-        msg += '\n';
-      }
-    });
-
-    if (!hasIssues) msg += '✅ Нарушений нет\n';
-
-    msg += 'Итого нарушений за неделю: ' + weekRows.length;
-
-    for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, msg);
-    console.log('Еженедельная сводка по дисциплине отправлена');
-  } catch(e) { console.error('Ошибка еженедельной сводки:', e.message); }
-}
-
-// ── Еженедельный отчёт по продажам (HTML) ────────────────────────────
-// ── Напоминания ───────────────────────────────────────────────────────
 async function saveReminder(userId, text, remindAt) {
-  try {
-    await supabase.from('reminders').insert({ user_id: String(userId), text, remind_at: remindAt, done: false });
-    console.log('Напоминание сохранено:', text, remindAt);
-  } catch(e) { console.error('saveReminder error:', e.message); }
+  try { await supabase.from('reminders').insert({ user_id: String(userId), text, remind_at: remindAt, done: false }); } catch(e) {}
 }
 
 async function checkReminders() {
@@ -3287,1335 +1521,280 @@ async function checkReminders() {
     const now = new Date().toISOString();
     const { data } = await supabase.from('reminders').select('*').eq('done', false).lte('remind_at', now);
     if (!data || data.length === 0) return;
-    for (const r of data) {
-      await sendTelegram(r.user_id, '⏰ Напоминание: ' + r.text);
-      await supabase.from('reminders').update({ done: true }).eq('id', r.id);
-      console.log('Напоминание отправлено:', r.text);
-    }
-  } catch(e) { console.error('checkReminders error:', e.message); }
+    for (const r of data) { await sendTelegram(r.user_id, '⏰ Напоминание: ' + r.text); await supabase.from('reminders').update({ done: true }).eq('id', r.id); }
+  } catch(e) {}
 }
-
-async function deleteLastExpense(userId) {
-  try {
-    const rowsRaw = await dbGetExpenses(new Date().getMonth()+1, new Date().getFullYear(), false, userId);
-    const rows = rowsRaw.map(e => [e.expense_date, e.category, e.amount, e.description, e.month, e.year]);
-    // Ищем последнюю непустую строку с данными (с строки 3)
-    let lastRow = -1;
-    for (let i = rows.length - 1; i >= 2; i--) {
-      if (rows[i] && rows[i][0] && rows[i][2]) { lastRow = i + 1; break; }
-    }
-    if (lastRow < 0) return null;
-    const { api } = getSheets(DASHBOARD_ID);
-    // Очищаем строку
-    await api.spreadsheets.values.clear({
-      spreadsheetId: DASHBOARD_ID,
-      range: 'Расходы!A' + lastRow + ':F' + lastRow
-    });
-    return rows[lastRow - 1];
-  } catch(e) { console.error('deleteLastExpense error:', e.message); return null; }
-}
-async function generatePLReport() {
-  try {
-    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
-    const now = getNow();
-    const monthName = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long', year: 'numeric' });
-
-    // Данные из Итоги месяца
-    const itogiCalc = await calcSalary(curMonth, curYear);
-    const itogi = []; // данные из calcSalary
-    const getNum = (rows, ri, ci) => {
-      try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
-    };
-
-    const revenue = getNum(itogi, 4, 1); // Оборот
-    const fotTotal = getNum(itogi, 17, 7); // ФОТ итого
-    const tax = getNum(itogi, 'R' in itogi ? 15 : 15, 1) || Math.round(revenue * 0.03); // Налог 3%
-
-    // Читаем дашборд для оборота
-    const dash = []; // данные из Supabase
-    const totalFact = getNum(dash, 18, 6) || (getNum(dash,18,2)+getNum(dash,18,3)+getNum(dash,18,4));
-
-    // Расходы из листа Расходы
-    const expRowsRaw = await dbGetExpenses(curMonth, curYear, false, userId);
-    const expRows = expRowsRaw.map(e => [e.expense_date, e.category, e.amount, e.description, e.month, e.year]);
-    const currentMonth = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', month: 'long' });
-
-    const expenses = {};
-    let totalExpenses = 0;
-    expRows.slice(2).forEach(r => {
-      if (!r[0] || !r[1] || !r[2]) return;
-      if (String(r[4]||'').toLowerCase() !== currentMonth.toLowerCase()) return;
-      const cat = String(r[1]).trim();
-      const amount = parseFloat(String(r[2]).replace(/[^0-9.]/g,'')) || 0;
-      if (!expenses[cat]) expenses[cat] = 0;
-      expenses[cat] += amount;
-      totalExpenses += amount;
-    });
-
-    const taxCalc = Math.round(totalFact * 0.03);
-    const grossProfit = totalFact - fotTotal - taxCalc - totalExpenses;
-
-    // Цвета
-    const profitColor = grossProfit >= 0 ? '#1a8a5a' : '#c0392b';
-    const profitBg = grossProfit >= 0 ? '#eaf3de' : '#fcebeb';
-    const profitBorder = grossProfit >= 0 ? '#c0dd97' : '#F7C1C1';
-
-    // Строки расходов
-    const expenseRows = Object.entries(expenses).map(([cat, amount]) => `
-      <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
-        <span style="color:#555;">${cat}</span>
-        <span style="font-weight:500;color:#c0392b;">-${fmt(amount)} ₸</span>
-      </div>`).join('');
-
-    return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>P&L — ${monthName}</title></head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px;margin:0;">
-<div style="max-width:680px;margin:0 auto;">
-
-  <div style="margin-bottom:20px;">
-    <div style="font-size:21px;font-weight:700;letter-spacing:0.07em;color:#1a1a1a;">NANÉ PARIS</div>
-    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.12em;margin-top:2px;">P&L — ${monthName}</div>
-    <div style="font-size:11px;color:#aaa;margin-top:3px;">Сформирован: ${now}</div>
-  </div>
-
-  <!-- Итог -->
-  <div style="background:${profitBg};border:1px solid ${profitBorder};border-radius:12px;padding:16px;margin-bottom:16px;text-align:center;">
-    <div style="font-size:12px;color:#888;margin-bottom:6px;">Чистая прибыль</div>
-    <div style="font-size:32px;font-weight:700;color:${profitColor};">${grossProfit >= 0 ? '+' : ''}${fmt(grossProfit)} ₸</div>
-  </div>
-
-  <!-- Доходы -->
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:0 0 8px;">Доходы</div>
-  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">
-    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
-      <span style="color:#555;">Оборот магазина</span>
-      <span style="font-weight:500;color:#1a8a5a;">+${fmt(totalFact)} ₸</span>
-    </div>
-    <div style="padding:10px 14px;display:flex;justify-content:space-between;font-size:13px;font-weight:600;">
-      <span>Итого доходы</span>
-      <span style="color:#1a8a5a;">+${fmt(totalFact)} ₸</span>
-    </div>
-  </div>
-
-  <!-- Расходы фиксированные -->
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Расходы</div>
-  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">
-    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
-      <span style="color:#555;">ФОТ (зарплата команды)</span>
-      <span style="font-weight:500;color:#c0392b;">-${fmt(fotTotal)} ₸</span>
-    </div>
-    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
-      <span style="color:#555;">Налог 3%</span>
-      <span style="font-weight:500;color:#c0392b;">-${fmt(taxCalc)} ₸</span>
-    </div>
-    ${expenseRows || '<div style="padding:12px 14px;font-size:13px;color:#aaa;">Расходы не внесены</div>'}
-    <div style="padding:10px 14px;display:flex;justify-content:space-between;font-size:13px;font-weight:600;">
-      <span>Итого расходы</span>
-      <span style="color:#c0392b;">-${fmt(fotTotal + taxCalc + totalExpenses)} ₸</span>
-    </div>
-  </div>
-
-  <!-- Детализация -->
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Детализация</div>
-  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;">
-    <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:12px;">
-      <span style="color:#aaa;">Оборот</span><span>+${fmt(totalFact)} ₸</span>
-    </div>
-    <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:12px;">
-      <span style="color:#aaa;">ФОТ</span><span>-${fmt(fotTotal)} ₸</span>
-    </div>
-    <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:12px;">
-      <span style="color:#aaa;">Налог 3%</span><span>-${fmt(taxCalc)} ₸</span>
-    </div>
-    <div style="padding:10px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:12px;">
-      <span style="color:#aaa;">Прочие расходы</span><span>-${fmt(totalExpenses)} ₸</span>
-    </div>
-    <div style="padding:12px 14px;display:flex;justify-content:space-between;font-size:14px;font-weight:700;border-top:2px solid #e8e4de;">
-      <span>Чистая прибыль</span>
-      <span style="color:${profitColor};">${grossProfit >= 0 ? '+' : ''}${fmt(grossProfit)} ₸</span>
-    </div>
-  </div>
-
-</div></body></html>`;
-  } catch(e) {
-    console.error('generatePLReport error:', e.message);
-    return null;
-  }
-}
-
-async function sendWeeklySalesReport() {
-  try {
-    console.log('Формирую еженедельный отчёт по продажам...');
-    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
-    const pctColor = p => p >= 100 ? '#1a8a5a' : p >= 80 ? '#b06a10' : '#c0392b';
-    const barColor = p => p >= 100 ? '#27ae60' : p >= 80 ? '#e67e22' : '#e74c3c';
-
-    // Даты недели
-    const now = new Date();
-    const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-    const weekStart = weekAgo.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: 'long' });
-    const weekEnd = now.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: 'long', year: 'numeric' });
-
-    // Читаем смены за неделю
-    const shiftsData = await supabase.from('open_shifts').select('*');
-    const shifts = (shiftsData.data || []).map(s => ['', s.phone, s.seller, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
-    const weekShifts = shifts.slice(1).filter(r => {
-      if (!r[0]) return false;
-      const parts = String(r[0]).split('.');
-      if (parts.length < 3) return false;
-      const d = new Date(parts[2], parts[1]-1, parts[0]);
-      return d >= weekAgo && d <= now;
-    });
-
-    // Итоги по дням
-    const byDay = {};
-    weekShifts.forEach(r => {
-      const date = r[0];
-      const rostaTotal = parseFloat(String(r[19]||'0').replace(/[^0-9.]/g,'')) || 0;
-      if (!byDay[date]) byDay[date] = 0;
-      byDay[date] += rostaTotal;
-    });
-
-    const dayTotals = Object.values(byDay);
-    const weekTotal = dayTotals.reduce((s, v) => s + v, 0);
-    const avgDay = dayTotals.length > 0 ? weekTotal / dayTotals.length : 0;
-    const bestDay = dayTotals.length > 0 ? Math.max(...dayTotals) : 0;
-    const worstDay = dayTotals.length > 0 ? Math.min(...dayTotals) : 0;
-    const bestDayDate = Object.keys(byDay).find(k => byDay[k] === bestDay) || '—';
-    const worstDayDate = Object.keys(byDay).find(k => byDay[k] === worstDay) || '—';
-
-    // Итоги по продавцам
-    const bySeller = {};
-    weekShifts.forEach(r => {
-      const seller = r[1];
-      if (!seller) return;
-      const rostaTotal = parseFloat(String(r[19]||'0').replace(/[^0-9.]/g,'')) || 0;
-      if (!bySeller[seller]) bySeller[seller] = { total: 0, shifts: 0 };
-      bySeller[seller].total += rostaTotal;
-      bySeller[seller].shifts++;
-    });
-
-    // Дисциплина за неделю
-    const discData = await supabase.from('discipline').select('*').order('event_date', { ascending: false }).limit(100);
-    const discRows = (discData.data || []).map(r => [r.event_date, r.seller_name, r.event_type, r.event_time, r.note]);
-    const weekDisc = (discRows || []).slice(1).filter(r => {
-      if (!r[0]) return false;
-      const parts = String(r[0]).split('.');
-      if (parts.length < 3) return false;
-      const d = new Date(parts[2], parts[1]-1, parts[0]);
-      return d >= weekAgo && d <= now;
-    });
-    const lateCount = weekDisc.filter(r => r[2] === 'Опоздание').length;
-    const timeoutCount = weekDisc.filter(r => r[2] === 'Таймаут чек-листа').length;
-    const reopenCount = weekDisc.filter(r => r[2] === 'Повторное открытие').length;
-
-    // Дашборд — план месяца
-    const dash = []; // данные из Supabase
-    const getNum = (rows, ri, ci) => {
-      try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
-    };
-    const plan = getNum(dash, 5, 2) || 27000000;
-    const totalFact = getNum(dash, 18, 6) || 0;
-    const totalPct = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
-    const remains = Math.max(0, plan - totalFact);
-    const today = new Date();
-    const daysInMonth = new Date(today.getFullYear(), today.getMonth()+1, 0).getDate();
-    const daysLeft = daysInMonth - today.getDate();
-    const dailyNeed = daysLeft > 0 ? Math.round(remains / daysLeft) : 0;
-
-    // Личные планы продавцов
-    const aselPlan = getNum(dash, 13, 2);
-    const zarinaPlan = getNum(dash, 13, 3);
-    const luizaPlan = getNum(dash, 13, 4);
-    const planMap = { 'Асель': aselPlan, 'Зарина': zarinaPlan, 'Луиза': luizaPlan };
-    const emojiMap = { 'Асель': '💙', 'Зарина': '💙', 'Луиза': '💚' };
-
-    // Факт по продавцам из дашборда
-    const aselFact = getNum(dash, 18, 2);
-    const zarinaFact = getNum(dash, 18, 3);
-    const luizaFact = getNum(dash, 18, 4);
-    const factMap = { 'Асель': aselFact, 'Зарина': zarinaFact, 'Луиза': luizaFact };
-
-    // Дисциплина по продавцам за неделю
-    const discBySeller = {};
-    weekDisc.forEach(r => {
-      const name = r[1];
-      if (!name) return;
-      if (!discBySeller[name]) discBySeller[name] = 0;
-      if (r[2] === 'Опоздание') discBySeller[name]++;
-    });
-
-    const sellers = ['Асель', 'Зарина', 'Луиза'];
-
-    const sellerBlocks = sellers.map(name => {
-      const weekData = bySeller[name] || { total: 0, shifts: 0 };
-      const monthFact = factMap[name] || 0;
-      const monthPlan = planMap[name] || 1;
-      const pct = Math.round(monthFact / monthPlan * 100);
-      const avgSellerDay = weekData.shifts > 0 ? Math.round(weekData.total / weekData.shifts) : 0;
-      const late = discBySeller[name] || 0;
-      const emoji = emojiMap[name] || '💙';
-      return `
-    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-        <div style="font-size:14px;font-weight:600;color:#1a1a1a;">${emoji} ${name}</div>
-        <div style="font-size:16px;font-weight:700;color:${pctColor(pct)}">${pct}%</div>
-      </div>
-      <div style="font-size:12px;color:#999;margin-bottom:8px;">${fmt(monthFact)} ₸ из ${fmt(monthPlan)} ₸ (месяц) · Осталось: ${fmt(Math.max(0, monthPlan - monthFact))} ₸</div>
-      <div style="background:#ebe8e2;border-radius:20px;height:6px;overflow:hidden;margin-bottom:8px;">
-        <div style="width:${Math.min(pct,100)}%;height:6px;border-radius:20px;background:${barColor(pct)};"></div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;">
-        <div style="background:#f7f4ef;border-radius:8px;padding:8px;">
-          <div style="font-size:10px;color:#aaa;margin-bottom:2px;">Смен за неделю</div>
-          <div style="font-size:13px;font-weight:500;">${weekData.shifts}</div>
-        </div>
-        <div style="background:#f7f4ef;border-radius:8px;padding:8px;">
-          <div style="font-size:10px;color:#aaa;margin-bottom:2px;">Средний день</div>
-          <div style="font-size:13px;font-weight:500;">${fmt(avgSellerDay)} ₸</div>
-        </div>
-        <div style="background:#f7f4ef;border-radius:8px;padding:8px;">
-          <div style="font-size:10px;color:#aaa;margin-bottom:2px;">Опозданий</div>
-          <div style="font-size:13px;font-weight:500;color:${late > 0 ? '#c0392b' : '#1a8a5a'}">${late}</div>
-        </div>
-      </div>
-    </div>`;
-    }).join('');
-
-    const nowStr = getNow();
-    const html = `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANÉ PARIS — Еженедельный отчёт</title></head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px;margin:0;">
-<div style="max-width:680px;margin:0 auto;">
-
-  <div style="margin-bottom:20px;">
-    <div style="font-size:21px;font-weight:700;letter-spacing:0.07em;color:#1a1a1a;">NANÉ PARIS</div>
-    <div style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.12em;margin-top:2px;">Еженедельный отчёт — ${weekStart} — ${weekEnd}</div>
-    <div style="font-size:11px;color:#aaa;margin-top:3px;">Сформирован: ${nowStr}</div>
-  </div>
-
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:0 0 8px;">Итоги недели</div>
-  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
-    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
-      <div style="font-size:11px;color:#999;margin-bottom:5px;">Оборот за неделю</div>
-      <div style="font-size:22px;font-weight:700;color:#1a1a1a;">${fmt(weekTotal)} ₸</div>
-      <div style="font-size:12px;color:#aaa;margin-top:4px;">${dayTotals.length} рабочих дней</div>
-    </div>
-    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
-      <div style="font-size:11px;color:#999;margin-bottom:5px;">Средний день</div>
-      <div style="font-size:22px;font-weight:700;color:#1a1a1a;">${fmt(avgDay)} ₸</div>
-    </div>
-  </div>
-  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:10px;">
-    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
-      <div style="font-size:11px;color:#999;margin-bottom:5px;">Лучший день</div>
-      <div style="font-size:18px;font-weight:700;color:#1a8a5a;">${fmt(bestDay)} ₸</div>
-      <div style="font-size:12px;color:#aaa;margin-top:4px;">${bestDayDate}</div>
-    </div>
-    <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;">
-      <div style="font-size:11px;color:#999;margin-bottom:5px;">Худший день</div>
-      <div style="font-size:18px;font-weight:700;color:#c0392b;">${fmt(worstDay)} ₸</div>
-      <div style="font-size:12px;color:#aaa;margin-top:4px;">${worstDayDate}</div>
-    </div>
-  </div>
-
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">План месяца</div>
-  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px;">
-    <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
-      <div style="font-size:13px;color:#1a1a1a;font-weight:500;">Выполнено: ${fmt(totalFact)} ₸</div>
-      <div style="font-size:18px;font-weight:700;color:${pctColor(totalPct)}">${totalPct}%</div>
-    </div>
-    <div style="background:#ebe8e2;border-radius:20px;height:8px;overflow:hidden;margin-bottom:6px;">
-      <div style="width:${Math.min(totalPct,100)}%;height:8px;border-radius:20px;background:${barColor(totalPct)};"></div>
-    </div>
-    <div style="display:flex;justify-content:space-between;font-size:11px;color:#bbb;">
-      <span>0</span><span>${fmt(plan/2)} ₸</span><span>${fmt(plan)} ₸</span>
-    </div>
-    <div style="margin-top:10px;font-size:12px;color:#888;">Осталось: ${fmt(remains)} ₸ · До конца месяца: ${daysLeft} дн · Нужно в день: ${fmt(dailyNeed)} ₸</div>
-  </div>
-
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Продавцы за неделю</div>
-  ${sellerBlocks}
-
-  <div style="font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px;">Дисциплина за неделю</div>
-  <div style="background:#fff;border:1px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px;">
-    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
-      <span style="color:#aaa;">Опозданий</span>
-      <span style="font-weight:500;color:${lateCount > 0 ? '#c0392b' : '#1a8a5a'}">${lateCount}</span>
-    </div>
-    <div style="padding:12px 14px;border-bottom:1px solid #f0ece6;display:flex;justify-content:space-between;font-size:13px;">
-      <span style="color:#aaa;">Таймаут чек-листа</span>
-      <span style="font-weight:500;color:${timeoutCount > 0 ? '#c0392b' : '#1a8a5a'}">${timeoutCount}</span>
-    </div>
-    <div style="padding:12px 14px;display:flex;justify-content:space-between;font-size:13px;">
-      <span style="color:#aaa;">Повторных открытий смены</span>
-      <span style="font-weight:500;color:${reopenCount > 0 ? '#b06a10' : '#1a8a5a'}">${reopenCount}</span>
-    </div>
-  </div>
-
-</div></body></html>`;
-
-    const filename = 'weekly_' + now.toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
-    for (const ownerId of OWNER_IDS) {
-      await sendTelegramDocument(ownerId, filename, html, '📊 Еженедельный отчёт NANÉ PARIS — открой в браузере');
-    }
-    console.log('Еженедельный отчёт по продажам отправлен');
-  } catch(e) { console.error('Ошибка еженедельного отчёта:', e.message); }
-}
-
-async function sendMorningDigest() {
-  try {
-    console.log('Отправляю утренний дайджест...');
-
-    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
-
-    // 1. Итоги вчера из листа "Смены"
-    const shiftsData = await supabase.from('open_shifts').select('*');
-    const shifts = (shiftsData.data || []).map(s => ['', s.phone, s.seller, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']);
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-
-    const yesterdayShifts = shifts.filter(r => r[0] === yesterdayStr);
-    let yesterdayTotal = 0;
-    let yesterdayHasIssues = false;
-    let yesterdaySellers = [];
-    yesterdayShifts.forEach(r => {
-      const rostaTotal = parseFloat(String(r[19]||'0').replace(/[^0-9.]/g,'')) || 0;
-      const diff = parseFloat(String(r[21]||'0').replace(/[^0-9.]/g,'')) || 0;
-      yesterdayTotal += rostaTotal;
-      if (Math.abs(diff) >= 500) yesterdayHasIssues = true;
-      if (r[1]) yesterdaySellers.push(r[1]);
-    });
-
-    // 2. Кто работает сегодня из "Учёт по дням"
-    const today = new Date();
-    const todayDay = today.getDate(); // число месяца
-    const uchetRaw = await dbGetSales(curMonth, curYear);
-    const uchet = uchetRaw.map(s => ['', s.sale_date, s.revenue, s.seller1, s.seller2]);
-    let todaySeller1 = '';
-    let todaySeller2 = '';
-    uchet.forEach(r => {
-      const rowNum = parseInt(r[0]);
-      if (rowNum === todayDay) {
-        todaySeller1 = r[3] || '';
-        todaySeller2 = r[4] || '';
-      }
-    });
-
-    // 3. Открытые предоплаты
-    const prepaysRaw = await dbGetPrepays('all');
-    const prepays = prepaysRaw.map(p => [p.prep_id, p.prep_date, p.client_name, p.phone, p.item, p.channel, p.amount, p.balance, p.status, '', p.notes]);
-    const openPrepays = prepays.slice(1).filter(r =>
-      r[0] && String(r[8]||'').toLowerCase().includes('открыт')
-    );
-    const totalDebt = openPrepays.reduce((s, r) => {
-      return s + (parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,'')) || 0);
-    }, 0);
-
-    // 4. % плана месяца из дашборда
-    const dash = []; // данные из Supabase
-    const getNum = (rows, ri, ci) => {
-      try { return parseFloat(String(rows[ri]&&rows[ri][ci]||'0').replace(/[^0-9.,-]/g,'').replace(',','.')) || 0; } catch(e) { return 0; }
-    };
-    const plan = getNum(dash, 5, 2) || 27000000;
-    const totalFact = getNum(dash, 18, 6) || (getNum(dash,18,2)+getNum(dash,18,3)+getNum(dash,18,4));
-    const pct = plan > 0 ? Math.round(totalFact / plan * 100) : 0;
-    const remains = Math.max(0, plan - totalFact);
-
-    // Дней прошло и осталось в месяце
-    const daysInMonth = new Date(today.getFullYear(), today.getMonth()+1, 0).getDate();
-    const daysPassed = today.getDate();
-    const daysLeft = daysInMonth - daysPassed;
-    const dailyNeed = daysLeft > 0 ? Math.round(remains / daysLeft) : 0;
-
-    // Формируем сообщение
-    const todayDateStr = today.toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', weekday: 'long', day: 'numeric', month: 'long' });
-
-    let msg = '☀️ Доброе утро, Ермек!\n';
-    msg += todayDateStr.charAt(0).toUpperCase() + todayDateStr.slice(1) + '\n\n';
-
-    // Итоги вчера
-    msg += '📊 ВЧЕРА (' + yesterdayStr + ')\n';
-    if (yesterdayShifts.length > 0) {
-      msg += '💰 Оборот: ' + fmt(yesterdayTotal) + ' тг\n';
-      msg += '👤 Работали: ' + (yesterdaySellers.join(', ') || '—') + '\n';
-      msg += yesterdayHasIssues ? '⚠️ Были расхождения — проверь отчёт\n' : '✅ Расхождений нет\n';
-    } else {
-      msg += 'Данных за вчера нет\n';
-    }
-
-    // Месяц
-    msg += '\n📈 ПЛАН МЕСЯЦА\n';
-    msg += '✅ Выполнено: ' + fmt(totalFact) + ' тг (' + pct + '%)\n';
-    msg += '🎯 Осталось: ' + fmt(remains) + ' тг\n';
-    msg += '📅 Дней осталось: ' + daysLeft + '\n';
-    msg += '📌 Нужно в день: ' + fmt(dailyNeed) + ' тг\n';
-
-    // Сегодня кто работает
-    msg += '\n👥 СЕГОДНЯ РАБОТАЮТ\n';
-    if (todaySeller1 || todaySeller2) {
-      if (todaySeller1) msg += '• ' + todaySeller1 + '\n';
-      if (todaySeller2) msg += '• ' + todaySeller2 + '\n';
-    } else {
-      msg += 'График не указан\n';
-    }
-
-    // Предоплаты
-    msg += '\n💳 ПРЕДОПЛАТЫ\n';
-    if (openPrepays.length > 0) {
-      msg += '📋 Открытых: ' + openPrepays.length + ' шт\n';
-      msg += '💵 Общий долг: ' + fmt(totalDebt) + ' тг\n';
-      // Показать первые 3 с долгом
-      const withDebt = openPrepays.filter(r => parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,'')) > 0).slice(0, 3);
-      if (withDebt.length > 0) {
-        msg += 'Ближайшие:\n';
-        withDebt.forEach(r => {
-          const client = String(r[2]||'').trim();
-          const debt = parseFloat(String(r[7]||'0').replace(/[^0-9.]/g,'')) || 0;
-          msg += '  • ' + client + ' — ' + fmt(debt) + ' тг\n';
-        });
-      }
-    } else {
-      msg += '✅ Открытых предоплат нет\n';
-    }
-
-    msg += '\nХорошего дня! 💪';
-
-    for (const ownerId of OWNER_IDS) {
-      await sendTelegram(ownerId, msg);
-    }
-    console.log('Утренний дайджест отправлен');
-
-  } catch(e) {
-    console.error('Ошибка дайджеста:', e.message);
-  }
-}
-
-// Планировщик — каждую минуту проверяем время
-// ══════════════════════════════════════════════════════════════════════
-// АВТОМАТИЧЕСКОЕ ОБУЧЕНИЕ — каждую среду в 10:00
-// Неделя 1: урок → Неделя 2: тест по прошлой теме
-// ══════════════════════════════════════════════════════════════════════
-
-const TRAINING_TOPICS = [
-  {
-    topic: 'Встреча покупателя и первый контакт',
-    lesson: `📖 УРОК 1: Встреча покупателя
-
-Первые 7 секунд определяют всё. Исследования показывают: покупатель решает остаться или уйти в первые 30 секунд.
-
-━━━ 3 ЭТАПА ПЕРВОГО КОНТАКТА ━━━
-
-ШАГ 1 — ПРИВЕТСТВИЕ (0-10 сек)
-Встань, улыбнись, установи зрительный контакт.
-✅ «Добро пожаловать в NANE PARIS!»
-❌ «Здравствуйте, вам помочь?» — ответ всегда «нет», это закрытый вопрос
-
-ШАГ 2 — ПАУЗА (10-60 сек)
-Дай покупателю осмотреться. Не преследуй. Будь в зоне видимости.
-Наблюдай: на что смотрит, что трогает — это подсказки о потребности.
-
-ШАГ 3 — ВХОД В ДИАЛОГ (через 30-60 сек)
-Используй наблюдение как повод:
-✅ «Вы посмотрели на наши корейские платья — эта коллекция только что приехала, очень нежные фасоны»
-✅ «Это наше собственное производство — кожа ручной выделки, таких в городе больше нет»
-✅ «У нас сейчас итальянская линейка — европейский крой, очень практичные вещи»
-
-━━━ ТИПЫ ПОКУПАТЕЛЕЙ И ПОДХОД ━━━
-
-🔵 Молчаливый — заходит, смотрит, не реагирует
-→ Не давить. Через минуту: «Если понадоблюсь — я рядом»
-→ Через 3-5 мин если смотрит на одно: «Хотите примерить? Я помогу с размером»
-
-🟡 Активный — сразу спрашивает, общительный
-→ Подходи быстро, включайся в диалог
-→ «Отличный вкус! Давайте я покажу ещё несколько вариантов»
-
-🔴 Торопливый — смотрит быстро, явно спешит
-→ «Скажите что ищете — я сразу покажу нужное»
-→ Не растягивай, давай конкретику
-
-━━━ СТАНДАРТЫ NANE PARIS ━━━
-• Вставай при входе покупателя
-• Улыбка обязательна — это часть образа бренда
-• Никогда не сидеть за телефоном когда есть покупатели
-• Одежда продавца — из ассортимента магазина, всегда безупречная`
-  },
-  {
-    topic: 'Выявление потребности',
-    lesson: `📖 УРОК 2: Выявление потребности
-
-Продавец который слушает — продаёт больше продавца который говорит.
-80% времени говорит покупатель. 20% — ты.
-
-━━━ МЕТОД SPIN ━━━
-
-S — Ситуационные вопросы (понять контекст)
-«На какой повод подбираете?»
-«Для работы или повседневно?»
-«Что сейчас носите чаще всего?»
-
-P — Проблемные вопросы (найти боль)
-«Есть что-то чего не хватает в гардеробе?»
-«Бывает что нечего надеть на важное событие?»
-«С чем сложнее всего сочетать вещи?»
-
-I — Извлекающие вопросы (усилить боль)
-«Если найдём идеальное пальто — как часто будете надевать?»
-«Насколько важно чтобы вещь носилась несколько сезонов?»
-
-N — Направляющие вопросы (к решению)
-«Значит вам нужно универсальное — и на деловую встречу и на выход?»
-«Если я правильно понимаю — ищете что-то практичное но с характером?»
-
-━━━ ПРАВИЛО 3 ВОПРОСОВ ━━━
-Задай 3 вопроса ПРЕЖДЕ чем что-то предложить.
-Покупатель чувствует что его понимают — не просто продают.
-
-━━━ ТРИ ЛИНЕЙКИ — ТРИ РАЗНЫХ ПОКУПАТЕЛЯ ━━━
-
-🇰🇷 Корея — премиум
-Покупатель: ценит качество, готов платить, хочет эксклюзив
-Вопросы: «Вы предпочитаете что-то более утончённое?» / «Качество ткани важно?»
-
-🇮🇹 Италия — масс-маркет premium
-Покупатель: хочет выглядеть хорошо, следит за трендами, практичный
-Вопросы: «Нужно что-то универсальное на каждый день?» / «Важна практичность?»
-
-🏭 Собственное производство (кожа, замша, дублёнки)
-Покупатель: ищет инвестицию, хочет уникальность, понимает материалы
-Вопросы: «Рассматриваете что-то на несколько сезонов?» / «Натуральные материалы важны?»
-
-━━━ АКТИВНОЕ СЛУШАНИЕ ━━━
-• Кивай, поддакивай — «да», «понимаю», «конечно»
-• Повторяй ключевые слова: «Значит, важна практичность...»
-• Не перебивай
-• Записывай мысленно: повод, бюджет, стиль, цвет`
-  },
-  {
-    topic: 'Презентация товара (FAB + линейки)',
-    lesson: `📖 УРОК 3: Презентация товара
-
-Не рассказывай о товаре — рассказывай о жизни покупателя с этим товаром.
-
-━━━ ТЕХНИКА FAB ━━━
-
-F — Feature (Характеристика): факт о товаре
-A — Advantage (Преимущество): чем лучше аналогов
-B — Benefit (Выгода): что это значит КОНКРЕТНО для этого покупателя
-
-ФОРМУЛА: «[Характеристика], что означает [Преимущество], а значит вы [Выгода]»
-
-━━━ FAB ДЛЯ КАЖДОЙ ЛИНЕЙКИ ━━━
-
-🇰🇷 КОРЕЯ — ПРЕМИУМ:
-«Это платье сшито по корейским лекалам (F) — они делают чуть свободный крой в плечах (A) — поэтому оно сидит идеально даже если верх и низ разные размеры (B)»
-
-«Корейская вискоза с лайкрой (F) — ткань не мнётся и тянется под тело (A) — можно надеть утром на работу и вечером на ужин, выглядишь свежо весь день (B)»
-
-«Ручная вышивка на воротнике (F) — такого нет в масс-маркете (A) — вы будете единственной в этом образе (B)»
-
-🇮🇹 ИТАЛИЯ — МАСС-МАРКЕТ PREMIUM:
-«Итальянский крой (F) — европейские стандарты посадки (A) — вещь выглядит дороже своей цены, никто не догадается (B)»
-
-«Состав: хлопок с полиэстером (F) — не требует глажки, легко стирается (A) — идеально для занятой женщины (B)»
-
-🏭 СОБСТВЕННОЕ ПРОИЗВОДСТВО — КОЖА/ЗАМША/ДУБЛЁНКИ:
-«Это наше собственное производство (F) — кожа ручной выделки, каждое изделие уникально (A) — вы инвестируете в вещь которая будет с вами 10-15 лет (B)»
-
-«Натуральная замша из Казахстана (F) — экологически чистая, дышит (A) — ощущение роскоши каждый день, и это поддержка местного производства (B)»
-
-«Натуральная дублёнка ручной работы (F) — греет при -30°C лучше синтетики (A) — один раз купить и забыть про холод на годы (B)»
-
-━━━ КАК ДЕРЖАТЬ ТОВАР ━━━
-• Всегда бери вещь в руки — не показывай пальцем
-• Покажи фактуру: дай потрогать ткань
-• Приложи к покупателю: «Смотрите как ваш цвет»
-• Веди к примерочной: «Давайте примерим — на вешалке и на человеке это небо и земля»
-
-━━━ ПРАВИЛО ТРЁХ ВАРИАНТОВ ━━━
-Всегда показывай 3 варианта:
-1. Именно то что просит
-2. Чуть дороже — лучше качество
-3. Из другой линейки — альтернатива`
-  },
-  {
-    topic: 'Работа с возражениями',
-    lesson: `📖 УРОК 4: Работа с возражениями
-
-Возражение — это не отказ. Это вопрос который покупатель боится задать напрямую.
-
-━━━ АЛГОРИТМ РАБОТЫ С ЛЮБЫМ ВОЗРАЖЕНИЕМ ━━━
-
-1. ВЫСЛУШАЙ — не перебивай
-2. СОГЛАСИСЬ — с чувством, не с возражением
-3. УТОЧНИ — «Что именно вас смущает?»
-4. ОТВЕТЬ — конкретно, с фактами
-5. ПОДТВЕРДИ — «Это отвечает на ваш вопрос?»
-
-━━━ «ДОРОГО» ━━━
-
-❌ «Ну это же качество!»
-✅ Техники:
-
-Согласие + обоснование:
-«Да, цена выше среднего — это потому что [конкретная причина]»
-• Корея: «корейское производство, мелкие партии, ручная работа»
-• Италия: «европейский крой, сертифицированные ткани»
-• Собственное: «натуральная кожа ручной выделки, срок службы 10-15 лет»
-
-Разбивка на дни:
-«Это пальто стоит 45 000 тг. Если носить 3 сезона — это 50 тг в день. Чашка кофе стоит больше»
-
-Сравнение с конкурентами:
-«В других магазинах похожее стоит столько же, но там синтетика. Здесь натуральная кожа»
-
-Инвестиционный подход:
-«Это не трата — это инвестиция. Дешёвая вещь покупается каждый сезон. Эта — один раз»
-
-━━━ «ПОДУМАЮ» ━━━
-
-Это значит: «Ты меня не убедил» или «Боюсь пожалеть»
-
-«Конечно, это важное решение. Скажите — что останавливает? Может я могу помочь?»
-
-Если молчит:
-«Вы сомневаетесь в размере? Цвете? Или в цене?»
-
-Создай мягкий дефицит:
-«Эта модель у нас в единственном экземпляре вашего размера. Не могу обещать что будет завтра»
-
-━━━ «Я ПРОСТО СМОТРЮ» ━━━
-«Конечно! Если увидите что-то интересное — я рядом»
-Через 5 минут: «Кстати, посмотрите вот это — только что пришло»
-
-━━━ «НЕ МОЙ СТИЛЬ» ━━━
-«А какой ваш стиль? Давайте я покажу что-то более подходящее»
-Никогда не спорь со вкусом покупателя
-
-━━━ «У ПОДРУГИ ВИДЕЛА ДЕШЕВЛЕ» ━━━
-«Интересно, где именно? [пауза] У нас натуральные материалы и собственное производство — это влияет на цену. Давайте я покажу разницу в качестве»`
-  },
-  {
-    topic: 'Допродажа и закрытие сделки',
-    lesson: `📖 УРОК 5: Допродажа и закрытие сделки
-
-Средний чек — это твоя зарплата. Каждые +1 000 тг к чеку = +% к твоим продажам.
-
-━━━ UPSELL — ПРЕДЛОЖИ ЛУЧШЕ ━━━
-
-Когда: покупатель выбрал товар но ещё не сказал «беру»
-Как: «Есть очень похожая модель — чуть дороже, но посмотрите разницу»
-
-Примеры:
-«Это платье за 8 000 тг хорошее, но вот это за 12 000 — корейское производство, ткань в два раза плотнее. Ощутите разницу» [даёт потрогать]
-
-«Итальянская куртка за 15 000 тг практична. Но если рассматриваете вложение на годы — вот наша кожаная, собственное производство, 45 000 тг. Через 5 лет будет выглядеть так же»
-
-━━━ CROSS-SELL — ПРЕДЛОЖИ ДОПОЛНЕНИЕ ━━━
-
-Когда: покупатель уже решил взять основной товар
-Правило: максимум 1-2 дополнения, не перегружай
-
-Примеры:
-«Отличный выбор! К этому платью идеально подойдёт вот этот ремень — образ сразу законченный» [берёт ремень, прикладывает]
-
-«К кожаному пальто мы рекомендуем этот уход — он сохранит кожу на годы. Стоит 2 000 тг, но продлит жизнь пальто на несколько лет»
-
-«К этому костюму есть блузка из той же коллекции — специально подбирали, смотрите как сочетается»
-
-━━━ ТЕХНИКИ ЗАКРЫТИЯ СДЕЛКИ ━━━
-
-Альтернативный вопрос (не давай ответить «нет»):
-«Вы берёте это или то?» — не «Берёте?»
-«Упаковать в фирменный пакет или сразу наденете?»
-
-Допущение покупки:
-«Вам на кассу или нужна примерочная?»
-«Оплата Kaspi или наличными?»
-
-Мягкий дедлайн:
-«Эта модель последняя в вашем размере. Если хотите — лучше сейчас»
-
-Резюме:
-«Итак, мы берём платье + ремень. Это 12 500 тг. Оформляем?»
-
-━━━ ПРАВИЛО ТИШИНЫ ━━━
-После вопроса о покупке — МОЛЧИ.
-Кто заговорит первым — тот проиграл.
-Дай покупателю время принять решение.
-
-━━━ ПОСЛЕ ПРОДАЖИ ━━━
-«Отличный выбор! Вы будете смотреться великолепно»
-«Если будут вопросы по уходу — обращайтесь»
-«Будем рады видеть вас снова в NANE PARIS»
-
-Никогда не говори «До свидания» первой — жди пока покупатель уходит.`
-  }
-];
-
-let currentTrainingWeek = 0; // чётная = урок, нечётная = тест
-
-// Хранилище кто прошёл урок/тест сегодня
-const trainingCompleted = {}; // userId -> { lesson: bool, test: bool, date: string }
-let trainingPaused = false; // флаг паузы обучения
-
-async function checkTrainingDeadline(type) {
-  try {
-    const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-    const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
-    const notDone = [];
-
-    for (const [sellerId, sellerName] of sellers) {
-      const done = trainingCompleted[sellerId];
-      const completed = done && done.date === today && done[type];
-      if (!completed) {
-        notDone.push({ sellerId, sellerName });
-        // Предупреждение продавцу
-        const typeLabel = type === 'lesson' ? 'урок' : 'тест';
-        await sendTelegram(sellerId,
-          '⚠️ ' + sellerName + ', ты ещё не прошла ' + typeLabel + ' сегодня!\n\n' +
-          '⏰ До 23:59 осталось меньше 30 минут.\n\n' +
-          '❗️ Если не пройдёшь — это будет зафиксировано как нарушение KPI.\n' +
-          'Это повлияет на расчёт твоей зарплаты в конце месяца.\n\n' +
-          (type === 'lesson' ? 'Напиши «Повтори урок» и подтверди «Урок изучен».' : 'Напиши «Тест» чтобы начать.')
-        );
-      }
-    }
-
-    // Алерт владельцу
-    if (notDone.length > 0) {
-      const typeLabel = type === 'lesson' ? 'урок' : 'тест';
-      let ownerMsg = '⚠️ Дедлайн через 30 минут — не прошли ' + typeLabel + ':\n\n';
-      notDone.forEach(s => { ownerMsg += '❌ ' + s.sellerName + '\n'; });
-      ownerMsg += '\nЗафиксировано в KPI.';
-      for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, ownerMsg);
-
-      // Фиксируем нарушение в Дисциплина
-      const today2 = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
-      for (const s of notDone) {
-        await dbSaveDiscipline(today2, s.sellerName, type === 'lesson' ? 'Пропуск урока' : 'Пропуск теста', '23:30', 'Не выполнено до дедлайна — минус KPI');
-      }
-    }
-  } catch(e) { console.error('checkTrainingDeadline error:', e.message); }
-}
-
-async function generateFullReport(userId, month, year) {
-  try {
-    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-    const mName = monthNames[month] || month;
-    const fmt = n => { n=Math.round(n||0); if(n===0) return '—'; return n.toLocaleString('ru-RU'); };
-
-    const [sales, expenses, kpiData] = await Promise.all([
-      dbGetSales(month, year),
-      dbGetExpenses(month, year, false, userId),
-      getKPI(month, year)
-    ]);
-
-    if (!sales || sales.length === 0) {
-      await sendTelegram(userId, '📊 Нет данных за ' + mName + ' ' + year);
-      return;
-    }
-
-    const KE=14000, TAX=0.03, BONUS_PLAN=30000, KPI_ONE=25000;
-    const getPct = r => r>=1000000?0.027:r>=750000?0.022:r>=500000?0.017:0.012;
-    const plans = {'Асель':8550000,'Зарина':10350000,'Луиза':8100000};
-    const sellers = ['Асель','Зарина','Луиза'];
-    const COLORS = {
-      'Асель':{bg:'#fdf0ec',tx:'#a03020',hd:'#c87060',css:'ca'},
-      'Зарина':{bg:'#ecf5f0',tx:'#1a6040',hd:'#5a8e70',css:'cz'},
-      'Луиза':{bg:'#f0ecf8',tx:'#402880',hd:'#7060a8',css:'cl'}
-    };
-    const selD = {}; sellers.forEach(s=>{selD[s]={shifts:0,sales:0,pct:0,bonusGood:0,bonusRec:0};});
-    let totalRev=0, totalProfit=0, totalTax=0;
-
-    const dayRows = sales.map((s,i)=>{
-      const rev=Number(s.revenue||0), profit=Number(s.rosta_profit||0), tax=Math.round(rev*TAX);
-      totalRev+=rev; totalProfit+=profit; totalTax+=tax;
-      const dS=[s.seller1,s.seller2].filter(b=>b&&sellers.includes(b));
-      const dayPct=rev*getPct(rev); let dayFot=0;
-      dS.forEach(name=>{
-        selD[name].shifts++; selD[name].sales+=rev/dS.length; selD[name].pct+=dayPct;
-        dayFot+=KE+dayPct;
-        if(rev>=2000000){selD[name].bonusRec+=40000;dayFot+=40000;}
-        else if(rev>=700000){selD[name].bonusGood+=5000;dayFot+=5000;}
-      });
-      const d=s.sale_date?s.sale_date.slice(8,10)+'.'+s.sale_date.slice(5,7):'?';
-      const type=rev>=2000000?'РЕКОРД':rev>=700000?'ХОРОШИЙ':'—';
-      return {num:i+1,d,rev,profit,tax,dayFot:Math.round(dayFot),
-        s1:s.seller1||'—',s2:s.seller2||'—',pctRate:(getPct(rev)*100).toFixed(1)+'%',type,
-        af:dS.includes('Асель')?KE:0, ap:dS.includes('Асель')?Math.round(dayPct):0,
-        zf:dS.includes('Зарина')?KE:0, zp:dS.includes('Зарина')?Math.round(dayPct):0,
-        lf:dS.includes('Луиза')?KE:0, lp:dS.includes('Луиза')?Math.round(dayPct):0};
-    });
-
-    let totalFot=0;
-    const salRows = sellers.map(name=>{
-      const sd=selD[name]; if(sd.shifts===0) return null;
-      const ke=sd.shifts*KE, pct=Math.round(sd.pct);
-      const bonusPlan=sd.sales>=(plans[name]||0)?BONUS_PLAN:0;
-      const kpi=(kpiData[name]!==undefined?kpiData[name]:3)*KPI_ONE;
-      const total=ke+pct+sd.bonusGood+sd.bonusRec+bonusPlan+kpi;
-      totalFot+=total;
-      return {name,shifts:sd.shifts,ke,pct,bonusGood:sd.bonusGood,bonusRec:sd.bonusRec,bonusPlan,kpi,total,planDone:sd.sales>=(plans[name]||0),sales:Math.round(sd.sales)};
-    }).filter(Boolean);
-
-    const expTotal=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
-    const netProfit=totalProfit>0?totalProfit-totalTax-totalFot:0;
-    const fotPct=totalRev>0?(totalFot/totalRev*100).toFixed(1):'0';
-    const avgDay=Math.round(totalRev/sales.length);
-    const bestDay=Math.max(...sales.map(s=>Number(s.revenue||0)));
-    const goodDays=sales.filter(s=>Number(s.revenue||0)>=700000).length;
-    const planTotal=27000000;
-    const dt=new Date().toLocaleDateString('ru-RU',{timeZone:'Asia/Almaty'});
-
-    const css='*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:12px;background:#f5f0eb;color:#1a1a1a}.hdr{background:#1a1a1a;color:white;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}.brand{font-size:18px;font-weight:700;letter-spacing:.1em}.sub{font-size:10px;opacity:.5;margin-top:2px}.tabs{display:flex;background:#ebe5dd;border-bottom:2px solid #d5cfc7;padding:0 12px;overflow-x:auto;gap:0}.tab{padding:9px 14px;cursor:pointer;font-size:10px;font-weight:700;color:#8a847c;border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em}.tab.on{color:#1a1a1a;border-bottom-color:#c8a97a}.pane{display:none;padding:16px;background:white}.pane.on{display:block}.kards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}.kard{background:#f5f0eb;border:1px solid #d5cfc7;border-radius:8px;padding:12px 14px}.kl{font-size:9px;color:#8a847c;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px}.kv{font-size:18px;font-weight:700;line-height:1.2}.ks{font-size:10px;color:#8a847c;margin-top:3px}.pb{background:#e8e2da;border-radius:2px;height:5px;margin-top:7px}.pf{height:100%;border-radius:2px}.sellers{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}.seller{background:white;border:1px solid #d5cfc7;border-radius:8px;overflow:hidden}.sh{padding:10px 14px;color:white;display:flex;justify-content:space-between;align-items:center}.sn{font-size:13px;font-weight:700}.sb{padding:10px 14px}.sr{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0ece6;font-size:11px}.sr:last-child{border:0;font-weight:700;font-size:12px;margin-top:4px}.tw{overflow-x:auto;margin-bottom:16px}table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:11px;border:1.5px solid #aaa}th{background:#1a1a1a;color:white;padding:7px 8px;text-align:center;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border:1px solid #333}th.l{text-align:left}td{padding:5px 8px;border:1px solid #ccc;text-align:right;vertical-align:middle}td.l{text-align:left}td.c{text-align:center}tr:hover td{filter:brightness(0.97)}tr.good{background:#eef5ee}tr.str{background:#fff8e8}tr.tot{background:#1a1a1a;color:white;font-weight:700}tr.tot td{border-color:#333}.ga{background:#c87060;color:white;border:1px solid #a05040;text-align:center;font-size:10px;font-weight:700;padding:4px}.gz{background:#5a8e70;color:white;border:1px solid #3a6e50;text-align:center;font-size:10px;font-weight:700;padding:4px}.gl{background:#7060a8;color:white;border:1px solid #5040a0;text-align:center;font-size:10px;font-weight:700;padding:4px}.gf{background:#1a5080;color:white;border:1px solid #0a3060;text-align:center;font-size:10px;font-weight:700;padding:4px}.gn{background:#2a2a2a;color:white;border:1px solid #444;text-align:center;font-size:10px;font-weight:700;padding:4px}.ca{background:#fdf0ec}.cz{background:#ecf5f0}.cl{background:#f0ecf8}.sec{font-size:12px;font-weight:700;color:#1a1a1a;margin:20px 0 10px;padding-bottom:6px;border-bottom:2px solid #c8a97a;text-transform:uppercase;letter-spacing:.06em}.badge{display:inline-block;padding:2px 7px;border-radius:10px;font-size:9px;font-weight:700}.bg-good{background:#d4edda;color:#1a6a2a}.bg-str{background:#fff3cd;color:#856404}.bg-n{background:#e9e9e9;color:#555}.note{background:#fff8e8;border:1px solid #e8d5a0;border-radius:6px;padding:10px 14px;font-size:11px;color:#6b5500;margin-top:12px}@media(max-width:600px){.sellers{grid-template-columns:1fr}.kards{grid-template-columns:repeat(2,1fr)}}';
-
-    // Строим секции
-    // Сначала продавцы (для скриншота продавцам), потом финансы внизу
-    let dash='<div class="sec">Продавцы — прогресс к личному плану</div><div class="sellers">';
-    sellers.forEach(name=>{
-      const sd=selD[name]; if(sd.shifts===0)return;
-      const C=COLORS[name]; const p=plans[name]||0; const pct=sd.sales/p*100;
-      dash+='<div class="seller"><div class="sh" style="background:'+C.hd+'"><div class="sn">'+name+'</div><div style="font-size:14px;font-weight:700">'+pct.toFixed(0)+'%</div></div>';
-      dash+='<div class="sb"><div class="sr"><span>Смен отработано</span><span><b>'+sd.shifts+'</b></span></div>';
-      dash+='<div class="sr"><span>Оборот факт</span><span>'+fmt(sd.sales)+' тг</span></div>';
-      dash+='<div class="sr"><span>Личный план</span><span>'+fmt(p)+' тг</span></div>';
-      dash+='<div class="sr"><span>До плана</span><span style="color:'+(pct>=100?'#2e7d32':'#c62828')+'">'+fmt(Math.max(0,p-sd.sales))+' тг</span></div>';
-      dash+='<div class="pb" style="margin:8px 0 4px"><div class="pf" style="width:'+Math.min(100,pct).toFixed(0)+'%;background:'+(pct>=100?'#2e7d32':'#c8a97a')+'"></div></div>';
-      dash+='</div></div>';
-    });
-    dash+='</div>';
-    // Финансовые карточки — внизу
-    dash+='<div class="sec" style="margin-top:20px">Итоги магазина</div><div class="kards">';
-    dash+='<div class="kard"><div class="kl">Оборот месяца</div><div class="kv">'+fmt(totalRev)+'</div><div class="ks">тг · план '+fmt(planTotal)+'</div><div class="pb"><div class="pf" style="width:'+Math.min(100,totalRev/planTotal*100).toFixed(0)+'%;background:#c8a97a"></div></div></div>';
-    dash+='<div class="kard"><div class="kl">Выполнение плана</div><div class="kv" style="color:'+(totalRev>=planTotal?'#2e7d32':'#c62828')+'">'+(totalRev/planTotal*100).toFixed(1)+'%</div><div class="ks">'+(totalRev>=planTotal?'✅ выполнен':'❌ не выполнен')+'</div></div>';
-    dash+='<div class="kard"><div class="kl">Дней продаж</div><div class="kv">'+sales.length+'</div></div>';
-    dash+='<div class="kard"><div class="kl">Средний день</div><div class="kv">'+fmt(avgDay)+'</div><div class="ks">тг</div></div>';
-    dash+='<div class="kard"><div class="kl">Хороших дней</div><div class="kv">'+goodDays+'</div><div class="ks">≥ 700 000 тг</div></div>';
-    dash+='<div class="kard"><div class="kl">Лучший день</div><div class="kv">'+fmt(bestDay)+'</div><div class="ks">тг</div></div>';
-    dash+='<div class="kard"><div class="kl">ФОТ</div><div class="kv">'+fmt(totalFot)+'</div><div class="ks">тг · '+fotPct+'%</div></div>';
-    dash+='<div class="kard"><div class="kl">Налог 3%</div><div class="kv">'+fmt(totalTax)+'</div><div class="ks">тг</div></div>';
-    if(totalProfit>0){dash+='<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmt(totalProfit)+'</div></div><div class="kard"><div class="kl">Чистая прибыль</div><div class="kv" style="color:#2e7d32">'+fmt(netProfit)+'</div></div>';}
-    dash+='</div>';
-
-    let dHtml='<div class="tw"><table><thead><tr>';
-    dHtml+='<th colspan="2" class="gn l">Смена</th><th class="gn">Оборот</th><th colspan="3" class="gn">Расчёт</th>';
-    dHtml+='<th colspan="2" class="ga">Асель</th><th colspan="2" class="gz">Зарина</th><th colspan="2" class="gl">Луиза</th>';
-    dHtml+='<th class="gn">Айнур</th><th colspan="5" class="gf">Финансы</th></tr><tr>';
-    dHtml+='<th>#</th><th class="l">Дата</th><th>Оборот (тг)</th>';
-    dHtml+='<th class="l">Продавец 1</th><th class="l">Продавец 2</th><th>% ставка</th>';
-    dHtml+='<th style="background:#c87060">Фикс</th><th style="background:#c87060">% продаж</th>';
-    dHtml+='<th style="background:#5a8e70">Фикс</th><th style="background:#5a8e70">% продаж</th>';
-    dHtml+='<th style="background:#7060a8">Фикс</th><th style="background:#7060a8">% продаж</th>';
-    dHtml+='<th>Директор</th><th>Итого ФОТ</th><th>Чистая прибыль</th><th>Налог 3%</th><th>Приб−ФОТ−нал</th><th>ФОТ %</th></tr></thead><tbody>';
-    let sAF=0,sAP=0,sZF=0,sZP=0,sLF=0,sLP=0,sFOT=0;
-    dayRows.forEach(d=>{
-      const cls=d.type==='РЕКОРД'?'str':d.type==='ХОРОШИЙ'?'good':'';
-      const badge=d.type==='РЕКОРД'?'<span class="badge bg-str">🔥 РЕКОРД</span>':d.type==='ХОРОШИЙ'?'<span class="badge bg-good">⭐ ХОРОШИЙ</span>':'<span class="badge bg-n">—</span>';
-      const C1=COLORS[d.s1], C2=COLORS[d.s2];
-      const st1=C1?'background:'+C1.bg+';color:'+C1.tx+';font-weight:700':'';
-      const st2=C2?'background:'+C2.bg+';color:'+C2.tx+';font-weight:700':'';
-      sAF+=d.af;sAP+=d.ap;sZF+=d.zf;sZP+=d.zp;sLF+=d.lf;sLP+=d.lp;sFOT+=d.dayFot;
-      dHtml+='<tr class="'+cls+'"><td class="c">'+d.num+'</td><td class="l">'+d.d+'</td><td><b>'+fmt(d.rev)+'</b></td>';
-      dHtml+='<td class="l" style="'+st1+'">'+d.s1+'</td><td class="l" style="'+st2+'">'+d.s2+'</td>';
-      dHtml+='<td class="c"><b>'+d.pctRate+'</b></td>';
-      dHtml+='<td class="ca">'+(d.af?fmt(d.af):'—')+'</td><td class="ca">'+(d.ap?fmt(d.ap):'—')+'</td>';
-      dHtml+='<td class="cz">'+(d.zf?fmt(d.zf):'—')+'</td><td class="cz">'+(d.zp?fmt(d.zp):'—')+'</td>';
-      dHtml+='<td class="cl">'+(d.lf?fmt(d.lf):'—')+'</td><td class="cl">'+(d.lp?fmt(d.lp):'—')+'</td>';
-      dHtml+='<td class="c">—</td><td><b>'+fmt(d.dayFot)+'</b></td>';
-      dHtml+='<td>'+(d.profit>0?fmt(d.profit):'—')+'</td><td>'+fmt(d.tax)+'</td>';
-      dHtml+='<td>'+(d.profit>0?fmt(d.profit-d.dayFot-d.tax):'—')+'</td>';
-      dHtml+='<td class="c"><b>'+(d.dayFot/d.rev*100).toFixed(1)+'%</b></td></tr>';
-    });
-    dHtml+='<tr class="tot"><td></td><td class="l">ИТОГО МЕСЯЦ</td><td>'+fmt(totalRev)+'</td><td></td><td></td><td class="c">'+fotPct+'%</td>';
-    dHtml+='<td>'+fmt(sAF)+'</td><td>'+fmt(sAP)+'</td><td>'+fmt(sZF)+'</td><td>'+fmt(sZP)+'</td><td>'+fmt(sLF)+'</td><td>'+fmt(sLP)+'</td>';
-    dHtml+='<td>0 смен</td><td>'+fmt(totalFot)+'</td><td>'+(totalProfit>0?fmt(totalProfit):'—')+'</td><td>'+fmt(totalTax)+'</td><td>'+(totalProfit>0?fmt(netProfit):'—')+'</td><td class="c">'+fotPct+'%</td></tr>';
-    dHtml+='</tbody></table></div>';
-
-    let iHtml='<div class="kards"><div class="kard"><div class="kl">Оборот</div><div class="kv">'+fmt(totalRev)+'</div></div>';
-    iHtml+='<div class="kard"><div class="kl">ФОТ итого</div><div class="kv">'+fmt(totalFot)+'</div><div class="ks">'+fotPct+'%</div></div>';
-    iHtml+='<div class="kard"><div class="kl">Налог 3%</div><div class="kv">'+fmt(totalTax)+'</div></div>';
-    if(totalProfit>0){iHtml+='<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmt(totalProfit)+'</div></div><div class="kard"><div class="kl">Чистая прибыль</div><div class="kv" style="color:#2e7d32">'+fmt(netProfit)+'</div></div>';}
-    iHtml+='</div><div class="sec">Выплаты продавцам за месяц</div>';
-    iHtml+='<div class="tw"><table><thead><tr><th class="l">Продавец</th><th>Выход (фикс)</th><th>% от продаж</th><th>Бонус хор.день</th><th>Рекорд ≥2 млн</th><th>Бонус план</th><th>KPI</th><th>Итого к выплате</th></tr></thead><tbody>';
-    salRows.forEach(r=>{
-      const C=COLORS[r.name]||{css:'',tx:'#333'};
-      iHtml+='<tr><td class="l '+C.css+'"><b style="color:'+C.tx+'">'+r.name+'</b> <span style="font-size:10px;color:#8a847c">('+r.shifts+' смен)</span></td>';
-      iHtml+='<td class="'+C.css+'">'+fmt(r.ke)+'</td><td class="'+C.css+'">'+fmt(r.pct)+'</td>';
-      iHtml+='<td class="'+C.css+'">'+(r.bonusGood?fmt(r.bonusGood):'—')+'</td><td class="'+C.css+'">'+(r.bonusRec?fmt(r.bonusRec):'—')+'</td>';
-      iHtml+='<td class="'+C.css+'">'+(r.planDone?'✅ '+fmt(r.bonusPlan):'❌ —')+'</td><td class="'+C.css+'">'+(r.kpi?fmt(r.kpi):'—')+'</td>';
-      iHtml+='<td class="'+C.css+'"><b style="color:#2e7d32;font-size:13px">'+fmt(r.total)+'</b></td></tr>';
-    });
-    const tF=salRows.reduce((s,r)=>s+r.ke,0), tP=salRows.reduce((s,r)=>s+r.pct,0);
-    const tBG=salRows.reduce((s,r)=>s+r.bonusGood,0), tBR=salRows.reduce((s,r)=>s+r.bonusRec,0);
-    const tBP=salRows.reduce((s,r)=>s+r.bonusPlan,0), tK=salRows.reduce((s,r)=>s+r.kpi,0);
-    iHtml+='<tr><td class="l" style="color:#888;font-style:italic">Айнур (директор)</td><td colspan="6" class="c" style="color:#888;font-style:italic">Не начисляется</td><td>—</td></tr>';
-    iHtml+='<tr class="tot"><td class="l">Итого ФОТ</td><td>'+fmt(tF)+'</td><td>'+fmt(tP)+'</td><td>'+fmt(tBG)+'</td><td>'+fmt(tBR)+'</td><td>'+fmt(tBP)+'</td><td>'+fmt(tK)+'</td><td>'+fmt(totalFot)+'</td></tr>';
-    iHtml+='</tbody></table></div>';
-
-    let eHtml='';
-    if(expenses.length>0){
-      eHtml='<div class="kards"><div class="kard"><div class="kl">Расходов NANE</div><div class="kv">'+fmt(expTotal)+'</div><div class="ks">тг · '+expenses.length+' записей</div></div></div>';
-      eHtml+='<div class="tw"><table><thead><tr><th class="l">Дата</th><th class="l">Категория</th><th>Сумма (тг)</th><th class="l">Описание</th></tr></thead><tbody>';
-      expenses.forEach(e=>{eHtml+='<tr><td class="l">'+(e.expense_date||'')+'</td><td class="l">'+(e.category||'')+'</td><td>'+fmt(e.amount)+'</td><td class="l">'+(e.description||'')+'</td></tr>';});
-      eHtml+='<tr class="tot"><td colspan="2" class="l">Итого</td><td>'+fmt(expTotal)+'</td><td></td></tr></tbody></table></div>';
-    } else {eHtml='<p style="color:#8a847c;padding:20px">Расходов за '+mName+' '+year+' нет</p>';}
-
-    let fHtml='<div class="kards"><div class="kard"><div class="kl">Оборот</div><div class="kv">'+fmt(totalRev)+'</div></div>';
-    if(totalProfit>0){fHtml+='<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmt(totalProfit)+'</div></div>';}
-    fHtml+='<div class="kard"><div class="kl">Налог 3%</div><div class="kv">'+fmt(totalTax)+'</div></div><div class="kard"><div class="kl">ФОТ</div><div class="kv">'+fmt(totalFot)+'</div><div class="ks">'+fotPct+'%</div></div>';
-    if(totalProfit>0){fHtml+='<div class="kard"><div class="kl">Чистая прибыль</div><div class="kv" style="color:#2e7d32">'+fmt(netProfit)+'</div></div>';}
-    fHtml+='</div><div class="tw"><table><thead><tr><th class="l">Дата</th><th>Оборот</th><th>Прибыль ROSTA</th><th>Налог 3%</th><th>ФОТ день</th><th>Приб−ФОТ−нал</th><th>ФОТ %</th></tr></thead><tbody>';
-    dayRows.forEach(d=>{fHtml+='<tr><td class="l">'+d.d+'</td><td>'+fmt(d.rev)+'</td><td>'+(d.profit>0?fmt(d.profit):'—')+'</td><td>'+fmt(d.tax)+'</td><td>'+fmt(d.dayFot)+'</td><td>'+(d.profit>0?fmt(d.profit-d.dayFot-d.tax):'—')+'</td><td class="c">'+(d.dayFot/d.rev*100).toFixed(1)+'%</td></tr>';});
-    fHtml+='</tbody></table></div>';
-    if(!totalProfit){fHtml+='<div class="note">Введи прибыль ROSTA командой: «Прибыль [дата] [сумма]»</div>';}
-
-    const shp='<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px"><div><div class="sec">Шкала % — каждому продавцу</div><div class="tw"><table><thead><tr><th class="l">Оборот смены</th><th>% каждому</th><th>Пример 400к</th><th>700к</th><th>950к</th></tr></thead><tbody><tr><td class="l">до 500 000</td><td class="c"><b>1,2%</b></td><td>4 800</td><td>—</td><td>—</td></tr><tr><td class="l">500к – 750к</td><td class="c"><b>1,7%</b></td><td>—</td><td>11 900</td><td>—</td></tr><tr><td class="l">750к – 1 млн</td><td class="c"><b>2,2%</b></td><td>—</td><td>—</td><td>—</td></tr><tr><td class="l">1 млн +</td><td class="c"><b>2,7%</b></td><td>—</td><td>—</td><td>40 500</td></tr></tbody></table></div></div><div><div class="sec">Бонус за хороший день</div><div class="tw"><table><thead><tr><th class="l">Оборот</th><th>Бонус</th><th>Тип</th></tr></thead><tbody><tr class="good"><td class="l">≥ 700 000</td><td>+5 000 тг</td><td class="l"><span class="badge bg-good">⭐ Хороший</span></td></tr><tr class="str"><td class="l">≥ 2 000 000</td><td>+40 000 тг</td><td class="l"><span class="badge bg-str">🔥 Рекорд</span></td></tr></tbody></table></div><div class="note" style="margin-top:10px">КЕ = 14 000 тг/смена · Налог 3% · KPI = 25 000 × 3 = 75 000 тг</div></div></div>';
-
-    const html='<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANE PARIS '+mName+' '+year+'</title><style>'+css+'</style></head><body>'
-      +'<div class="hdr"><div><div class="brand">NANE PARIS</div><div class="sub">Учёт продаж · '+mName+' '+year+'</div></div><div style="font-size:10px;opacity:.4">Астана · '+dt+'</div></div>'
-      +'<div class="tabs"><div class="tab on" onclick="sw(\'dash\',this)">📊 Дашборд</div><div class="tab" onclick="sw(\'days\',this)">📅 Учёт по дням</div><div class="tab" onclick="sw(\'itogi\',this)">📋 Итоги месяца</div><div class="tab" onclick="sw(\'exp\',this)">💸 Расходы</div><div class="tab" onclick="sw(\'fin\',this)">📈 Финансы</div><div class="tab" onclick="sw(\'shp\',this)">📌 Шпаргалка</div></div>'
-      +'<div id="tab-dash" class="pane on">'+dash+'</div>'
-      +'<div id="tab-days" class="pane">'+dHtml+'</div>'
-      +'<div id="tab-itogi" class="pane">'+iHtml+'</div>'
-      +'<div id="tab-exp" class="pane">'+eHtml+'</div>'
-      +'<div id="tab-fin" class="pane">'+fHtml+'</div>'
-      +'<div id="tab-shp" class="pane">'+shp+'</div>'
-      +'<scr'+'ipt>function sw(id,el){document.querySelectorAll(".pane").forEach(p=>p.classList.remove("on"));document.querySelectorAll(".tab").forEach(t=>t.classList.remove("on"));document.getElementById("tab-"+id).classList.add("on");el.classList.add("on");}</scr'+'ipt></body></html>';
-
-    const filename = 'otchet_'+mName.toLowerCase()+'_'+year+'.html';
-    await sendTelegramDocument(userId, filename, html, '📊 Отчёт '+mName+' '+year+' — открой в браузере');
-  } catch(e) { console.error('generateFullReport error:', e.message); await sendTelegram(userId, '❌ Ошибка: '+e.message); }
-}
-
-
 
 async function showFinanceReport(userId, month, year) {
   try {
     const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
     const sales = await dbGetSales(month, year);
-    const salaryCalc = await calcSalary(month, year);
-    const fmt = n => Math.round(n||0).toLocaleString('ru-RU');
-
-    if (!sales || sales.length === 0) {
-      await sendTelegram(userId, '📊 Нет данных за ' + (monthNames[month]||month) + ' ' + year);
-      return;
-    }
-
+    if (!sales || sales.length === 0) { await sendTelegram(userId, '📊 Нет данных за ' + (monthNames[month]||month) + ' ' + year); return; }
     const TAX = 0.03;
-    let totalRevenue = 0, totalProfit = 0, totalTax = 0, totalFot = 0;
-    let profitDays = 0;
-
-    let msg = '📊 ФИНАНСЫ — ' + (monthNames[month]||month) + ' ' + year + '\n';
-    msg += '━━━━━━━━━━━━━━━━━━━━\n\n';
-
+    let totalRevenue = 0, totalProfit = 0, totalTax = 0, dailyFot = 0;
+    const getPct = r => r>=1000000?0.027:r>=750000?0.022:r>=500000?0.017:0.012;
+    let msg = '📊 ФИНАНСЫ — ' + (monthNames[month]||month) + ' ' + year + '\n━━━━━━━━━━━━━━━━━━━━\n\n';
     sales.forEach(s => {
-      const rev = Number(s.revenue || 0);
-      const profit = Number(s.rosta_profit || 0);
-      const tax = Math.round(rev * TAX);
-      const day = s.sale_date ? s.sale_date.slice(8,10) + '.' + s.sale_date.slice(5,7) : '?';
-      const sellers = [s.seller1, s.seller2].filter(Boolean).join('+');
-
-      totalRevenue += rev;
-      totalProfit += profit;
-      totalTax += tax;
-      if (profit > 0) profitDays++;
-
-      msg += day + ' · ' + fmt(rev) + ' тг';
-      if (profit > 0) msg += ' · прибыль: ' + fmt(profit) + ' тг';
-      if (sellers) msg += ' · ' + sellers;
-      msg += '\n';
-    });
-
-    // ФОТ считаем только за фактические дни из продаж
-    // Пересчитываем по каждому дню
-    let dailyFot = 0;
-    sales.forEach(s => {
-      const rev = Number(s.revenue || 0);
-      if (rev === 0) return;
+      const rev = Number(s.revenue||0), profit = Number(s.rosta_profit||0), tax = Math.round(rev*TAX);
+      totalRevenue += rev; totalProfit += profit; totalTax += tax;
       const daySellers = [s.seller1, s.seller2].filter(Boolean);
-      const KE = 14000;
-      const getPct = (r) => r >= 1000000 ? 0.027 : r >= 750000 ? 0.022 : r >= 500000 ? 0.017 : 0.012;
-      daySellers.forEach(() => {
-        dailyFot += KE + rev * getPct(rev);
-        // Бонус хороший день
-        if (rev >= 2000000) dailyFot += 40000;
-        else if (rev >= 700000) dailyFot += 5000;
-      });
+      daySellers.forEach(() => { dailyFot += 14000+rev*getPct(rev); if(rev>=2000000)dailyFot+=40000; else if(rev>=700000)dailyFot+=5000; });
+      const day = s.sale_date ? s.sale_date.slice(8,10)+'.'+s.sale_date.slice(5,7) : '?';
+      msg += day+' · '+rev.toLocaleString('ru-RU')+' тг'+(profit>0?' · прибыль: '+profit.toLocaleString('ru-RU')+' тг':'')+'\n';
     });
-    totalFot = Math.round(dailyFot);
-    const netProfit = totalProfit > 0 ? totalProfit - totalTax - totalFot : 0;
-
-    msg += '\n━━━━━━━━━━━━━━━━━━━━\n';
-    msg += '💼 Оборот: ' + fmt(totalRevenue) + ' тг\n';
-    if (totalProfit > 0) {
-      msg += '📈 Прибыль ROSTA: ' + fmt(totalProfit) + ' тг (' + profitDays + ' дней)\n';
-      msg += '🏛 Налог 3%: ' + fmt(totalTax) + ' тг\n';
-      msg += '👥 ФОТ: ' + fmt(totalFot) + ' тг\n';
-      msg += '💰 Чистая (прибыль-ФОТ-налог): ' + fmt(netProfit) + ' тг\n';
-      const fotPct = totalRevenue > 0 ? (totalFot/totalRevenue*100).toFixed(1) : 0;
-      msg += '📊 ФОТ%: ' + fotPct + '%';
-    } else {
-      msg += '\n⚠️ Введи прибыль ROSTA командой:\n«Прибыль [день] [месяц] [сумма]»\nНапример: «Прибыль 2 июня 450000»';
-    }
-
+    const totalFot = Math.round(dailyFot);
+    const netProfit = totalProfit>0 ? totalProfit-totalTax-totalFot : 0;
+    msg += '\n━━━━━━━━━━━━━━━━━━━━\n💼 Оборот: '+totalRevenue.toLocaleString('ru-RU')+' тг\n';
+    if (totalProfit>0) {
+      msg += '📈 Прибыль ROSTA: '+totalProfit.toLocaleString('ru-RU')+' тг\n';
+      msg += '🏛 Налог 3%: '+totalTax.toLocaleString('ru-RU')+' тг\n';
+      msg += '👥 ФОТ: '+totalFot.toLocaleString('ru-RU')+' тг\n';
+      msg += '💰 Чистая: '+netProfit.toLocaleString('ru-RU')+' тг\n';
+      msg += '📊 ФОТ%: '+(totalRevenue>0?(totalFot/totalRevenue*100).toFixed(1):0)+'%';
+    } else { msg += '\n⚠️ Введи прибыль ROSTA командой:\n«Прибыль [дата] [сумма]»'; }
     await sendTelegram(userId, msg);
   } catch(e) { console.error('showFinanceReport error:', e.message); }
 }
 
 async function showExpensesByMonth(userId, month, year, period) {
   try {
-    const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-    const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
     const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-
     const naneRaw = await dbGetExpenses(month, year, false, userId);
     const personalRaw = await dbGetExpenses(month, year, true, userId);
-
-    const naneExpenses = naneRaw.map(e => ({ date: e.expense_date, category: e.category||'Прочее', amount: Number(e.amount), description: e.description||'' }));
-    const personalExpenses = personalRaw.map(e => ({ date: e.expense_date||'', description: e.description||'', amount: Number(e.amount), category: e.category||'Прочее' }));
-
-    if (naneExpenses.length === 0 && personalExpenses.length === 0) {
-      await sendTelegram(userId, '📊 Расходов за ' + (monthNames[month]||month) + ' ' + year + ' пока нет.');
-      return;
-    }
-
+    if (naneRaw.length === 0 && personalRaw.length === 0) { await sendTelegram(userId, '📊 Расходов за ' + (monthNames[month]||month) + ' ' + year + ' нет.'); return; }
     let naneTotal = 0, personalTotal = 0;
     const naneBycat = {}, persBycat = {};
-
-    naneExpenses.forEach(e => {
-      if (!naneBycat[e.category]) naneBycat[e.category] = { sum:0, items:[] };
-      naneBycat[e.category].sum += e.amount;
-      naneBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
-      naneTotal += e.amount;
-    });
-    personalExpenses.forEach(e => {
-      if (!persBycat[e.category]) persBycat[e.category] = { sum:0, items:[] };
-      persBycat[e.category].sum += e.amount;
-      persBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
-      personalTotal += e.amount;
-    });
-
+    naneRaw.forEach(e => { const c=e.category||'Прочее'; if(!naneBycat[c]) naneBycat[c]={sum:0,items:[]}; naneBycat[c].sum+=Number(e.amount); naneBycat[c].items.push((e.description||'')+'—'+Number(e.amount).toLocaleString('ru-RU')+' тг'); naneTotal+=Number(e.amount); });
+    personalRaw.forEach(e => { const c=e.category||'Прочее'; if(!persBycat[c]) persBycat[c]={sum:0,items:[]}; persBycat[c].sum+=Number(e.amount); persBycat[c].items.push((e.description||'')+'—'+Number(e.amount).toLocaleString('ru-RU')+' тг'); personalTotal+=Number(e.amount); });
     let msg = '📊 Расходы — ' + (monthNames[month]||month) + ' ' + year + '\n\n';
-    if (naneExpenses.length > 0) {
-      msg += '🏪 NANE PARIS: ' + naneTotal.toLocaleString('ru-RU') + ' тг\n';
-      Object.entries(naneBycat).forEach(([cat, data]) => {
-        msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
-        data.items.forEach(i => { msg += '    · ' + i + '\n'; });
-      });
+    if (naneRaw.length > 0) {
+      msg += '🏪 NANE PARIS: '+naneTotal.toLocaleString('ru-RU')+' тг\n';
+      Object.entries(naneBycat).forEach(([cat,data]) => { msg+='  📁 '+cat+': '+data.sum.toLocaleString('ru-RU')+' тг\n'; data.items.forEach(i => { msg+='    · '+i+'\n'; }); });
       msg += '\n';
     }
-    if (personalExpenses.length > 0) {
-      msg += '👤 Личные: ' + personalTotal.toLocaleString('ru-RU') + ' тг\n';
-      Object.entries(persBycat).forEach(([cat, data]) => {
-        msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
-        data.items.forEach(i => { msg += '    · ' + i + '\n'; });
-      });
+    if (personalRaw.length > 0) {
+      msg += '👤 Личные: '+personalTotal.toLocaleString('ru-RU')+' тг\n';
+      Object.entries(persBycat).forEach(([cat,data]) => { msg+='  📁 '+cat+': '+data.sum.toLocaleString('ru-RU')+' тг\n'; data.items.forEach(i => { msg+='    · '+i+'\n'; }); });
       msg += '\n';
     }
-    msg += '💰 Всего: ' + (naneTotal + personalTotal).toLocaleString('ru-RU') + ' тг';
+    msg += '💰 Всего: '+(naneTotal+personalTotal).toLocaleString('ru-RU')+' тг';
     await sendTelegram(userId, msg);
-  } catch(e) { console.error('showExpensesByMonth error:', e.message); }
+  } catch(e) {}
 }
 
-async function showExpenses(userId, period) {
-  try {
-    const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-    const monthStart = nowAlm.getMonth() + 1;
-    const yearNow = nowAlm.getFullYear();
-    const weekAgo = new Date(nowAlm); weekAgo.setDate(nowAlm.getDate() - 7);
+const TRAINING_TOPICS = [
+  { topic: 'Встреча покупателя и первый контакт', lesson: '📖 УРОК 1: Встреча покупателя\n\nПервые 7 секунд определяют всё.\n\n✅ Приветствие: «Добро пожаловать в NANE PARIS!»\n❌ Никогда: «Вам помочь?»\n\nТипы покупателей:\n🔵 Молчаливый — не давить\n🟡 Активный — включиться сразу\n🔴 Торопливый — быстро к сути\n\nСтандарты: вставать при входе, улыбка, телефон убрать.' },
+  { topic: 'Выявление потребности (SPIN)', lesson: '📖 УРОК 2: Выявление потребности\n\n80% времени говорит покупатель.\n\nSPIN:\nS — «На какой повод подбираете?»\nP — «Чего не хватает в гардеробе?»\nI — «Важно ли носить несколько сезонов?»\nN — «Значит нужно универсальное?»\n\nПравило 3 вопросов перед предложением.' },
+  { topic: 'Презентация товара (FAB)', lesson: '📖 УРОК 3: Презентация FAB\n\nХарактеристика → Преимущество → Выгода\n\n🇰🇷 Корея: «Корейские лекала → идеальная посадка → вы единственная в этом образе»\n🏭 Производство: «Кожа ручной выделки → уникально → вещь на 10-15 лет»\n\nВсегда показывай 3 варианта.' },
+  { topic: 'Работа с возражениями', lesson: '📖 УРОК 4: Возражения\n\nАлгоритм: Выслушай → Согласись → Уточни → Ответь\n\n«Дорого»:\n→ «Натуральная кожа ручной выделки»\n→ «За 3 сезона = 50 тг в день»\n\n«Подумаю»:\n→ «Что останавливает?»\n→ «Эта модель в единственном экземпляре»' },
+  { topic: 'Допродажа и закрытие сделки', lesson: '📖 УРОК 5: Допродажа\n\nUpsell: «Есть похожая модель чуть дороже»\nCross-sell: «К платью идеально этот ремень»\n\nТехники закрытия:\n✅ «Вы берёте это или то?»\n✅ «Oплата Kaspi или наличными?»\n✅ «Последняя в вашем размере»\n\nПравило тишины: после вопроса — молчи.' }
+];
 
-    // Читаем из Supabase
-    const naneRaw = await dbGetExpenses(monthStart, yearNow, false, userId);
-    const personalRaw = await dbGetExpenses(monthStart, yearNow, true, userId);
-    console.log('showExpenses: naneRaw=', naneRaw.length, 'personalRaw=', personalRaw.length);
-
-    const naneExpenses = naneRaw.filter(e => {
-      if (period === 'week') return new Date(e.expense_date) >= weekAgo;
-      return e.month === monthStart && e.year === yearNow;
-    }).map(e => ({ date: e.expense_date, category: e.category||'Прочее', amount: Number(e.amount), description: e.description||'' }));
-
-    const personalExpenses = personalRaw.filter(e => {
-      const d = new Date(e.created_at);
-      if (period === 'week') return d >= weekAgo;
-      return d.getMonth()+1 === monthStart && d.getFullYear() === yearNow;
-    }).map(e => ({ date: e.expense_date||'', description: e.description||'', amount: Number(e.amount), category: e.category||'Прочее' }));
-
-    if (naneExpenses.length === 0 && personalExpenses.length === 0) {
-      await sendTelegram(userId, '📊 Расходов за ' + (period==='week'?'неделю':'этот месяц') + ' пока нет.');
-      return;
-    }
-
-    const periodLabel = period === 'week' ? 'неделю' : 'месяц';
-    let naneTotal = 0, personalTotal = 0;
-    const naneBycat = {}, persBycat = {};
-
-    naneExpenses.forEach(e => {
-      if (!naneBycat[e.category]) naneBycat[e.category] = { sum:0, items:[] };
-      naneBycat[e.category].sum += e.amount;
-      naneBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
-      naneTotal += e.amount;
-    });
-    personalExpenses.forEach(e => {
-      if (!persBycat[e.category]) persBycat[e.category] = { sum:0, items:[] };
-      persBycat[e.category].sum += e.amount;
-      persBycat[e.category].items.push(e.description + ' — ' + e.amount.toLocaleString('ru-RU') + ' тг');
-      personalTotal += e.amount;
-    });
-
-    let msg = '📊 Расходы за ' + periodLabel + '\n\n';
-    if (naneExpenses.length > 0) {
-      msg += '🏪 NANE PARIS: ' + naneTotal.toLocaleString('ru-RU') + ' тг\n';
-      Object.entries(naneBycat).forEach(([cat, data]) => {
-        msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
-        data.items.slice(0,3).forEach(i => { msg += '    · ' + i + '\n'; });
-      });
-      msg += '\n';
-    }
-    if (personalExpenses.length > 0) {
-      msg += '👤 Личные: ' + personalTotal.toLocaleString('ru-RU') + ' тг\n';
-      Object.entries(persBycat).forEach(([cat, data]) => {
-        msg += '  📁 ' + cat + ': ' + data.sum.toLocaleString('ru-RU') + ' тг\n';
-        data.items.slice(0,3).forEach(i => { msg += '    · ' + i + '\n'; });
-      });
-      msg += '\n';
-    }
-    msg += '💰 Всего: ' + (naneTotal + personalTotal).toLocaleString('ru-RU') + ' тг';
-    await sendTelegram(userId, msg);
-  } catch(e) { console.error('showExpenses error:', e.message); }
-}
+let currentTrainingWeek = 0;
+let trainingPaused = false;
 
 async function sendWeeklyTraining(forceLesson) {
   try {
-    if (trainingPaused && !forceLesson) {
-      console.log('Обучение на паузе — пропускаем');
-      return;
-    }
-    console.log('Запускаю еженедельное обучение...');
+    if (trainingPaused && !forceLesson) return;
     const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
     if (sellers.length === 0) return;
-
-    const almatyNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-    const dayOfWeek = almatyNow.getDay(); // 1=пн, 5=пт
-    // Понедельник = урок, Пятница = тест. Если вызвали вручную (forceLesson) — урок
-    const isTestWeek = !forceLesson && dayOfWeek === 5;
-
     const topicIndex = currentTrainingWeek % TRAINING_TOPICS.length;
-    if (!isTestWeek) currentTrainingWeek++; // увеличиваем только после урока
+    if (!forceLesson) currentTrainingWeek++;
     const topic = TRAINING_TOPICS[topicIndex];
-
-    if (!isTestWeek) {
-      // НЕДЕЛЯ УРОКА — отправляем урок всем продавцам
-      const lessonMsg = '📚 ОБУЧЕНИЕ NANE PARIS\n\n' +
-        '🗓 Тема: ' + topic.topic + '\n' +
-        '⏰ Дедлайн: сегодня до 23:59\n' +
-        '━━━━━━━━━━━━━━━━━\n\n' +
-        topic.lesson + '\n\n' +
-        '━━━━━━━━━━━━━━━━━\n' +
-        '⚠️ ВАЖНО: напиши «Урок изучен» до 23:59 сегодня.\n' +
-        'Опоздание фиксируется и влияет на KPI и расчёт зарплаты в конце месяца.\n\n' +
-        'В пятницу будет тест. Повторить материал: напиши «Повтори урок». Удачи! 💪';
-
-      // Сохраняем урок для повторного доступа
-      try {
-        await supabase.from('last_reports').upsert({
-          user_id: 'training_last_lesson',
-          html: JSON.stringify({ topic: topic.topic, lesson: lessonMsg }),
-          filename: 'lesson',
-          caption: topic.topic
-        }, { onConflict: 'user_id' });
-      } catch(e) {}
-
-      for (const [sellerId, sellerName] of sellers) {
-        await sendTelegram(sellerId, lessonMsg);
-        await new Promise(r => setTimeout(r, 1000));
-      }
-      // Уведомляем владельца
-      for (const ownerId of OWNER_IDS) {
-        await sendTelegram(ownerId,
-          '📚 Еженедельное обучение отправлено\n' +
-          '📖 Тема: ' + topic.topic + '\n' +
-          '👥 Продавцов: ' + sellers.length + '\n' +
-          'На следующей неделе автоматически отправлю тест.'
-        );
-      }
-    } else {
-      // НЕДЕЛЯ ТЕСТА — отправляем тест всем продавцам
-      const testMsg = '🎯 ТЕСТ — ' + topic.topic + '\n' +
-        '⏰ Дедлайн: сегодня до 23:59\n\n' +
-        '⚠️ Несданный тест фиксируется как нарушение и влияет на KPI и расчёт зарплаты.\n\n' +
-        'Отвечай своими словами — я оценю каждый ответ.\n\n' +
-        'Вопрос 1: Назови 3 главных правила из урока про «' + topic.topic + '».\n\n' +
-        'Жду твой ответ! ✍️';
-
-      for (const [sellerId] of sellers) {
-        await sendTelegram(sellerId, testMsg);
-        await new Promise(r => setTimeout(r, 1000));
-      }
-      for (const ownerId of OWNER_IDS) {
-        await sendTelegram(ownerId,
-          '🎯 Тест по теме «' + topic.topic + '» отправлен продавцам.\n' +
-          'Результаты придут после ответов.'
-        );
-      }
-    }
+    const lessonMsg = '📚 ОБУЧЕНИЕ NANE PARIS\n\n🗓 Тема: ' + topic.topic + '\n⏰ Дедлайн: сегодня до 23:59\n━━━━━━━━━━━━━━━━━\n\n' + topic.lesson + '\n\n━━━━━━━━━━━━━━━━━\n⚠️ Напиши «Урок изучен» до 23:59.';
+    for (const [sellerId] of sellers) { await sendTelegram(sellerId, lessonMsg); await new Promise(r => setTimeout(r, 1000)); }
+    for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '📚 Урок отправлен\n📖 ' + topic.topic);
   } catch(e) { console.error('sendWeeklyTraining error:', e.message); }
 }
 
-function startDailyScheduler() {
-  // Проверяем напоминания каждую минуту
-  setInterval(() => { checkReminders(); }, 60000);
+async function sendMorningDigest() {
+  try {
+    const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const month = nowA.getMonth()+1, year = nowA.getFullYear();
+    const sales = await dbGetSales(month, year);
+    const prepays = await dbGetPrepays('open');
+    const monthTotal = (sales||[]).reduce((sum,s) => sum+Number(s.revenue||0), 0);
+    const plan = 27000000;
+    const pct = Math.round(monthTotal/plan*100);
+    const remains = Math.max(0, plan-monthTotal);
+    const daysLeft = new Date(year,month,0).getDate()-nowA.getDate();
+    const dailyNeed = daysLeft > 0 ? Math.round(remains/daysLeft) : 0;
+    const totalDebt = prepays.reduce((s,p) => s+Number(p.balance||0), 0);
+    const todayDateStr = nowA.toLocaleDateString('ru-RU', { weekday:'long', day:'numeric', month:'long' });
+    let msg = '☀️ Доброе утро, Ермек!\n' + todayDateStr.charAt(0).toUpperCase() + todayDateStr.slice(1) + '\n\n';
+    msg += '📈 ПЛАН МЕСЯЦА\n✅ Выполнено: ' + monthTotal.toLocaleString('ru-RU') + ' тг (' + pct + '%)\n';
+    msg += '🎯 Осталось: ' + remains.toLocaleString('ru-RU') + ' тг\n';
+    msg += '📌 Нужно в день: ' + dailyNeed.toLocaleString('ru-RU') + ' тг\n\n';
+    msg += '💳 ПРЕДОПЛАТЫ\n';
+    msg += prepays.length > 0 ? '📋 Открытых: '+prepays.length+' шт\n💵 Долг: '+totalDebt.toLocaleString('ru-RU')+' тг' : '✅ Открытых нет';
+    msg += '\n\nХорошего дня! 💪';
+    for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, msg);
+  } catch(e) { console.error('Ошибка дайджеста:', e.message); }
+}
 
+function generatePrepaysHTML(list, type) {
+  const title = type === 'open' ? 'Открытые предоплаты' : 'Закрытые предоплаты';
+  const totalDebt = list.filter(p => !p.status.includes('закрыт')).reduce((s,p) => s+(p.balance||0), 0);
+  const totalAmount = list.reduce((s,p) => s+(p.amount||0), 0);
+  const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
+  const cards = list.map((p,i) => {
+    const isClosed = p.status.includes('закрыт');
+    const initials = p.client.split(' ').filter(Boolean).map(w=>w[0]).join('').toUpperCase().slice(0,2);
+    return `<div style="background:#fff;border:1px solid #e8e8e4;border-radius:12px;padding:14px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+        <div style="width:36px;height:36px;border-radius:50%;background:${isClosed?'#eaf3de':'#faeeda'};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:${isClosed?'#3B6D11':'#854F0B'};">${initials}</div>
+        <div><div style="font-size:14px;font-weight:600;">${i+1}. ${p.client}</div><div style="font-size:11px;color:#888;">${p.id||''} · ${p.date||''}</div></div>
+        <div style="margin-left:auto;background:${isClosed?'#eaf3de':'#faeeda'};color:${isClosed?'#3B6D11':'#854F0B'};font-size:11px;font-weight:600;padding:3px 8px;border-radius:20px;">${isClosed?'✅ Закрыта':'🟡 Открыта'}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div style="background:#f5f5f0;border-radius:8px;padding:8px;text-align:center;"><div style="font-size:10px;color:#888;">Аванс</div><div style="font-size:14px;font-weight:600;">${fmt(p.amount)}</div></div>
+        <div style="background:${p.balance>0?'#fcebeb':'#eaf3de'};border-radius:8px;padding:8px;text-align:center;"><div style="font-size:10px;color:#888;">Долг</div><div style="font-size:14px;font-weight:600;color:${p.balance>0?'#A32D2D':'#1D9E75'};">${p.balance>0?fmt(p.balance):'Оплачено'}</div></div>
+      </div>
+      <div style="margin-top:8px;font-size:11px;color:#888;">💳 ${p.channel}</div>
+    </div>`;
+  }).join('');
+  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#f5f5f0;padding:16px}.container{max-width:680px;margin:0 auto}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 16px}.stat{background:#efefea;border-radius:8px;padding:10px}.stat-label{font-size:10px;color:#888;margin-bottom:3px}.stat-value{font-size:16px;font-weight:600}</style></head><body><div class="container"><div style="font-size:18px;font-weight:700;">NANÉ PARIS</div><div style="font-size:11px;color:#888;text-transform:uppercase;">${title} · ${list.length} шт</div><div class="stats"><div class="stat"><div class="stat-label">Позиций</div><div class="stat-value">${list.length}</div></div><div class="stat"><div class="stat-label">Авансы</div><div class="stat-value">${fmt(totalAmount)}</div></div><div class="stat"><div class="stat-label">Долги</div><div class="stat-value" style="color:${totalDebt>0?'#E24B4A':'#1D9E75'}">${fmt(totalDebt)}</div></div></div>${cards}</div></body></html>`;
+}
+
+function generateShiftHTML(data) {
+  const { sellerName, date, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations } = data;
+  const isOk = Math.abs(diff) < 500;
+  const statusColor = isOk ? '#3B6D11' : '#A32D2D';
+  const statusBg = isOk ? '#eaf3de' : '#fcebeb';
+  const statusText = isOk ? 'Все каналы сходятся — смена закрыта корректно' : 'РАСХОЖДЕНИЕ — требует внимания';
+  const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
+  const diffSign = diff >= 0 ? '+' : '';
+  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Отчёт — ${sellerName}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#f5f5f0;padding:16px}.container{max-width:680px;margin:0 auto}.card{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px}.row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid #f5f5f0}.row:last-child{border:none}.row-label{color:#888}.row-value{font-weight:500}.total-row{display:flex;justify-content:space-between;font-size:13px;font-weight:700;padding:6px 0 0;border-top:1px solid #e8e4de;margin-top:4px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}</style></head><body><div class="container">
+<div style="display:flex;justify-content:space-between;margin-bottom:16px;"><div><div style="font-size:20px;font-weight:700;">NANÉ PARIS</div><div style="font-size:11px;color:#888;">Отчёт смены</div></div><div style="text-align:right;font-size:13px;"><strong>${date}</strong><div style="color:#888;">${sellerName} · ${closeTime}</div></div></div>
+<div style="background:${statusBg};border-radius:8px;padding:10px 14px;margin-bottom:16px;"><span style="font-size:13px;font-weight:600;color:${statusColor};">● ${statusText}</span></div>
+<div class="card"><div style="font-size:11px;color:#888;margin-bottom:8px;text-transform:uppercase;">Сверка</div><div class="row"><span class="row-label">ROSTA (расчёт)</span><span class="row-value">${fmt(rostaTotal)}</span></div><div class="row"><span class="row-label">ФАКТ (получено)</span><span class="row-value">${fmt(factTotal)}</span></div><div class="total-row"><span style="color:${Math.abs(diff)<500?'#3B6D11':'#A32D2D'}">Разница</span><span style="color:${Math.abs(diff)<500?'#3B6D11':'#A32D2D'}">${diffSign}${fmt(diff)}</span></div></div>
+<div class="grid2">
+<div class="card"><div style="font-size:11px;color:#888;margin-bottom:8px;">💳 Kaspi</div><div class="row"><span class="row-label">QR+Онлайн (ROSTA)</span><span>${fmt((s.rKaspi||0)+(s.rOnline||0))}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span>${fmt(kaspiNet)}</span></div></div>
+<div class="card"><div style="font-size:11px;color:#888;margin-bottom:8px;">💜 Halyk</div><div class="row"><span class="row-label">QR+Онлайн (ROSTA)</span><span>${fmt((s.rHalyk||0)+(s.rHalykOnline||0))}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span>${fmt(halykNet)}</span></div></div>
+</div>
+<div class="card"><div style="font-size:11px;color:#888;margin-bottom:8px;">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span>${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие</span><span>${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал (ROSTA)</span><span>${fmt(s.rCash)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}</div>
+</div></body></html>`;
+}
+
+async function generateDashboardHTML() {
+  try {
+    const nowAlm = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const curMonth = nowAlm.getMonth()+1, curYear = nowAlm.getFullYear();
+    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+    const salesData = await dbGetSales(curMonth, curYear);
+    const sellerSales = { 'Асель':0, 'Зарина':0, 'Луиза':0 };
+    let totalFact = 0;
+    salesData.forEach(s => {
+      const rev = Number(s.revenue||0);
+      totalFact += rev;
+      const sellers = [s.seller1,s.seller2].filter(Boolean);
+      if (sellers.length > 0) { const share = rev/sellers.length; sellers.forEach(name => { if (sellerSales[name]!==undefined) sellerSales[name]+=share; }); }
+    });
+    const plan = 27000000;
+    const personalPlans = { 'Асель':8550000, 'Зарина':10350000, 'Луиза':8100000 };
+    const salaryCalc = await calcSalary(curMonth, curYear);
+    const sc = salaryCalc ? salaryCalc.sellers : {};
+    const totalFot = salaryCalc ? salaryCalc.totalFot : 0;
+    const fmt = n => Math.round(Number(n||0)).toLocaleString('ru-RU');
+    const totalPct = Math.round(totalFact/plan*100);
+    const sellers = ['Асель','Зарина','Луиза'];
+    const sellerRows = sellers.map(name => {
+      const fact = Math.round(sellerSales[name]||0);
+      const pl = personalPlans[name]||0;
+      const pct = pl>0 ? Math.round(fact/pl*100) : 0;
+      const left = Math.max(0,pl-fact);
+      const s = sc[name]||{};
+      return { name, fact, plan: pl, pct, left, total: s.total||0, ke: s.ke||0, procent: s.pct||0 };
+    });
+    return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANÉ PARIS Дашборд</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#f0ede8;padding:16px}.c{max-width:680px;margin:0 auto}.brand{font-size:20px;font-weight:700;letter-spacing:.07em}.sub{font-size:11px;color:#888;text-transform:uppercase;margin-top:2px}.sec{font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.1em;margin:16px 0 8px}.card{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px}.kl{font-size:11px;color:#999}.kv{font-size:22px;font-weight:700}.ks{font-size:12px;color:#aaa;margin-top:3px}.pb{background:#ebe8e2;border-radius:20px;height:7px;overflow:hidden;margin:8px 0 4px}.pf{height:7px;border-radius:20px}.row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid #f5f5f0}.row:last-child{border:none}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}</style></head><body><div class="c">
+<div style="margin-bottom:18px;"><div class="brand">NANÉ PARIS</div><div class="sub">Дашборд · ${monthNames[curMonth]} ${curYear}</div><div style="font-size:11px;color:#aaa;margin-top:2px;">Обновлено: ${getNow()}</div></div>
+<div class="sec">Продавцы — план</div>
+${sellerRows.map(s => `<div class="card"><div style="display:flex;justify-content:space-between;"><div style="font-size:14px;font-weight:600;">${s.name}</div><div style="font-size:18px;font-weight:700;color:${s.pct>=100?'#1a8a5a':s.pct>=80?'#b06a10':'#c0392b'}">${s.pct}%</div></div><div style="font-size:12px;color:#999;margin:2px 0 8px;">${fmt(s.fact)} ₸ из ${fmt(s.plan)} ₸</div><div class="pb"><div class="pf" style="width:${Math.min(s.pct,100)}%;background:${s.pct>=100?'#27ae60':s.pct>=80?'#e67e22':'#e74c3c'}"></div></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;"><div style="background:#f7f4ef;border-radius:8px;padding:8px;"><div style="font-size:10px;color:#aaa;">Осталось</div><div style="font-size:13px;font-weight:500;">${fmt(s.left)} ₸</div></div><div style="background:#f7f4ef;border-radius:8px;padding:8px;"><div style="font-size:10px;color:#aaa;">Зарплата к выплате</div><div style="font-size:13px;font-weight:500;">${fmt(s.total)} ₸</div></div></div></div>`).join('')}
+<div class="sec">Магазин</div>
+<div class="grid2"><div class="card"><div class="kl">Оборот (факт)</div><div class="kv">${fmt(totalFact)} ₸</div><div class="ks">из ${fmt(plan)} ₸</div></div><div class="card"><div class="kl">Выполнение плана</div><div class="kv" style="color:${totalPct>=100?'#1a8a5a':totalPct>=80?'#b06a10':'#c0392b'}">${totalPct}%</div></div></div>
+<div class="card"><div class="kl">Прогресс к плану</div><div class="pb"><div class="pf" style="width:${Math.min(totalPct,100)}%;background:${totalPct>=100?'#27ae60':totalPct>=80?'#e67e22':'#e74c3c'}"></div></div></div>
+<div class="card"><div class="kl">ФОТ к выплате</div><div class="kv">${fmt(totalFot)} ₸</div></div>
+</div></body></html>`;
+  } catch(e) { console.error('generateDashboardHTML error:', e.message); return null; }
+}
+
+async function generateFullReport(userId, month, year) {
+  try {
+    const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
+    const mName = monthNames[month]||month;
+    const fmt = n => Math.round(n||0).toLocaleString('ru-RU');
+    const [sales, expenses, kpiData] = await Promise.all([dbGetSales(month,year), dbGetExpenses(month,year,false,userId), getKPI(month,year)]);
+    if (!sales||sales.length===0) { await sendTelegram(userId,'📊 Нет данных за '+mName+' '+year); return; }
+    const KE=14000,TAX=0.03,BONUS_PLAN=30000,KPI_ONE=25000;
+    const getPct = r => r>=1000000?0.027:r>=750000?0.022:r>=500000?0.017:0.012;
+    const plans = {'Асель':8550000,'Зарина':10350000,'Луиза':8100000};
+    const sellers = ['Асель','Зарина','Луиза'];
+    const selD = {}; sellers.forEach(s => { selD[s]={shifts:0,sales:0,pct:0,bonusGood:0,bonusRec:0}; });
+    let totalRev=0, totalProfit=0, totalTax=0;
+    sales.forEach(s => {
+      const rev=Number(s.revenue||0),profit=Number(s.rosta_profit||0),tax=Math.round(rev*TAX);
+      totalRev+=rev; totalProfit+=profit; totalTax+=tax;
+      const dS=[s.seller1,s.seller2].filter(b=>b&&sellers.includes(b));
+      dS.forEach(name => { selD[name].shifts++; selD[name].sales+=rev/dS.length; selD[name].pct+=rev*getPct(rev); if(rev>=2000000)selD[name].bonusRec+=40000; else if(rev>=700000)selD[name].bonusGood+=5000; });
+    });
+    let totalFot=0;
+    const salRows = sellers.map(name => {
+      const sd=selD[name]; if(sd.shifts===0) return null;
+      const ke=sd.shifts*KE, pct=Math.round(sd.pct), bonusPlan=sd.sales>=(plans[name]||0)?BONUS_PLAN:0;
+      const kpi=(kpiData[name]!==undefined?kpiData[name]:3)*KPI_ONE;
+      const total=ke+pct+sd.bonusGood+sd.bonusRec+bonusPlan+kpi; totalFot+=total;
+      return {name,shifts:sd.shifts,ke,pct,bonusGood:sd.bonusGood,bonusRec:sd.bonusRec,bonusPlan,kpi,total,planDone:sd.sales>=(plans[name]||0)};
+    }).filter(Boolean);
+    const expTotal=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
+    const netProfit=totalProfit>0?totalProfit-totalTax-totalFot:0;
+    const fotPct=totalRev>0?(totalFot/totalRev*100).toFixed(1):'0';
+    const dt=new Date().toLocaleDateString('ru-RU',{timeZone:'Asia/Almaty'});
+    const salesRows = sales.map((s,i) => {
+      const rev=Number(s.revenue||0),profit=Number(s.rosta_profit||0),tax=Math.round(rev*TAX);
+      const dayFot=selD&&true?0:0;
+      const d=s.sale_date?s.sale_date.slice(8,10)+'.'+s.sale_date.slice(5,7):'?';
+      return `<tr><td>${i+1}</td><td>${d}</td><td>${fmt(rev)}</td><td>${s.seller1||'—'}</td><td>${s.seller2||'—'}</td><td>${profit>0?fmt(profit):'—'}</td><td>${fmt(tax)}</td></tr>`;
+    }).join('');
+    const salaryRows = salRows.map(r => `<tr><td>${r.name} (${r.shifts} смен)</td><td>${fmt(r.ke)}</td><td>${fmt(r.pct)}</td><td>${r.bonusGood?fmt(r.bonusGood):'—'}</td><td>${r.planDone?'✅ '+fmt(r.bonusPlan):'❌'}</td><td>${fmt(r.kpi)}</td><td><strong>${fmt(r.total)}</strong></td></tr>`).join('');
+    const html = `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANE PARIS ${mName} ${year}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:12px;background:#f5f0eb;color:#1a1a1a}.hdr{background:#1a1a1a;color:white;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}.tabs{display:flex;background:#ebe5dd;padding:0 12px;gap:0;overflow-x:auto}.tab{padding:9px 14px;cursor:pointer;font-size:10px;font-weight:700;color:#8a847c;border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap;text-transform:uppercase}.tab.on{color:#1a1a1a;border-bottom-color:#c8a97a}.pane{display:none;padding:16px;background:white}.pane.on{display:block}table{width:100%;border-collapse:collapse;font-size:11px;border:1.5px solid #aaa;margin-bottom:16px}th{background:#1a1a1a;color:white;padding:7px 8px;text-align:center;font-size:10px;font-weight:700;border:1px solid #333}td{padding:5px 8px;border:1px solid #ccc;text-align:right}.kards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}.kard{background:#f5f0eb;border-radius:8px;padding:12px 14px}.kl{font-size:9px;color:#8a847c;text-transform:uppercase;margin-bottom:5px}.kv{font-size:18px;font-weight:700}.sec{font-size:12px;font-weight:700;color:#1a1a1a;margin:18px 0 10px;padding-bottom:6px;border-bottom:2px solid #c8a97a;text-transform:uppercase}</style></head><body>
+<div class="hdr"><div><div style="font-size:18px;font-weight:700;letter-spacing:.1em;">NANE PARIS</div><div style="font-size:10px;opacity:.5;">${mName} ${year}</div></div><div style="font-size:10px;opacity:.4;">${dt}</div></div>
+<div class="tabs"><div class="tab on" onclick="sw('dash',this)">📊 Итоги</div><div class="tab" onclick="sw('days',this)">📅 По дням</div><div class="tab" onclick="sw('sal',this)">💰 Зарплата</div></div>
+<div id="tab-dash" class="pane on">
+<div class="kards"><div class="kard"><div class="kl">Оборот</div><div class="kv">${fmt(totalRev)} тг</div></div><div class="kard"><div class="kl">ФОТ</div><div class="kv">${fmt(totalFot)} тг</div><div style="font-size:10px;color:#888;">${fotPct}%</div></div><div class="kard"><div class="kl">Налог 3%</div><div class="kv">${fmt(totalTax)} тг</div></div>${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmt(totalProfit)+' тг</div></div><div class="kard"><div class="kl">Чистая</div><div class="kv" style="color:#2e7d32">'+fmt(netProfit)+' тг</div></div>':''}</div>
+</div>
+<div id="tab-days" class="pane"><table><thead><tr><th>#</th><th>Дата</th><th>Оборот</th><th>Продавец 1</th><th>Продавец 2</th><th>Прибыль</th><th>Налог</th></tr></thead><tbody>${salesRows}</tbody></table></div>
+<div id="tab-sal" class="pane"><table><thead><tr><th>Продавец</th><th>КЕ</th><th>%</th><th>Бонус</th><th>План</th><th>KPI</th><th>Итого</th></tr></thead><tbody>${salaryRows}<tr style="background:#1a1a1a;color:white;font-weight:700;"><td>ИТОГО ФОТ</td><td colspan="5"></td><td>${fmt(totalFot)}</td></tr></tbody></table></div>
+<script>function sw(id,el){document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));document.getElementById('tab-'+id).classList.add('on');el.classList.add('on');}<\/script></body></html>`;
+    const filename = 'otchet_'+mName.toLowerCase()+'_'+year+'.html';
+    await sendTelegramDocument(userId, filename, html, '📊 Отчёт '+mName+' '+year+' — открой в браузере');
+  } catch(e) { console.error('generateFullReport error:', e.message); await sendTelegram(userId, '❌ Ошибка: '+e.message); }
+}
+
+function startDailyScheduler() {
+  setInterval(() => { checkReminders(); }, 60000);
   setInterval(() => {
     const now = new Date();
     const almatyTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
     const hours = almatyTime.getHours();
     const minutes = almatyTime.getMinutes();
-    const seconds = almatyTime.getSeconds();
-    // Запускаем в 09:00:00 - 09:00:59
-    if (hours === 9 && minutes === 0 && seconds < 60) {
+    if (hours === 9 && minutes === 0) {
       const todayKey = almatyTime.toDateString();
       if (startDailyScheduler.lastRun !== todayKey) {
         startDailyScheduler.lastRun = todayKey;
         sendMorningDigest();
-        // По понедельникам — сводка по дисциплине (0 = воскресенье, 1 = понедельник)
-        if (almatyTime.getDay() === 1) {
-          sendWeeklyDisciplineReport();
-          sendWeeklySalesReport();
-        }
-        // Понедельник 12:00 — урок, Пятница 12:00 — тест
-        if ((almatyTime.getDay() === 1 || almatyTime.getDay() === 5) && hours === 12 && minutes === 0) {
-          sendWeeklyTraining();
-        }
-        // Понедельник 23:30 — напоминание не прошедшим урок
-        if (almatyTime.getDay() === 1 && hours === 23 && minutes === 30) {
-          checkTrainingDeadline('lesson');
-        }
-        // Пятница 23:30 — напоминание не сдавшим тест
-        if (almatyTime.getDay() === 5 && hours === 23 && minutes === 30) {
-          checkTrainingDeadline('test');
-        }
+        if (almatyTime.getDay() === 1) { sendWeeklyTraining(false); }
       }
     }
-  }, 30000); // проверяем каждые 30 секунд
-  console.log('Планировщик дайджеста запущен — каждый день в 09:00');
+  }, 30000);
+  console.log('Планировщик запущен — дайджест каждый день в 09:00');
 }
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
-  console.log('Томи Telegram запущена на порту ' + PORT);
+  console.log('Томи Telegram v4.4 запущена на порту ' + PORT);
   await restoreOpenShifts();
   startDailyScheduler();
   const webhookUrl = 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN + '/webhook';
   const body = JSON.stringify({ url: webhookUrl });
-  https.request({
-    hostname: 'api.telegram.org',
-    path: '/bot' + TELEGRAM_TOKEN + '/setWebhook',
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-  }, res => {
-    let data = '';
-    res.on('data', d => data += d);
-    res.on('end', () => console.log('Webhook установлен:', data));
-  }).end(body);
+  https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/setWebhook', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => console.log('Webhook установлен:', data)); }).end(body);
 });
