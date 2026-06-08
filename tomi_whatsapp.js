@@ -1266,7 +1266,13 @@ async function handleMessage(userId, messageText, photoFileId) {
       const monthNamesO = {май:5,мая:5,июнь:6,июня:6,июль:7,июля:7,август:8,сентябрь:9,октябрь:10,ноябрь:11,декабрь:12,январь:1,февраль:2,март:3,апрель:4};
       let repMonth = new Date().getMonth()+1, repYear = new Date().getFullYear();
       for (const [name, num] of Object.entries(monthNamesO)) { if (msgLO.includes(name)) { repMonth = num; break; } }
-      await generateFullReport(userId, repMonth, repYear);
+      await sendTelegram(userId, '⏳ Формирую отчёт за ' + repMonth + '.' + repYear + '...');
+      try {
+        await generateFullReport(userId, repMonth, repYear);
+      } catch(e) {
+        console.error('generateFullReport CALL ERROR:', e.message);
+        await sendTelegram(userId, '❌ Ошибка отчёта: ' + e.message);
+      }
       return;
     }
   }
