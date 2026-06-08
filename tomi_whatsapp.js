@@ -2073,7 +2073,7 @@ tr.good{background:#eef5ee}tr.str{background:#fff8e8}tr.tot{background:#1a1a1a;c
 <div class="sr"><span>Оборот</span><span>${fmtZ(sd.sales)} тг</span></div>
 <div class="sr"><span>До плана</span><span style="color:${pct>=100?'#2e7d32':'#c62828'}">${fmtZ(Math.max(0,p-sd.sales))} тг</span></div>
 <div class="pb" style="margin:8px 0 4px"><div class="pf" style="width:${Math.min(100,pct).toFixed(0)}%;background:${pct>=100?'#2e7d32':'#c8a97a'}"></div></div>
-<div class="sr" style="margin-top:8px;border-top:1px solid #ebe8e2;padding-top:6px"></div></div>`;
+<div class="sr" style="margin-top:8px;border-top:1px solid #ebe8e2;padding-top:6px"></div></div></div>`;
     });
     dash += `</div><div class="sec">Итоги магазина</div><div class="kards">
 <div class="kard"><div class="kl">Оборот (факт)</div><div class="kv">${fmtZ(totalRev)} тг</div><div class="ks">план ${fmtZ(planTotal)} тг</div><div class="pb"><div class="pf" style="width:${Math.min(100,totalRev/planTotal*100).toFixed(0)}%;background:#c8a97a"></div></div></div>
@@ -2226,3 +2226,5 @@ app.listen(PORT, async () => {
   const body = JSON.stringify({ url: webhookUrl });
   https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/setWebhook', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => console.log('Webhook установлен:', data)); }).end(body);
 });
+
+      
