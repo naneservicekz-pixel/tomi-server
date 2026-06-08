@@ -1815,20 +1815,84 @@ function generatePrepaysHTML(list, type) {
 function generateShiftHTML(data) {
   const { sellerName, date, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations } = data;
   const isOk = Math.abs(diff) < 500;
-  const statusColor = isOk ? '#3B6D11' : '#A32D2D';
-  const statusBg = isOk ? '#eaf3de' : '#fcebeb';
+  const isDanger = !isOk && Math.abs(diff) >= 500;
+  const statusBg   = isOk ? '#eaf3de' : '#fcebeb';
+  const statusBorder = isOk ? '#c0dd97' : '#F7C1C1';
+  const statusDot  = isOk ? '#639922' : '#E24B4A';
   const statusText = isOk ? 'Все каналы сходятся — смена закрыта корректно' : 'РАСХОЖДЕНИЕ — требует внимания';
+  const statusColor = isOk ? '#3B6D11' : '#A32D2D';
+  const diffColor  = diff >= 0 ? '#1D9E75' : '#E24B4A';
+  const diffSign   = diff >= 0 ? '+' : '';
   const fmt = n => Number(n||0).toLocaleString('ru-RU') + ' ₸';
-  const diffSign = diff >= 0 ? '+' : '';
-  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Отчёт — ${sellerName}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,sans-serif;background:#f5f5f0;padding:16px}.container{max-width:680px;margin:0 auto}.card{background:#fff;border:1px solid #e8e4de;border-radius:12px;padding:14px;margin-bottom:10px}.row{display:flex;justify-content:space-between;font-size:12px;padding:4px 0;border-bottom:1px solid #f5f5f0}.row:last-child{border:none}.row-label{color:#888}.row-value{font-weight:500}.total-row{display:flex;justify-content:space-between;font-size:13px;font-weight:700;padding:6px 0 0;border-top:1px solid #e8e4de;margin-top:4px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}</style></head><body><div class="container">
-<div style="display:flex;justify-content:space-between;margin-bottom:16px;"><div><div style="font-size:20px;font-weight:700;">NANÉ PARIS</div><div style="font-size:11px;color:#888;">Отчёт смены</div></div><div style="text-align:right;font-size:13px;"><strong>${date}</strong><div style="color:#888;">${sellerName} · ${closeTime}</div></div></div>
-<div style="background:${statusBg};border-radius:8px;padding:10px 14px;margin-bottom:16px;"><span style="font-size:13px;font-weight:600;color:${statusColor};">● ${statusText}</span></div>
-<div class="card"><div style="font-size:11px;color:#888;margin-bottom:8px;text-transform:uppercase;">Сверка</div><div class="row"><span class="row-label">ROSTA (расчёт)</span><span class="row-value">${fmt(rostaTotal)}</span></div><div class="row"><span class="row-label">ФАКТ (получено)</span><span class="row-value">${fmt(factTotal)}</span></div><div class="total-row"><span style="color:${Math.abs(diff)<500?'#3B6D11':'#A32D2D'}">Разница</span><span style="color:${Math.abs(diff)<500?'#3B6D11':'#A32D2D'}">${diffSign}${fmt(diff)}</span></div></div>
-<div class="grid2">
-<div class="card"><div style="font-size:11px;color:#888;margin-bottom:8px;">💳 Kaspi</div><div class="row"><span class="row-label">QR+Онлайн (ROSTA)</span><span>${fmt((s.rKaspi||0)+(s.rOnline||0))}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span>${fmt(kaspiNet)}</span></div></div>
-<div class="card"><div style="font-size:11px;color:#888;margin-bottom:8px;">💜 Halyk</div><div class="row"><span class="row-label">QR+Онлайн (ROSTA)</span><span>${fmt((s.rHalyk||0)+(s.rHalykOnline||0))}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span>${fmt(halykNet)}</span></div></div>
+  const grossSales = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0);
+  const totalRetAll = (s.rRetKaspi||0)+(s.rRetHalyk||0)+(s.rRetCash||0);
+
+  // Расшифровка расхождений
+  let diffDetails = '';
+  if (isDanger && channelDiffs && channelDiffs.length > 0) {
+    diffDetails = '<div style="background:#fff8f8;border:1px solid #F7C1C1;border-radius:8px;padding:14px;margin-bottom:16px;"><div style="font-size:13px;font-weight:600;color:#A32D2D;margin-bottom:10px;">Расшифровка расхождений</div>';
+    channelDiffs.forEach(cd => {
+      const sign = cd.diff > 0 ? '+' : '';
+      const color = cd.diff > 0 ? '#1D9E75' : '#E24B4A';
+      const direction = cd.diff > 0 ? 'излишек' : 'недостача';
+      diffDetails += '<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid #fde8e8;"><span style="color:#555;">' + cd.channel + '</span><span style="color:' + color + ';font-weight:600;">' + sign + fmt(cd.diff) + ' (' + direction + ')</span></div>';
+    });
+    diffDetails += '</div>';
+  }
+
+  // Пояснения предоплатами
+  let prepaySection = '';
+  if (prepayExplanations && prepayExplanations.length > 0) {
+    prepaySection = '<div style="background:#eaf3de;border:1px solid #c0dd97;border-radius:8px;padding:14px;margin-bottom:16px;"><div style="font-size:13px;font-weight:600;color:#3B6D11;margin-bottom:10px;">✅ Расхождение объяснено предоплатами</div>';
+    prepayExplanations.forEach(pe => {
+      const sign = pe.diff > 0 ? '+' : '';
+      prepaySection += '<div style="font-size:12px;padding:5px 0;border-bottom:1px solid #c0dd97;"><span style="color:#555;font-weight:600;">' + pe.channel + ': ' + sign + Number(pe.diff).toLocaleString() + ' ₸</span></div>';
+      pe.prepays.forEach(p => { prepaySection += '<div style="font-size:12px;padding:4px 0 4px 12px;color:#3B6D11;">→ ' + p.client + ' — ' + Number(p.amount).toLocaleString() + ' ₸</div>'; });
+    });
+    prepaySection += '</div>';
+  }
+
+  // Пояснения к расхождениям (notes)
+  let notesSection = '';
+  if (s.notes && s.notes.trim().length > 0) {
+    notesSection = '<div style="background:#fffbe6;border:1px solid #FAC775;border-radius:8px;padding:14px;margin-bottom:16px;"><div style="font-size:13px;font-weight:600;color:#854F0B;margin-bottom:8px;">📝 Пояснения к расхождениям</div><div style="font-size:12px;color:#555;line-height:1.6;">' + s.notes.replace(/;/g, '<br>') + '</div></div>';
+  }
+
+  // Статусы каналов внизу
+  const kaspiDiff = kaspiNet - ((s.rKaspi||0)+(s.rOnline||0));
+  const halykDiff = halykNet - ((s.rHalyk||0)+(s.rHalykOnline||0));
+  const channelStatus = [
+    { label: 'Kaspi',    ok: Math.abs(kaspiDiff) <= 500 },
+    { label: 'Halyk',    ok: Math.abs(halykDiff) <= 500 },
+    { label: 'Наличные', ok: true }
+  ].map(ch => '<div style="background:' + (ch.ok?'#eaf3de':'#fcebeb') + ';border:1px solid ' + (ch.ok?'#c0dd97':'#F7C1C1') + ';border-radius:8px;padding:10px;text-align:center;"><div style="font-size:11px;color:#888;margin-bottom:4px;">' + ch.label + '</div><div style="font-size:13px;font-weight:600;color:' + (ch.ok?'#3B6D11':'#A32D2D') + '">' + (ch.ok?'Сходится':'Расхождение') + '</div></div>').join('');
+
+  const css = `*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px}.container{max-width:680px;margin:0 auto}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px}.brand{font-size:22px;font-weight:600;letter-spacing:0.04em}.brand-sub{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:0.1em;margin-top:2px}.header-right{text-align:right;font-size:13px;color:#555}.header-right strong{color:#1a1a1a;display:block;font-size:14px}.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px}.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:16px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:24px}.metric{background:#efefea;border-radius:8px;padding:12px}.metric-label{font-size:10px;color:#888;margin-bottom:4px}.metric-value{font-size:16px;font-weight:600}.card{background:#fff;border:1px solid #e8e8e4;border-radius:12px;padding:14px}.card-title{display:flex;align-items:center;gap:7px;margin-bottom:12px;font-size:13px;font-weight:600}.dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}.row{display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid #f0f0ec}.row:last-child{border:none}.row-label{color:#888}.row-value{font-weight:500}.row-total{display:flex;justify-content:space-between;font-size:13px;font-weight:600;padding:8px 0 0}.sec{font-size:10px;color:#999;text-transform:uppercase;letter-spacing:0.12em;margin:18px 0 8px}.signature{border-top:1px solid #ccc;margin-top:8px;padding-top:4px;font-size:12px;color:#888}`;
+
+  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Отчёт смены — ${sellerName}</title><style>${css}</style></head><body><div class="container">
+<div class="header"><div><div class="brand">NANÉ PARIS</div><div class="brand-sub">Отчёт смены</div></div><div class="header-right"><strong>${date}</strong>${sellerName} · закрыто в ${closeTime}</div></div>
+<div style="background:${statusBg};border:1px solid ${statusBorder};border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:20px;"><div style="width:8px;height:8px;border-radius:50%;background:${statusDot};flex-shrink:0;"></div><span style="font-size:13px;font-weight:600;color:${statusColor};">${statusText}</span></div>
+<div class="sec">Эффективность дня</div>
+<div class="grid4">
+<div class="metric"><div class="metric-label">Валовые продажи</div><div class="metric-value">${fmt(grossSales)}</div></div>
+<div class="metric"><div class="metric-label">Возвраты</div><div class="metric-value" style="color:${totalRetAll>0?'#E24B4A':'#888'}">${totalRetAll>0?'-'+fmt(totalRetAll):fmt(0)}</div></div>
+<div class="metric"><div class="metric-label">Чистые продажи</div><div class="metric-value">${fmt(rostaTotal)}</div></div>
+<div class="metric"><div class="metric-label">Получено денег</div><div class="metric-value">${fmt(factTotal)}</div></div>
 </div>
-<div class="card"><div style="font-size:11px;color:#888;margin-bottom:8px;">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span>${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие</span><span>${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал (ROSTA)</span><span>${fmt(s.rCash)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}</div>
+${diffDetails}${prepaySection}${notesSection}
+<div class="sec">Каналы продаж</div>
+<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
+<div class="card"><div class="card-title"><div class="dot" style="background:#378ADD"></div>Kaspi</div><div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rOnline)}</span></div><div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rKaspi)}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tKaspi)}</span></div>${(s.tKaspiRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tKaspiRet)+'</span></div>':''}<div class="row-total"><span>Итого (ФАКТ)</span><span>${fmt(kaspiNet)}</span></div></div>
+<div class="card"><div class="card-title"><div class="dot" style="background:#7F77DD"></div>Halyk</div><div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rHalykOnline)}</span></div><div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rHalyk)}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tHalyk)}</span></div>${(s.tHalykRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tHalykRet)+'</span></div>':''}<div class="row-total"><span>Итого (ФАКТ)</span><span>${fmt(halykNet)}</span></div></div>
+<div class="card"><div class="card-title"><div class="dot" style="background:#1D9E75"></div>Прочие</div><div class="row"><span class="row-label">Наличные</span><span class="row-value">${fmt(s.rCash)}</span></div>${(s.rPersonal||0)>0?'<div class="row"><span class="row-label">Личная карта</span><span class="row-value">'+fmt(s.rPersonal)+'</span></div>':''}<div class="row-total"><span>Итого</span><span>${fmt((s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0))}</span></div></div>
+</div>
+<div class="sec">Касса и сверка</div>
+<div class="grid2">
+<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие</span><span class="row-value">${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал</span><span class="row-value">${fmt(cashSales)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}</div>
+<div class="card"><div class="card-title">🔍 Сверка</div><div class="row"><span class="row-label">ROSTA</span><span class="row-value">${fmt(rostaTotal)}</span></div><div class="row"><span class="row-label">ФАКТ</span><span class="row-value">${fmt(factTotal)}</span></div><div class="row"><span class="row-label">Разница</span><span class="row-value" style="color:${diffColor};font-weight:600;">${diffSign}${fmt(diff)}</span></div></div>
+</div>
+<div class="grid3">${channelStatus}</div>
+<div style="font-size:11px;color:#aaa;text-align:center;margin-top:4px;">Подпись продавца: ${sellerName} <span style="display:inline-block;width:120px;border-bottom:1px solid #ccc;margin-left:8px;"></span></div>
 </div></body></html>`;
 }
 
