@@ -2081,7 +2081,7 @@ tr.good{background:#eef5ee}tr.str{background:#fff8e8}tr.tot{background:#1a1a1a;c
 <div class="kard"><div class="kl">Дней продаж</div><div class="kv">${sales.length}</div></div>
 <div class="kard"><div class="kl">ФОТ итого</div><div class="kv">${fmtZ(totalFot)} тг</div><div class="ks">${fotPct}% от оборота</div></div>
 <div class="kard"><div class="kl">Налог 3%</div><div class="kv">${fmtZ(totalTax)} тг</div></div>
-${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmtZ(totalProfit)+' тг</div></div><div class="kard"><div class="kl">Чистая прибыль</div><div class="kv" style="color:#2e7d32">'+fmtZ(netProfit)+' тг</div></div>':'':''}
+${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmtZ(totalProfit)+' тг</div></div><div class="kard"><div class="kl">Чистая прибыль</div><div class="kv" style="color:#2e7d32">'+fmtZ(netProfit)+' тг</div></div>':''}
 </div>`;
 
     // ── ВКЛАДКА 2: ПО ДНЯМ ──
@@ -2125,7 +2125,7 @@ ${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><di
 <div class="kard"><div class="kl">Оборот</div><div class="kv">${fmtZ(totalRev)} тг</div></div>
 <div class="kard"><div class="kl">ФОТ итого</div><div class="kv">${fmtZ(totalFot)} тг</div><div class="ks">${fotPct}%</div></div>
 <div class="kard"><div class="kl">Налог 3%</div><div class="kv">${fmtZ(totalTax)} тг</div></div>
-${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmtZ(totalProfit)+' тг</div></div><div class="kard"><div class="kl">Чистая</div><div class="kv" style="color:#2e7d32">'+fmtZ(netProfit)+' тг</div></div>':'':''}
+${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmtZ(totalProfit)+' тг</div></div><div class="kard"><div class="kl">Чистая</div><div class="kv" style="color:#2e7d32">'+fmtZ(netProfit)+' тг</div></div>':''}
 </div>
 <div class="sec">Выплаты продавцам</div>
 <div class="tw"><table><thead><tr>
