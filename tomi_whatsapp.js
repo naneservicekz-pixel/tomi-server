@@ -1367,6 +1367,9 @@ async function handleMessage(userId, messageText, photoFileId) {
         let msg = '📋 Открытые предоплаты: ' + list.length + '\n\n';
         list.forEach((p, i) => { msg += '🟡 №'+(i+1)+' '+p.client+'\n'+(p.id?'🆔 '+p.id+'\n':'')+(p.items&&p.items.length?'👗 '+p.items.join(', ')+'\n':'')+'💰 Аванс: '+Number(p.amount).toLocaleString('ru-RU')+' тг\n\n'; });
         await sendTelegram(userId, msg);
+        const htmlContent = generatePrepaysHTML(list, 'open');
+        const filename = 'prepays_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
+        await sendTelegramDocument(userId, filename, htmlContent, '📋 Предоплаты — открой в браузере');
       }
       return;
     }
