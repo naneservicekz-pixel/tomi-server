@@ -1505,11 +1505,19 @@ app.post('/webhook', async (req, res) => {
         } catch(e) {}
       }
       const ownShift = openShifts[String(userId)] || await loadOpenShift(userId);
+      const isOwnerGeo = OWNER_IDS.includes(String(userId));
       let action;
-      if (pendingGeoAction[userId]) { action = pendingGeoAction[userId]; }
-      else if (geoOtherShift && ownShift) { action = 'second_arrive'; }
-      else if (ownShift) { action = 'close_shift'; }
-      else { action = 'open_shift'; }
+      if (pendingGeoAction[userId]) {
+        action = pendingGeoAction[userId];
+      } else if (ownShift) {
+        // Есть своя смена — всегда закрытие, игнорируем чужие смены
+        action = 'close_shift';
+      } else if (!isOwnerGeo && geoOtherShift) {
+        // Нет своей смены, есть чужая, не владелец — приход второго продавца
+        action = 'second_arrive';
+      } else {
+        action = 'open_shift';
+      }
       delete pendingGeoAction[userId];
       if (action === 'second_arrive') {
         const sName = ALLOWED_MAP[String(userId)] || 'Продавец';
@@ -1616,7 +1624,7 @@ app.post('/webhook', async (req, res) => {
         await saveMessages(userId, checklistStartMsg, checklistFirstQ);
         await sendTelegram(userId, checklistFirstQ);
         return;
-      } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены')) {
+      } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены') || lower.includes('закрыть смену') || lower.includes('закрываю') || lower.includes('закрытие')) {
         pendingGeoAction[userId] = 'close_shift';
       }
     }
