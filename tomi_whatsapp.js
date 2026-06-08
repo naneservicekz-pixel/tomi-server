@@ -1732,53 +1732,251 @@ ${sellerRows.map(s => `<div class="card"><div style="display:flex;justify-conten
 async function generateFullReport(userId, month, year) {
   try {
     const monthNames = ['','Январь','Февраль','Март','Апрель','Май','Июнь','Июль','Август','Сентябрь','Октябрь','Ноябрь','Декабрь'];
-    const mName = monthNames[month]||month;
-    const fmt = n => Math.round(n||0).toLocaleString('ru-RU');
-    const [sales, expenses, kpiData] = await Promise.all([dbGetSales(month,year), dbGetExpenses(month,year,false,userId), getKPI(month,year)]);
-    if (!sales||sales.length===0) { await sendTelegram(userId,'📊 Нет данных за '+mName+' '+year); return; }
-    const KE=14000,TAX=0.03,BONUS_PLAN=30000,KPI_ONE=25000;
+    const mName = monthNames[month] || month;
+    const fmt = n => { n = Math.round(n||0); if (n===0) return '—'; return n.toLocaleString('ru-RU'); };
+    const fmtZ = n => Math.round(n||0).toLocaleString('ru-RU'); // fmt without dash for zeros
+
+    const [sales, expenses, kpiData] = await Promise.all([
+      dbGetSales(month, year),
+      dbGetExpenses(month, year, false, userId),
+      getKPI(month, year)
+    ]);
+    if (!sales || sales.length === 0) { await sendTelegram(userId, '📊 Нет данных за ' + mName + ' ' + year); return; }
+
+    const KE=14000, TAX=0.03, BONUS_PLAN=30000, KPI_ONE=25000;
     const getPct = r => r>=1000000?0.027:r>=750000?0.022:r>=500000?0.017:0.012;
     const plans = {'Асель':8550000,'Зарина':10350000,'Луиза':8100000};
     const sellers = ['Асель','Зарина','Луиза'];
-    const selD = {}; sellers.forEach(s => { selD[s]={shifts:0,sales:0,pct:0,bonusGood:0,bonusRec:0}; });
+    const COLORS = {
+      'Асель': {bg:'#fdf0ec',tx:'#a03020',hd:'#c87060',css:'ca'},
+      'Зарина': {bg:'#ecf5f0',tx:'#1a6040',hd:'#5a8e70',css:'cz'},
+      'Луиза':  {bg:'#f0ecf8',tx:'#402880',hd:'#7060a8',css:'cl'}
+    };
+
+    const selD = {};
+    sellers.forEach(s => { selD[s] = {shifts:0, sales:0, pct:0, bonusGood:0, bonusRec:0}; });
     let totalRev=0, totalProfit=0, totalTax=0;
-    sales.forEach(s => {
-      const rev=Number(s.revenue||0),profit=Number(s.rosta_profit||0),tax=Math.round(rev*TAX);
-      totalRev+=rev; totalProfit+=profit; totalTax+=tax;
-      const dS=[s.seller1,s.seller2].filter(b=>b&&sellers.includes(b));
-      dS.forEach(name => { selD[name].shifts++; selD[name].sales+=rev/dS.length; selD[name].pct+=rev*getPct(rev); if(rev>=2000000)selD[name].bonusRec+=40000; else if(rev>=700000)selD[name].bonusGood+=5000; });
+
+    // Построчные данные по дням
+    const dayRows = sales.map((s, i) => {
+      const rev = Number(s.revenue||0);
+      const profit = Number(s.rosta_profit||0);
+      const tax = Math.round(rev * TAX);
+      totalRev += rev; totalProfit += profit; totalTax += tax;
+      const dS = [s.seller1, s.seller2].filter(b => b && sellers.includes(b));
+      const dayPct = rev * getPct(rev);
+      let dayFot = 0;
+      let af=0, ap=0, zf=0, zp=0, lf=0, lp=0;
+      dS.forEach(name => {
+        selD[name].shifts++;
+        selD[name].sales += rev / dS.length;
+        selD[name].pct += dayPct;
+        dayFot += KE + dayPct;
+        if (rev >= 2000000) { selD[name].bonusRec += 40000; dayFot += 40000; }
+        else if (rev >= 700000) { selD[name].bonusGood += 5000; dayFot += 5000; }
+        if (name === 'Асель')  { af = KE; ap = Math.round(dayPct); }
+        if (name === 'Зарина') { zf = KE; zp = Math.round(dayPct); }
+        if (name === 'Луиза')  { lf = KE; lp = Math.round(dayPct); }
+      });
+      const d = s.sale_date ? s.sale_date.slice(8,10)+'.'+s.sale_date.slice(5,7) : '?';
+      const type = rev>=2000000?'str':rev>=700000?'good':'';
+      const C1 = COLORS[s.seller1]; const C2 = COLORS[s.seller2];
+      const st1 = C1?'background:'+C1.bg+';color:'+C1.tx+';font-weight:700':'';
+      const st2 = C2?'background:'+C2.bg+';color:'+C2.tx+';font-weight:700':'';
+      return {i,d,rev,profit,tax,dayFot:Math.round(dayFot),s1:s.seller1||'—',s2:s.seller2||'—',
+        pctRate:(getPct(rev)*100).toFixed(1)+'%',type,af,ap,zf,zp,lf,lp,st1,st2,
+        C1,C2};
     });
-    let totalFot=0;
+
+    // Зарплата
+    let totalFot = 0;
     const salRows = sellers.map(name => {
-      const sd=selD[name]; if(sd.shifts===0) return null;
-      const ke=sd.shifts*KE, pct=Math.round(sd.pct), bonusPlan=sd.sales>=(plans[name]||0)?BONUS_PLAN:0;
-      const kpi=(kpiData[name]!==undefined?kpiData[name]:3)*KPI_ONE;
-      const total=ke+pct+sd.bonusGood+sd.bonusRec+bonusPlan+kpi; totalFot+=total;
-      return {name,shifts:sd.shifts,ke,pct,bonusGood:sd.bonusGood,bonusRec:sd.bonusRec,bonusPlan,kpi,total,planDone:sd.sales>=(plans[name]||0)};
+      const sd = selD[name];
+      if (sd.shifts === 0) return null;
+      const ke = sd.shifts * KE;
+      const pct = Math.round(sd.pct);
+      const bonusPlan = sd.sales >= (plans[name]||0) ? BONUS_PLAN : 0;
+      const kpi = (kpiData[name] !== undefined ? kpiData[name] : 3) * KPI_ONE;
+      const total = ke + pct + sd.bonusGood + sd.bonusRec + bonusPlan + kpi;
+      totalFot += total;
+      return {name, shifts:sd.shifts, ke, pct, bonusGood:sd.bonusGood, bonusRec:sd.bonusRec,
+        bonusPlan, kpi, total, planDone:sd.sales>=(plans[name]||0), salesAmt:Math.round(sd.sales)};
     }).filter(Boolean);
-    const expTotal=expenses.reduce((s,e)=>s+Number(e.amount||0),0);
-    const netProfit=totalProfit>0?totalProfit-totalTax-totalFot:0;
-    const fotPct=totalRev>0?(totalFot/totalRev*100).toFixed(1):'0';
-    const dt=new Date().toLocaleDateString('ru-RU',{timeZone:'Asia/Almaty'});
-    const salesRows = sales.map((s,i) => {
-      const rev=Number(s.revenue||0),profit=Number(s.rosta_profit||0),tax=Math.round(rev*TAX);
-      const dayFot=selD&&true?0:0;
-      const d=s.sale_date?s.sale_date.slice(8,10)+'.'+s.sale_date.slice(5,7):'?';
-      return `<tr><td>${i+1}</td><td>${d}</td><td>${fmt(rev)}</td><td>${s.seller1||'—'}</td><td>${s.seller2||'—'}</td><td>${profit>0?fmt(profit):'—'}</td><td>${fmt(tax)}</td></tr>`;
+
+    const expTotal = expenses.reduce((s,e) => s + Number(e.amount||0), 0);
+    const netProfit = totalProfit > 0 ? totalProfit - totalTax - totalFot : 0;
+    const fotPct = totalRev > 0 ? (totalFot/totalRev*100).toFixed(1) : '0';
+    const planTotal = 27000000;
+    const dt = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'});
+
+    // ── CSS ──
+    const css = `*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:12px;background:#f5f0eb;color:#1a1a1a}
+.hdr{background:#1a1a1a;color:white;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}
+.tabs{display:flex;background:#ebe5dd;border-bottom:2px solid #d5cfc7;padding:0 12px;overflow-x:auto;gap:0}
+.tab{padding:9px 14px;cursor:pointer;font-size:10px;font-weight:700;color:#8a847c;border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap;text-transform:uppercase;letter-spacing:.04em}
+.tab.on{color:#1a1a1a;border-bottom-color:#c8a97a}
+.pane{display:none;padding:16px;background:white}.pane.on{display:block}
+.kards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:16px}
+.kard{background:#f5f0eb;border:1px solid #d5cfc7;border-radius:8px;padding:12px 14px}
+.kl{font-size:9px;color:#8a847c;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px}
+.kv{font-size:18px;font-weight:700;line-height:1.2}.ks{font-size:10px;color:#8a847c;margin-top:3px}
+.pb{background:#e8e2da;border-radius:2px;height:5px;margin-top:7px}.pf{height:100%;border-radius:2px}
+.sellers{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
+.seller{background:white;border:1px solid #d5cfc7;border-radius:8px;overflow:hidden}
+.sh{padding:10px 14px;color:white;display:flex;justify-content:space-between;align-items:center}
+.sb{padding:10px 14px}.sr{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0ece6;font-size:11px}
+.sr:last-child{border:0;font-weight:700;font-size:12px;margin-top:4px}
+.tw{overflow-x:auto;margin-bottom:16px}
+table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:11px;border:1.5px solid #aaa}
+th{background:#1a1a1a;color:white;padding:7px 8px;text-align:center;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;border:1px solid #333}
+th.l{text-align:left}td{padding:5px 8px;border:1px solid #ccc;text-align:right;vertical-align:middle}
+td.l{text-align:left}td.c{text-align:center}tr:hover td{filter:brightness(0.97)}
+tr.good{background:#eef5ee}tr.str{background:#fff8e8}tr.tot{background:#1a1a1a;color:white;font-weight:700}tr.tot td{border-color:#333}
+.ga{background:#c87060;color:white;border:1px solid #a05040;text-align:center;font-size:10px;font-weight:700;padding:4px}
+.gz{background:#5a8e70;color:white;border:1px solid #3a6e50;text-align:center;font-size:10px;font-weight:700;padding:4px}
+.gl{background:#7060a8;color:white;border:1px solid #5040a0;text-align:center;font-size:10px;font-weight:700;padding:4px}
+.gf{background:#1a5080;color:white;border:1px solid #0a3060;text-align:center;font-size:10px;font-weight:700;padding:4px}
+.gn{background:#2a2a2a;color:white;border:1px solid #444;text-align:center;font-size:10px;font-weight:700;padding:4px}
+.ca{background:#fdf0ec}.cz{background:#ecf5f0}.cl{background:#f0ecf8}
+.sec{font-size:12px;font-weight:700;color:#1a1a1a;margin:20px 0 10px;padding-bottom:6px;border-bottom:2px solid #c8a97a;text-transform:uppercase;letter-spacing:.06em}
+.note{background:#fff8e8;border:1px solid #e8d5a0;border-radius:6px;padding:10px 14px;font-size:11px;color:#6b5500;margin-top:12px}
+@media(max-width:600px){.sellers{grid-template-columns:1fr}.kards{grid-template-columns:repeat(2,1fr)}}`;
+
+    // ── ВКЛАДКА 1: ДАШБОРД ──
+    let dash = '<div class="sec">Продавцы — прогресс к личному плану</div><div class="sellers">';
+    sellers.forEach(name => {
+      const sd = selD[name]; if (sd.shifts === 0) return;
+      const C = COLORS[name];
+      const p = plans[name]||0;
+      const pct = p > 0 ? sd.sales/p*100 : 0;
+      const salRow = salRows.find(r => r.name === name) || {};
+      dash += `<div class="seller"><div class="sh" style="background:${C.hd}"><div style="font-size:13px;font-weight:700">${name}</div><div style="font-size:14px;font-weight:700">${pct.toFixed(0)}%</div></div>
+<div class="sb"><div class="sr"><span>Смен</span><span><b>${sd.shifts}</b></span></div>
+<div class="sr"><span>Оборот</span><span>${fmtZ(sd.sales)} тг</span></div>
+<div class="sr"><span>До плана</span><span style="color:${pct>=100?'#2e7d32':'#c62828'}">${fmtZ(Math.max(0,p-sd.sales))} тг</span></div>
+<div class="pb" style="margin:8px 0 4px"><div class="pf" style="width:${Math.min(100,pct).toFixed(0)}%;background:${pct>=100?'#2e7d32':'#c8a97a'}"></div></div>
+<div class="sr" style="margin-top:8px;border-top:1px solid #ebe8e2;padding-top:6px"><span>Зарплата</span><span style="color:#2e7d32;font-weight:700">${fmtZ(salRow.total||0)} тг</span></div></div></div>`;
+    });
+    dash += `</div><div class="sec">Итоги магазина</div><div class="kards">
+<div class="kard"><div class="kl">Оборот (факт)</div><div class="kv">${fmtZ(totalRev)} тг</div><div class="ks">план ${fmtZ(planTotal)} тг</div><div class="pb"><div class="pf" style="width:${Math.min(100,totalRev/planTotal*100).toFixed(0)}%;background:#c8a97a"></div></div></div>
+<div class="kard"><div class="kl">Выполнение</div><div class="kv" style="color:${totalRev>=planTotal?'#2e7d32':'#c62828'}">${(totalRev/planTotal*100).toFixed(1)}%</div></div>
+<div class="kard"><div class="kl">Дней продаж</div><div class="kv">${sales.length}</div></div>
+<div class="kard"><div class="kl">ФОТ итого</div><div class="kv">${fmtZ(totalFot)} тг</div><div class="ks">${fotPct}% от оборота</div></div>
+<div class="kard"><div class="kl">Налог 3%</div><div class="kv">${fmtZ(totalTax)} тг</div></div>
+${totalProfit>0?`<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">${fmtZ(totalProfit)} тг</div></div><div class="kard"><div class="kl">Чистая прибыль</div><div class="kv" style="color:#2e7d32">${fmtZ(netProfit)} тг</div></div>`:''}
+</div>`;
+
+    // ── ВКЛАДКА 2: ПО ДНЯМ ──
+    let sAF=0,sAP=0,sZF=0,sZP=0,sLF=0,sLP=0,sTotalFot=0;
+    let dRows = dayRows.map(d => {
+      sAF+=d.af; sAP+=d.ap; sZF+=d.zf; sZP+=d.zp; sLF+=d.lf; sLP+=d.lp; sTotalFot+=d.dayFot;
+      return `<tr class="${d.type}"><td class="c">${d.i+1}</td><td class="l">${d.d}</td><td><b>${fmtZ(d.rev)}</b></td>
+<td class="l" style="${d.st1}">${d.s1}</td><td class="l" style="${d.st2}">${d.s2}</td>
+<td class="c"><b>${d.pctRate}</b></td>
+<td class="ca">${d.af?fmtZ(d.af):'—'}</td><td class="ca">${d.ap?fmtZ(d.ap):'—'}</td>
+<td class="cz">${d.zf?fmtZ(d.zf):'—'}</td><td class="cz">${d.zp?fmtZ(d.zp):'—'}</td>
+<td class="cl">${d.lf?fmtZ(d.lf):'—'}</td><td class="cl">${d.lp?fmtZ(d.lp):'—'}</td>
+<td><b>${fmtZ(d.dayFot)}</b></td><td>${d.profit>0?fmtZ(d.profit):'—'}</td>
+<td>${fmtZ(d.tax)}</td><td class="c"><b>${(d.dayFot/Math.max(d.rev,1)*100).toFixed(1)}%</b></td></tr>`;
     }).join('');
-    const salaryRows = salRows.map(r => `<tr><td>${r.name} (${r.shifts} смен)</td><td>${fmt(r.ke)}</td><td>${fmt(r.pct)}</td><td>${r.bonusGood?fmt(r.bonusGood):'—'}</td><td>${r.planDone?'✅ '+fmt(r.bonusPlan):'❌'}</td><td>${fmt(r.kpi)}</td><td><strong>${fmt(r.total)}</strong></td></tr>`).join('');
-    const html = `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NANE PARIS ${mName} ${year}</title><style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:12px;background:#f5f0eb;color:#1a1a1a}.hdr{background:#1a1a1a;color:white;padding:14px 20px;display:flex;justify-content:space-between;align-items:center}.tabs{display:flex;background:#ebe5dd;padding:0 12px;gap:0;overflow-x:auto}.tab{padding:9px 14px;cursor:pointer;font-size:10px;font-weight:700;color:#8a847c;border-bottom:3px solid transparent;margin-bottom:-2px;white-space:nowrap;text-transform:uppercase}.tab.on{color:#1a1a1a;border-bottom-color:#c8a97a}.pane{display:none;padding:16px;background:white}.pane.on{display:block}table{width:100%;border-collapse:collapse;font-size:11px;border:1.5px solid #aaa;margin-bottom:16px}th{background:#1a1a1a;color:white;padding:7px 8px;text-align:center;font-size:10px;font-weight:700;border:1px solid #333}td{padding:5px 8px;border:1px solid #ccc;text-align:right}.kards{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}.kard{background:#f5f0eb;border-radius:8px;padding:12px 14px}.kl{font-size:9px;color:#8a847c;text-transform:uppercase;margin-bottom:5px}.kv{font-size:18px;font-weight:700}.sec{font-size:12px;font-weight:700;color:#1a1a1a;margin:18px 0 10px;padding-bottom:6px;border-bottom:2px solid #c8a97a;text-transform:uppercase}</style></head><body>
-<div class="hdr"><div><div style="font-size:18px;font-weight:700;letter-spacing:.1em;">NANE PARIS</div><div style="font-size:10px;opacity:.5;">${mName} ${year}</div></div><div style="font-size:10px;opacity:.4;">${dt}</div></div>
-<div class="tabs"><div class="tab on" onclick="sw('dash',this)">📊 Итоги</div><div class="tab" onclick="sw('days',this)">📅 По дням</div><div class="tab" onclick="sw('sal',this)">💰 Зарплата</div></div>
-<div id="tab-dash" class="pane on">
-<div class="kards"><div class="kard"><div class="kl">Оборот</div><div class="kv">${fmt(totalRev)} тг</div></div><div class="kard"><div class="kl">ФОТ</div><div class="kv">${fmt(totalFot)} тг</div><div style="font-size:10px;color:#888;">${fotPct}%</div></div><div class="kard"><div class="kl">Налог 3%</div><div class="kv">${fmt(totalTax)} тг</div></div>${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">'+fmt(totalProfit)+' тг</div></div><div class="kard"><div class="kl">Чистая</div><div class="kv" style="color:#2e7d32">'+fmt(netProfit)+' тг</div></div>':''}</div>
+    const dHtml = `<div class="tw"><table><thead>
+<tr><th colspan="2" class="gn l">Смена</th><th class="gn">Оборот</th><th colspan="3" class="gn">Расчёт</th><th colspan="2" class="ga">Асель</th><th colspan="2" class="gz">Зарина</th><th colspan="2" class="gl">Луиза</th><th colspan="4" class="gf">Финансы</th></tr>
+<tr><th>#</th><th class="l">Дата</th><th>Оборот (тг)</th><th class="l">Продавец 1</th><th class="l">Продавец 2</th><th>% ставка</th>
+<th style="background:#c87060">Фикс</th><th style="background:#c87060">%</th>
+<th style="background:#5a8e70">Фикс</th><th style="background:#5a8e70">%</th>
+<th style="background:#7060a8">Фикс</th><th style="background:#7060a8">%</th>
+<th>ФОТ день</th><th>Прибыль</th><th>Налог</th><th>ФОТ %</th></tr></thead>
+<tbody>${dRows}
+<tr class="tot"><td></td><td class="l">ИТОГО</td><td>${fmtZ(totalRev)}</td><td></td><td></td><td class="c">${fotPct}%</td>
+<td>${fmtZ(sAF)}</td><td>${fmtZ(sAP)}</td><td>${fmtZ(sZF)}</td><td>${fmtZ(sZP)}</td><td>${fmtZ(sLF)}</td><td>${fmtZ(sLP)}</td>
+<td>${fmtZ(sTotalFot)}</td><td>${totalProfit>0?fmtZ(totalProfit):'—'}</td><td>${fmtZ(totalTax)}</td><td class="c">${fotPct}%</td></tr>
+</tbody></table></div>`;
+
+    // ── ВКЛАДКА 3: ИТОГИ / ЗАРПЛАТА ──
+    const salaryRows = salRows.map(r => {
+      const C = COLORS[r.name] || {css:'',tx:'#333'};
+      return `<tr><td class="l ${C.css}"><b style="color:${C.tx}">${r.name}</b> (${r.shifts} смен)</td>
+<td class="${C.css}">${fmtZ(r.ke)}</td><td class="${C.css}">${fmtZ(r.pct)}</td>
+<td class="${C.css}">${r.bonusGood?fmtZ(r.bonusGood):'—'}</td>
+<td class="${C.css}">${r.bonusRec?fmtZ(r.bonusRec):'—'}</td>
+<td class="${C.css}">${r.planDone?'✅ '+fmtZ(r.bonusPlan):'❌ нет'}</td>
+<td class="${C.css}">${fmtZ(r.kpi)}</td>
+<td class="${C.css}"><b style="color:#2e7d32">${fmtZ(r.total)}</b></td></tr>`;
+    }).join('');
+    const iHtml = `<div class="kards">
+<div class="kard"><div class="kl">Оборот</div><div class="kv">${fmtZ(totalRev)} тг</div></div>
+<div class="kard"><div class="kl">ФОТ итого</div><div class="kv">${fmtZ(totalFot)} тг</div><div class="ks">${fotPct}%</div></div>
+<div class="kard"><div class="kl">Налог 3%</div><div class="kv">${fmtZ(totalTax)} тг</div></div>
+${totalProfit>0?`<div class="kard"><div class="kl">Прибыль ROSTA</div><div class="kv">${fmtZ(totalProfit)} тг</div></div><div class="kard"><div class="kl">Чистая</div><div class="kv" style="color:#2e7d32">${fmtZ(netProfit)} тг</div></div>`:''}
 </div>
-<div id="tab-days" class="pane"><table><thead><tr><th>#</th><th>Дата</th><th>Оборот</th><th>Продавец 1</th><th>Продавец 2</th><th>Прибыль</th><th>Налог</th></tr></thead><tbody>${salesRows}</tbody></table></div>
-<div id="tab-sal" class="pane"><table><thead><tr><th>Продавец</th><th>КЕ</th><th>%</th><th>Бонус</th><th>План</th><th>KPI</th><th>Итого</th></tr></thead><tbody>${salaryRows}<tr style="background:#1a1a1a;color:white;font-weight:700;"><td>ИТОГО ФОТ</td><td colspan="5"></td><td>${fmt(totalFot)}</td></tr></tbody></table></div>
-<script>function sw(id,el){document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));document.getElementById('tab-'+id).classList.add('on');el.classList.add('on');}<\/script></body></html>`;
-    const filename = 'otchet_'+mName.toLowerCase()+'_'+year+'.html';
-    await sendTelegramDocument(userId, filename, html, '📊 Отчёт '+mName+' '+year+' — открой в браузере');
-  } catch(e) { console.error('generateFullReport error:', e.message); await sendTelegram(userId, '❌ Ошибка: '+e.message); }
+<div class="sec">Выплаты продавцам</div>
+<div class="tw"><table><thead><tr>
+<th class="l">Продавец</th><th>КЕ (фикс)</th><th>% продаж</th><th>Бонус день</th><th>Рекорд</th><th>Бонус план</th><th>KPI</th><th>ИТОГО</th>
+</tr></thead><tbody>${salaryRows}
+<tr class="tot"><td class="l">ИТОГО ФОТ</td><td colspan="6"></td><td>${fmtZ(totalFot)}</td></tr>
+</tbody></table></div>`;
+
+    // ── ВКЛАДКА 4: РАСХОДЫ ──
+    let eHtml = '';
+    if (expenses.length > 0) {
+      const expRows = expenses.map(e => `<tr><td class="l">${e.expense_date||'—'}</td><td class="l">${e.category||'—'}</td><td>${fmtZ(e.amount)}</td><td class="l">${e.description||'—'}</td></tr>`).join('');
+      eHtml = `<div class="kards"><div class="kard"><div class="kl">Всего расходов</div><div class="kv">${fmtZ(expTotal)} тг</div></div><div class="kard"><div class="kl">Позиций</div><div class="kv">${expenses.length}</div></div></div>
+<div class="tw"><table><thead><tr><th class="l">Дата</th><th class="l">Категория</th><th>Сумма</th><th class="l">Описание</th></tr></thead>
+<tbody>${expRows}<tr class="tot"><td colspan="2" class="l">Итого</td><td>${fmtZ(expTotal)}</td><td></td></tr></tbody></table></div>`;
+    } else {
+      eHtml = '<p style="color:#8a847c;padding:20px;text-align:center">Расходов за ' + mName + ' ' + year + ' нет</p>';
+    }
+
+    // ── ВКЛАДКА 5: ФИНАНСЫ ──
+    const finRows = dayRows.map(d => `<tr><td class="l">${d.d}</td><td>${fmtZ(d.rev)}</td><td>${d.profit>0?fmtZ(d.profit):'—'}</td><td>${fmtZ(d.tax)}</td><td>${fmtZ(d.dayFot)}</td><td>${d.profit>0?fmtZ(d.profit-d.dayFot-d.tax):'—'}</td><td class="c">${(d.dayFot/Math.max(d.rev,1)*100).toFixed(1)}%</td></tr>`).join('');
+    let fHtml = `<div class="tw"><table><thead><tr>
+<th class="l">Дата</th><th>Оборот</th><th>Прибыль ROSTA</th><th>Налог 3%</th><th>ФОТ день</th><th>Приб−ФОТ−нал</th><th>ФОТ %</th>
+</tr></thead><tbody>${finRows}
+<tr class="tot"><td class="l">ИТОГО</td><td>${fmtZ(totalRev)}</td><td>${totalProfit>0?fmtZ(totalProfit):'—'}</td><td>${fmtZ(totalTax)}</td><td>${fmtZ(totalFot)}</td><td>${totalProfit>0?fmtZ(netProfit):'—'}</td><td class="c">${fotPct}%</td></tr>
+</tbody></table></div>`;
+    if (!totalProfit) { fHtml += '<div class="note">Введи прибыль ROSTA командой: «Прибыль [дата] [сумма]»</div>'; }
+
+    // ── ВКЛАДКА 6: ШПАРГАЛКА ──
+    const shp = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+<div><div class="sec">Шкала % от оборота смены</div>
+<div class="tw"><table><thead><tr><th class="l">Оборот смены</th><th>% каждому</th></tr></thead>
+<tbody><tr><td class="l">до 500 000 тг</td><td class="c"><b>1,2%</b></td></tr>
+<tr><td class="l">500 000 – 750 000</td><td class="c"><b>1,7%</b></td></tr>
+<tr><td class="l">750 000 – 1 000 000</td><td class="c"><b>2,2%</b></td></tr>
+<tr><td class="l">от 1 000 000</td><td class="c"><b>2,7%</b></td></tr>
+</tbody></table></div></div>
+<div><div class="sec">Бонусы</div>
+<div class="tw"><table><thead><tr><th class="l">Оборот</th><th>Бонус</th></tr></thead>
+<tbody><tr><td class="l">≥ 700 000 тг</td><td>+5 000 тг</td></tr>
+<tr><td class="l">≥ 2 000 000 тг</td><td>+40 000 тг</td></tr>
+<tr><td class="l">Выполнение личного плана</td><td>+30 000 тг</td></tr>
+</tbody></table></div>
+<div class="note" style="margin-top:10px">КЕ = 14 000 тг/смена<br>Налог = 3% от оборота<br>KPI = 25 000 × 3 = 75 000 тг макс</div></div></div>`;
+
+    // ── СБОРКА HTML ──
+    const html = `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NANE PARIS ${mName} ${year}</title><style>${css}</style></head><body>
+<div class="hdr"><div><div style="font-size:18px;font-weight:700;letter-spacing:.1em">NANE PARIS</div><div style="font-size:10px;opacity:.5">${mName} ${year}</div></div><div style="font-size:10px;opacity:.4">Астана · ${dt}</div></div>
+<div class="tabs">
+<div class="tab on" onclick="sw('dash',this)">📊 Дашборд</div>
+<div class="tab" onclick="sw('days',this)">📅 По дням</div>
+<div class="tab" onclick="sw('itogi',this)">💰 Зарплата</div>
+<div class="tab" onclick="sw('exp',this)">💸 Расходы</div>
+<div class="tab" onclick="sw('fin',this)">📈 Финансы</div>
+<div class="tab" onclick="sw('shp',this)">📌 Шпаргалка</div>
+</div>
+<div id="tab-dash" class="pane on">${dash}</div>
+<div id="tab-days" class="pane">${dHtml}</div>
+<div id="tab-itogi" class="pane">${iHtml}</div>
+<div id="tab-exp" class="pane">${eHtml}</div>
+<div id="tab-fin" class="pane">${fHtml}</div>
+<div id="tab-shp" class="pane">${shp}</div>
+<script>function sw(id,el){document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));document.getElementById('tab-'+id).classList.add('on');el.classList.add('on');}<\/script>
+</body></html>`;
+
+    const filename = 'otchet_' + mName.toLowerCase() + '_' + year + '.html';
+    await sendTelegramDocument(userId, filename, html, '📊 Отчёт ' + mName + ' ' + year + ' — открой в браузере');
+  } catch(e) { console.error('generateFullReport error:', e.message); await sendTelegram(userId, '❌ Ошибка: ' + e.message); }
 }
 
 function startDailyScheduler() {
