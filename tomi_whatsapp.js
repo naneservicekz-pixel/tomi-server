@@ -1270,7 +1270,7 @@ async function handleMessage(userId, messageText, photoFileId) {
       try {
         await generateFullReport(userId, repMonth, repYear);
       } catch(e) {
-        console.error('generateFullReport CALL ERROR:', e.message);
+        console.error('generateFullReport CALL ERROR:', e.message, e.stack);
         await sendTelegram(userId, '❌ Ошибка отчёта: ' + e.message);
       }
       return;
@@ -2097,6 +2097,7 @@ ${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><di
 <td><b>${fmtZ(d.dayFot)}</b></td><td>${d.profit>0?fmtZ(d.profit):'—'}</td>
 <td>${fmtZ(d.tax)}</td><td class="c"><b>${(d.dayFot/Math.max(d.rev,1)*100).toFixed(1)}%</b></td></tr>`;
     }).join('');
+    console.log('generateFullReport: dayRows count:', dayRows.length, 'salRows:', salRows.length, 'expenses:', expenses.length);
     const dHtml = `<div class="tw"><table><thead>
 <tr><th colspan="2" class="gn l">Смена</th><th class="gn">Оборот</th><th colspan="3" class="gn">Расчёт</th><th colspan="2" class="ga">Асель</th><th colspan="2" class="gz">Зарина</th><th colspan="2" class="gl">Луиза</th><th colspan="4" class="gf">Финансы</th></tr>
 <tr><th>#</th><th class="l">Дата</th><th>Оборот (тг)</th><th class="l">Продавец 1</th><th class="l">Продавец 2</th><th>% ставка</th>
