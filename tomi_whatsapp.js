@@ -603,7 +603,7 @@ function getOwnerPrompt(ownerName, data) {
     '"Финансы за май" => FINANCE_REPORT:{"month":0,"year":0}\n' +
     '"Зарплата за май" => SALARY_CALC:{"month":0,"year":0}\n' +
     '"KPI Асель 3" => KPI_SET:{"seller":"Имя","score":0,"month":0,"year":0}\n' +
-    '"Запусти обучение" => TRAINING_NOW\n' +
+    '"Запусти обучение" => TRAINING_NOW\n"Запусти тест сейчас" => TRAINING_TEST_NOW\n"Отправь случайный вопрос" => RANDOM_QUESTION_NOW\n' +
     '"Останови обучение" => TRAINING_PAUSE\n' +
     '"Возобнови обучение" => TRAINING_RESUME\n' +
     '"Еженедельный отчёт" => WEEKLY_REPORT\n\n' +
@@ -1050,6 +1050,34 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
     if (!cleanReply) return '';
   }
 
+  if (reply.includes('TRAINING_TEST_NOW')) {
+    cleanReply = reply.replace(/TRAINING_TEST_NOW/g, '').trim();
+    // Запустить тест немедленно
+    const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
+    let weekNum = 1;
+    try {
+      const { data } = await supabase.from('training_progress').select('week').order('week', { ascending: false }).limit(1);
+      if (data && data.length > 0) weekNum = Math.min(data[0].week, NANE_LESSONS.length);
+    } catch(e) {}
+    const lesson = NANE_LESSONS[weekNum - 1];
+    if (lesson) {
+      for (const [sellerId] of sellers) {
+        pendingTestAnswer[sellerId] = { weekNum, questionIndex: 0, answers: [] };
+        await sendTelegram(sellerId, '🎯 ТЕСТ — Неделя ' + weekNum + '\n📖 ' + lesson.topic + '\n\nВопрос 1 из ' + lesson.questions.length + ':\n\n' + lesson.questions[0].q);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      await sendTelegram(userId, '✅ Тест отправлен продавцам');
+    }
+    if (!cleanReply) return '';
+  }
+
+  if (reply.includes('RANDOM_QUESTION_NOW')) {
+    cleanReply = reply.replace(/RANDOM_QUESTION_NOW/g, '').trim();
+    await sendRandomTrainingQuestion();
+    await sendTelegram(userId, '✅ Случайный вопрос отправлен продавцам');
+    if (!cleanReply) return '';
+  }
+
   if (reply.includes('FINANCE_REPORT:')) {
     try {
       const jsonStr = reply.match(/FINANCE_REPORT:(\{.*?\})/s)?.[1];
@@ -1379,6 +1407,12 @@ async function handleMessage(userId, messageText, photoFileId) {
       }
       return;
     }
+  }
+
+  // Перехватываем ответы на тест обучения
+  if (!isOwner && messageText && pendingTestAnswer[String(userId)]) {
+    const handled = await handleTrainingTestAnswer(userId, messageText);
+    if (handled) return;
   }
 
   if (!conversations[userKey]) conversations[userKey] = await loadConversation(userId);
@@ -1747,30 +1781,329 @@ async function showExpensesByMonth(userId, month, year, period) {
   } catch(e) {}
 }
 
-const TRAINING_TOPICS = [
-  { topic: 'Встреча покупателя и первый контакт', lesson: '📖 УРОК 1: Встреча покупателя\n\nПервые 7 секунд определяют всё.\n\n✅ Приветствие: «Добро пожаловать в NANE PARIS!»\n❌ Никогда: «Вам помочь?»\n\nТипы покупателей:\n🔵 Молчаливый — не давить\n🟡 Активный — включиться сразу\n🔴 Торопливый — быстро к сути\n\nСтандарты: вставать при входе, улыбка, телефон убрать.' },
-  { topic: 'Выявление потребности (SPIN)', lesson: '📖 УРОК 2: Выявление потребности\n\n80% времени говорит покупатель.\n\nSPIN:\nS — «На какой повод подбираете?»\nP — «Чего не хватает в гардеробе?»\nI — «Важно ли носить несколько сезонов?»\nN — «Значит нужно универсальное?»\n\nПравило 3 вопросов перед предложением.' },
-  { topic: 'Презентация товара (FAB)', lesson: '📖 УРОК 3: Презентация FAB\n\nХарактеристика → Преимущество → Выгода\n\n🇰🇷 Корея: «Корейские лекала → идеальная посадка → вы единственная в этом образе»\n🏭 Производство: «Кожа ручной выделки → уникально → вещь на 10-15 лет»\n\nВсегда показывай 3 варианта.' },
-  { topic: 'Работа с возражениями', lesson: '📖 УРОК 4: Возражения\n\nАлгоритм: Выслушай → Согласись → Уточни → Ответь\n\n«Дорого»:\n→ «Натуральная кожа ручной выделки»\n→ «За 3 сезона = 50 тг в день»\n\n«Подумаю»:\n→ «Что останавливает?»\n→ «Эта модель в единственном экземпляре»' },
-  { topic: 'Допродажа и закрытие сделки', lesson: '📖 УРОК 5: Допродажа\n\nUpsell: «Есть похожая модель чуть дороже»\nCross-sell: «К платью идеально этот ремень»\n\nТехники закрытия:\n✅ «Вы берёте это или то?»\n✅ «Oплата Kaspi или наличными?»\n✅ «Последняя в вашем размере»\n\nПравило тишины: после вопроса — молчи.' }
+const NANE_LESSONS = [
+  {
+    week: 1,
+    topic: 'Бренд NANE, клиент, ценности, внешний вид',
+    lesson: `📚 NANE АКАДЕМИЯ ПРОДАЖ — НЕДЕЛЯ 1
+
+🏷 БРЕНД NANE
+NANE — премиальный женский бутик в Астане. Корея и Европа. Не fast fashion — осознанная мода.
+Миссия: помочь каждой покупательнице создать гардероб, который отражает её личность.
+Конкурентное преимущество: индивидуальный подход, качество, живой опыт примерки.
+
+👩 НАШ КЛИЕНТ
+Женщина 25–50 лет, Астана. Работает: менеджер, предприниматель, врач, юрист.
+Доход средний+. Ценит качество и время. Приходит за советом, а не только за вещью.
+
+3 типа покупательниц:
+🔵 Тип А «Знает, что хочет» — дай 2-3 варианта, быстро и точно
+🟡 Тип Б «Ищет вдохновение» — показывай образы целиком, задавай вопросы
+🔴 Тип В «Сомневающаяся» — аргументируй качеством, не давить
+
+⭐ 5 ЦЕННОСТЕЙ NANE
+1. Уважение — каждая клиентка важна
+2. Экспертиза — мы знаем моду лучше клиента
+3. Честность — не продаём то, что не идёт
+4. Внимание — замечаем настроение, помним имена
+5. Красота — всё что делаем красиво
+
+👗 ВНЕШНИЙ ВИД
+✅ Одежда в стиле NANE, чистая, выглаженная
+✅ Аккуратный маникюр и макияж, волосы убраны
+✅ Закрытая обувь, нейтральный парфюм, бейдж
+❌ Спортивная одежда, кроссовки, телефон в руках, жвачка
+
+❌ ФРАЗЫ-ТАБУ → ✅ ЗАМЕНА
+«Чем могу помочь?» → «Вы что-то конкретное ищете?»
+«Это дорого» → «Носится 3-4 сезона — очень выгодно»
+«Не знаю» → «Сейчас уточню для вас»
+«Нету» → «Этой нет, но есть похожая — покажу?»
+«Вам не идёт» → «Давайте попробуем другой фасон»
+
+━━━━━━━━━━━━━━━━━
+Изучи урок до пятницы — в пятницу будет тест 🎯`,
+    questions: [
+      { q: 'Назови миссию NANE своими словами', key: 'помочь каждой покупательнице создать гардероб личность стиль' },
+      { q: 'Назови 5 ценностей NANE', key: 'уважение экспертиза честность внимание красота' },
+      { q: 'Клиент говорит «просто смотрю». Что отвечаешь?', key: 'конечно смотрите спокойно понадоблюсь здесь' }
+    ]
+  },
+  {
+    week: 2,
+    topic: 'Первый контакт, примерочная, ткани, сложные ситуации',
+    lesson: `📚 NANE АКАДЕМИЯ ПРОДАЖ — НЕДЕЛЯ 2
+
+👋 ПЕРВЫЙ КОНТАКТ
+Первые 30 секунд определяют весь визит.
+Стандарт: контакт глазами + улыбка + «Добрый день, добро пожаловать»
+Пауза 2-3 минуты — не идти следом.
+Через 2-3 мин: «Вы ищете что-то конкретное или хотите посмотреть новинки?»
+
+5 ШАГОВ ОБСЛУЖИВАНИЯ:
+1. Приветствие в 30 сек
+2. Зона комфорта — 2-3 мин без давления
+3. Выявление потребности — открытые вопросы
+4. Презентация образа целиком, не просто вещи
+5. Прощание — благодарим независимо от покупки
+
+👗 ПРИМЕРОЧНАЯ
+✅ Лично проводить к примерочной
+✅ Принести размеры сразу, предложить 44 и 46
+✅ Через 3-5 мин: «Как вам? Принести другой размер?»
+✅ Остаться в зоне видимости, не уходить
+✅ После — принять вещи лично, сразу вернуть на место
+
+🧵 ТКАНИ И УХОД
+Вискоза — мягкая, дышащая, может мяться. «Приятная к телу, особенно в тёплый сезон»
+Полиэстер — практичная, не мнётся. «Не нужно гладить, всегда аккуратно»
+Жаккард — плотная, держит форму. «Выглядит очень дорого»
+Трикотаж — тянется, комфортный. «Сидит по фигуре, не сковывает»
+Эко-кожа — структурированная. «Стильно, лёгкий уход»
+
+Уход: стирка 30°C, вискозу не отжимать, гладить через ткань.
+
+⚠️ СЛОЖНЫЕ СИТУАЦИИ
+Недовольный клиент: выслушать → признать → не оправдываться → позвать старшего → поблагодарить
+Нет товара: предложить похожее → уточнить сроки → записать контакт. Никогда просто «нету»!
+Кража: не обвинять публично → подойти и предложить помощь → сообщить руководству через Томи
+Клиенту плохо: усадить, принести воду, позвать коллегу, вызвать 103
+
+🏪 ОПЕРАЦИОННЫЕ СТАНДАРТЫ
+Приход: за 15 мин до открытия, проверить зал, кассу, терминалы, открыть Томи
+Смена: каждые 30 мин обход зала, ценники на месте, примерочные чистые
+Закрытие: навести порядок, Z-отчёт, фото терминалов, форма в Томи
+
+━━━━━━━━━━━━━━━━━
+Изучи урок до пятницы — в пятницу будет тест 🎯`,
+    questions: [
+      { q: 'Опиши стандарт работы с примерочной (3 шага)', key: 'проводить лично спросить принести размер принять вещи' },
+      { q: 'Клиент хочет вещь которой нет. Твои действия?', key: 'похожая модель сроки записать контакт' },
+      { q: 'Назови свойства вискозы и как об этом рассказать клиенту', key: 'мягкая дышащая приятная тёплый' }
+    ]
+  }
 ];
 
-let currentTrainingWeek = 0;
+// Рандомные вопросы для поддержания знаний (после обучения)
+const RANDOM_QUESTIONS = [
+  'Клиент говорит «дорого». Что отвечаешь?',
+  'Как правильно приветствовать клиента при входе?',
+  'Назови 5 ценностей NANE',
+  'Чем отличается Тип А от Типа Б покупательниц?',
+  'Что делать если клиент хочет вернуть товар?',
+  'Как ухаживать за вискозой?',
+  'Клиент говорит «просто смотрю». Что отвечаешь?',
+  'Назови 3 фразы-табу и их замены',
+  'Что делать при подозрении на кражу?',
+  'Опиши стандарт примерочной зоны',
+  'Как встречать постоянного клиента?',
+  'Что делать если клиенту стало плохо в магазине?',
+  'Как описать жаккард клиенту?',
+  'Что проверить при открытии смены?',
+  'Как правильно закончить примерку если вещь не подошла?'
+];
+
+// Состояние обучения (в памяти, сбрасывается при рестарте)
+const trainingState = {}; // { sellerId: { week, phase, testAnswers, testScore, completed } }
+const pendingTestAnswer = {}; // { sellerId: { questionIndex, answers } }
+
 let trainingPaused = false;
+let currentTrainingWeek = 0; // для совместимости
 
 async function sendWeeklyTraining(forceLesson) {
   try {
     if (trainingPaused && !forceLesson) return;
     const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
     if (sellers.length === 0) return;
-    const topicIndex = currentTrainingWeek % TRAINING_TOPICS.length;
-    if (!forceLesson) currentTrainingWeek++;
-    const topic = TRAINING_TOPICS[topicIndex];
-    const lessonMsg = '📚 ОБУЧЕНИЕ NANE PARIS\n\n🗓 Тема: ' + topic.topic + '\n⏰ Дедлайн: сегодня до 23:59\n━━━━━━━━━━━━━━━━━\n\n' + topic.lesson + '\n\n━━━━━━━━━━━━━━━━━\n⚠️ Напиши «Урок изучен» до 23:59.';
-    for (const [sellerId] of sellers) { await sendTelegram(sellerId, lessonMsg); await new Promise(r => setTimeout(r, 1000)); }
-    for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '📚 Урок отправлен\n📖 ' + topic.topic);
+
+    const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+    const dayOfWeek = nowA.getDay(); // 1=пн, 5=пт
+    const isTest = !forceLesson && dayOfWeek === 5;
+    const isLesson = forceLesson || dayOfWeek === 1;
+
+    if (!isLesson && !isTest) return;
+
+    // Определяем текущую неделю обучения из Supabase
+    let weekNum = 1;
+    try {
+      const { data } = await supabase.from('training_progress').select('week').order('week', { ascending: false }).limit(1);
+      if (data && data.length > 0) weekNum = data[0].week;
+    } catch(e) {}
+
+    if (isLesson) {
+      // Отправляем урок
+      if (weekNum > NANE_LESSONS.length) {
+        // Обучение завершено — режим случайных вопросов
+        await sendRandomTrainingQuestion();
+        return;
+      }
+      const lesson = NANE_LESSONS[weekNum - 1];
+      const lessonMsg = lesson.lesson + '\n\n⏰ В пятницу будет тест по этой теме.';
+      for (const [sellerId] of sellers) {
+        await sendTelegram(sellerId, lessonMsg);
+        trainingState[sellerId] = { week: weekNum, phase: 'learning', completed: false };
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      // Сохраняем прогресс
+      try {
+        await supabase.from('training_progress').upsert({ week: weekNum, sent_at: new Date().toISOString() }, { onConflict: 'week' });
+      } catch(e) {}
+      for (const ownerId of OWNER_IDS) {
+        await sendTelegram(ownerId, '📚 Урок недели ' + weekNum + ' отправлен\n📖 ' + lesson.topic + '\n👥 Продавцов: ' + sellers.length);
+      }
+      if (!forceLesson) currentTrainingWeek = weekNum;
+    }
+
+    if (isTest) {
+      // Отправляем тест
+      if (weekNum > NANE_LESSONS.length) {
+        await sendRandomTrainingQuestion();
+        return;
+      }
+      const lesson = NANE_LESSONS[weekNum - 1];
+      const testIntro = '🎯 ТЕСТ — Неделя ' + weekNum + '\n📖 ' + lesson.topic + '\n\nОтвечай развёрнуто, своими словами.\n\n';
+      for (const [sellerId] of sellers) {
+        pendingTestAnswer[sellerId] = { weekNum, questionIndex: 0, answers: [] };
+        await sendTelegram(sellerId, testIntro + 'Вопрос 1 из ' + lesson.questions.length + ':\n\n' + lesson.questions[0].q);
+        trainingState[sellerId] = { ...(trainingState[sellerId] || {}), phase: 'testing', week: weekNum };
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      for (const ownerId of OWNER_IDS) {
+        await sendTelegram(ownerId, '🎯 Тест недели ' + weekNum + ' отправлен продавцам\n📖 ' + lesson.topic);
+      }
+
+      // Если это была последняя неделя — увеличиваем счётчик для следующего цикла
+      if (weekNum === NANE_LESSONS.length) {
+        try {
+          await supabase.from('training_progress').upsert({ week: weekNum + 1, sent_at: new Date().toISOString() }, { onConflict: 'week' });
+        } catch(e) {}
+      }
+    }
   } catch(e) { console.error('sendWeeklyTraining error:', e.message); }
 }
+
+async function handleTrainingTestAnswer(userId, messageText) {
+  const pending = pendingTestAnswer[String(userId)];
+  if (!pending) return false;
+
+  const { weekNum, questionIndex, answers } = pending;
+  const lesson = NANE_LESSONS[weekNum - 1];
+  if (!lesson) return false;
+
+  answers.push(messageText);
+  const nextIndex = questionIndex + 1;
+
+  if (nextIndex < lesson.questions.length) {
+    // Следующий вопрос
+    pendingTestAnswer[String(userId)].questionIndex = nextIndex;
+    pendingTestAnswer[String(userId)].answers = answers;
+    await sendTelegram(userId, 'Вопрос ' + (nextIndex + 1) + ' из ' + lesson.questions.length + ':\n\n' + lesson.questions[nextIndex].q);
+    return true;
+  }
+
+  // Все ответы получены — оцениваем через Claude
+  delete pendingTestAnswer[String(userId)];
+
+  await sendTelegram(userId, '⏳ Проверяю ответы...');
+
+  let score = 0;
+  const evaluation = [];
+  for (let i = 0; i < lesson.questions.length; i++) {
+    const q = lesson.questions[i];
+    const answer = answers[i] || '';
+    // Простая проверка по ключевым словам
+    const keywords = q.key.split(' ');
+    const answerLower = answer.toLowerCase();
+    const matched = keywords.filter(kw => answerLower.includes(kw)).length;
+    const isCorrect = matched >= Math.ceil(keywords.length * 0.4);
+    if (isCorrect) score++;
+    evaluation.push({ q: q.q, correct: isCorrect });
+  }
+
+  const total = lesson.questions.length;
+  const pct = Math.round(score / total * 100);
+  const passed = pct >= 70;
+  const emoji = passed ? '✅' : '❌';
+
+  // Результат продавцу
+  let resultMsg = emoji + ' Тест завершён!\n\n';
+  resultMsg += '📊 Результат: ' + score + '/' + total + ' (' + pct + '%)\n';
+  resultMsg += passed ? '✅ Тест сдан!' : '❌ Нужно повторить материал.';
+  await sendTelegram(userId, resultMsg);
+
+  // Если не сдал — напомнить урок
+  if (!passed) {
+    await sendTelegram(userId, '📖 Перечитай урок недели ' + weekNum + ' и попробуй ещё раз в следующую пятницу.');
+  }
+
+  // Сохраняем результат в дисциплину
+  const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
+  const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
+  await dbSaveDiscipline(today, sellerName, 'Тест неделя ' + weekNum, getTime(), score + '/' + total + ' ' + emoji + ' ' + (passed ? 'Сдан' : 'Не сдан'));
+
+  // Результат владельцу
+  let ownerMsg = '📊 Результат теста\n👤 ' + sellerName + '\n📖 ' + lesson.topic + '\n\n';
+  ownerMsg += '🎯 Балл: ' + score + '/' + total + ' (' + pct + '%) ' + emoji + '\n\n';
+  evaluation.forEach((e, i) => {
+    ownerMsg += (e.correct ? '✅' : '❌') + ' ' + (i+1) + '. ' + e.q.slice(0, 50) + '\n';
+  });
+  for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, ownerMsg);
+
+  // Помечаем как завершённого если обе недели пройдены
+  if (trainingState[String(userId)]) {
+    trainingState[String(userId)].completed = passed && weekNum === NANE_LESSONS.length;
+  }
+
+  return true;
+}
+
+async function sendRandomTrainingQuestion() {
+  try {
+    const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
+    if (sellers.length === 0) return;
+
+    const randomQ = RANDOM_QUESTIONS[Math.floor(Math.random() * RANDOM_QUESTIONS.length)];
+    const msg = '🧠 ТРЕНИРОВКА ПАМЯТИ\n\nБыстрый вопрос:\n\n' + randomQ + '\n\n_(Ответь своими словами)_';
+
+    for (const [sellerId] of sellers) {
+      await sendTelegram(sellerId, msg);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+  } catch(e) { console.error('sendRandomTrainingQuestion error:', e.message); }
+}
+
+// Запуск случайных вопросов — 2-3 раза в неделю в рандомное время (11:00-19:00)
+function scheduleRandomQuestions() {
+  // Планируем следующий случайный вопрос
+  const scheduleNext = () => {
+    // Случайная задержка от 28 до 60 часов (2-3 раза в неделю)
+    const minHours = 28, maxHours = 60;
+    const delayMs = (minHours + Math.random() * (maxHours - minHours)) * 60 * 60 * 1000;
+    setTimeout(async () => {
+      try {
+        // Проверяем что сейчас рабочее время (11:00-19:00 Алматы)
+        const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
+        const hour = nowA.getHours();
+        const day = nowA.getDay();
+        // Только в будни и рабочие часы
+        if (day >= 1 && day <= 6 && hour >= 11 && hour < 19) {
+          // Проверяем что обучение завершено хотя бы у одного продавца
+          let hasCompleted = false;
+          try {
+            const { data } = await supabase.from('training_progress').select('week').order('week', { ascending: false }).limit(1);
+            if (data && data.length > 0 && data[0].week > NANE_LESSONS.length) hasCompleted = true;
+          } catch(e) {}
+          if (hasCompleted && !trainingPaused) {
+            await sendRandomTrainingQuestion();
+          }
+        }
+      } catch(e) {}
+      scheduleNext(); // планируем следующий
+    }, delayMs);
+  };
+  scheduleNext();
+}
+
 
 async function sendMorningDigest() {
   try {
@@ -2211,6 +2544,7 @@ function startDailyScheduler() {
         startDailyScheduler.lastRun = todayKey;
         sendMorningDigest();
         if (almatyTime.getDay() === 1) { sendWeeklyTraining(false); sendWeeklySalesReport(); }
+        if (almatyTime.getDay() === 5) { sendWeeklyTraining(false); }
       }
     }
   }, 30000);
@@ -2222,9 +2556,8 @@ app.listen(PORT, async () => {
   console.log('Томи Telegram v4.4 запущена на порту ' + PORT);
   await restoreOpenShifts();
   startDailyScheduler();
+  scheduleRandomQuestions();
   const webhookUrl = 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN + '/webhook';
   const body = JSON.stringify({ url: webhookUrl });
   https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/setWebhook', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => console.log('Webhook установлен:', data)); }).end(body);
 });
-
-      
