@@ -2190,7 +2190,7 @@ ${totalProfit>0?'<div class="kard"><div class="kl">Прибыль ROSTA</div><di
 <div id="tab-exp" class="pane">${eHtml}</div>
 <div id="tab-fin" class="pane">${fHtml}</div>
 <div id="tab-shp" class="pane">${shp}</div>
-<script>function sw(id,el){document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));document.getElementById('tab-'+id).classList.add('on');el.classList.add('on');}<\/script>
+<script>function sw(id,el){document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));document.querySelectorAll('.tab').forEach(t=>t.classList.remove('on'));document.getElementById('tab-'+id).classList.add('on');el.classList.add('on');}</script>
 </body></html>`;
 
     const filename = 'otchet_' + mName.toLowerCase() + '_' + year + '.html';
