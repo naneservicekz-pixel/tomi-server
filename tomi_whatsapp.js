@@ -1436,7 +1436,11 @@ async function handleMessage(userId, messageText, photoFileId) {
       const data = await loadOwnerData();
       systemPrompt = getOwnerPrompt(senderName, data);
     } else {
-      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecondSeller || isSecondSellerFromShift, firstSellerName);
+      // is_second влияет ТОЛЬКО на утренний приход (когда нет своей смены в базе).
+      // Как только продавец открыл смену (есть запись в open_shifts) — он равноправен,
+      // и при закрытии всегда получает полный чек-лист.
+      const isSecondForPrompt = isSecondSeller && !hasOpenShift;
+      systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecondForPrompt, firstSellerName);
     }
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 2000,
