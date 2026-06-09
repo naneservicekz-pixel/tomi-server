@@ -2311,7 +2311,7 @@ ${diffDetails}${prepaySection}${notesSection}
 </div>
 <div class="sec">Касса и сверка</div>
 <div class="grid2">
-<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие</span><span class="row-value">${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал</span><span class="row-value">${fmt(cashSales)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}</div>
+<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Продажи нал</span><span class="row-value">${fmt(cashSales)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}<div class="row-total"><span>Итого в кассе</span><span style="color:#1D9E75">${fmt((s.cashOpen||0)+(s.rCash||0))}</span></div></div>
 <div class="card"><div class="card-title">🔍 Сверка</div><div class="row"><span class="row-label">ROSTA</span><span class="row-value">${fmt(rostaTotal)}</span></div><div class="row"><span class="row-label">ФАКТ</span><span class="row-value">${fmt(factTotal)}</span></div><div class="row"><span class="row-label">Разница</span><span class="row-value" style="color:${diffColor};font-weight:600;">${diffSign}${fmt(diff)}</span></div></div>
 </div>
 <div class="grid3">${channelStatus}</div>
