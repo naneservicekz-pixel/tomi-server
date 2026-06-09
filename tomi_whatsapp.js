@@ -862,8 +862,11 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const diff = factTotal - rostaTotal;
         const totalRet = (s.rRetKaspi||0)+(s.rRetHalyk||0)+(s.rRetCash||0);
         const channelDiffs = [];
-        const kaspiDiff = kaspiNet - ((s.rKaspi||0)+(s.rOnline||0));
-        const halykDiff = halykNet - ((s.rHalyk||0)+(s.rHalykOnline||0));
+        // Сравниваем валовые суммы (без возврата) — возврат уже учтён в ROSTA итого
+        const kaspiGross = (s.tKaspi||0); // терминал без вычитания возврата
+        const halykGross = (s.tHalyk||0);
+        const kaspiDiff = kaspiGross - ((s.rKaspi||0)+(s.rOnline||0));
+        const halykDiff = halykGross - ((s.rHalyk||0)+(s.rHalykOnline||0));
         const cashDiff = cashSales - (s.rCash||0);
         if (Math.abs(kaspiDiff) > 500) channelDiffs.push({ channel: 'Kaspi', diff: kaspiDiff });
         if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff });
@@ -2259,8 +2262,8 @@ function generateShiftHTML(data) {
   }
 
   // Статусы каналов внизу
-  const kaspiDiff = kaspiNet - ((s.rKaspi||0)+(s.rOnline||0));
-  const halykDiff = halykNet - ((s.rHalyk||0)+(s.rHalykOnline||0));
+  const kaspiDiff = (s.tKaspi||0) - ((s.rKaspi||0)+(s.rOnline||0));
+  const halykDiff = (s.tHalyk||0) - ((s.rHalyk||0)+(s.rHalykOnline||0));
   const channelStatus = [
     { label: 'Kaspi',    ok: Math.abs(kaspiDiff) <= 500 },
     { label: 'Halyk',    ok: Math.abs(halykDiff) <= 500 },
