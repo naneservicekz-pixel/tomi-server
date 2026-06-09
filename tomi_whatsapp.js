@@ -1808,66 +1808,99 @@ const NANE_LESSONS = [
   {
     week: 1,
     topic: 'Полный курс NANE — бренд, сервис, продажи',
-    lesson: `📚 NANE АКАДЕМИЯ ПРОДАЖ
+    lesson: `📚 NANE АКАДЕМИЯ ПРОДАЖ — ПОЛНЫЙ КУРС
 
 🏷 БРЕНД И МИССИЯ
-NANE — премиальный женский бутик в Астане. Корея и Европа. Не fast fashion — осознанная мода.
-Миссия: помочь каждой покупательнице создать гардероб, который отражает её личность.
+Миссия: помочь каждой покупательнице создать гардероб, который отражает её личность и стиль жизни.
+Мы — премиальный женский бутик в Астане. Корея и Европа. Не fast fashion — осознанная мода.
 
-⭐ 5 ЦЕННОСТЕЙ
-Уважение · Экспертиза · Честность · Внимание · Красота
-
-👩 НАШ КЛИЕНТ
-Женщина 25–50 лет, доход средний+, ценит качество и время.
-🔵 Тип А «Знает что хочет» — 2-3 варианта, быстро
-🟡 Тип Б «Ищет вдохновение» — показывай образы, задавай вопросы
-🔴 Тип В «Сомневается» — аргументируй качеством, не давить
+⭐ 5 ЦЕННОСТЕЙ NANE
+1. Уважение — каждая клиентка важна, нет «просто смотрящих»
+2. Экспертиза — мы знаем моду, ткани и образы лучше клиента
+3. Честность — не продаём то, что не идёт, лучше потерять сделку
+4. Внимание — замечаем настроение, запоминаем имена
+5. Красота — всё что делаем красиво: зал, одежда, наша речь
 
 👗 ВНЕШНИЙ ВИД
-✅ Одежда NANE, чистая, макияж, бейдж
-❌ Спортивная одежда, телефон в руках, жвачка
+✅ Одежда в стиле NANE, чистая, выглаженная
+✅ Аккуратный маникюр, макияж, волосы убраны, бейдж
+✅ Закрытая обувь, нейтральный парфюм
+❌ Спортивная одежда, кроссовки, телефон в руках, жвачка
+
+👩 ПОРТРЕТ КЛИЕНТА
+Женщина 25–50 лет, Астана, доход средний+, ценит качество и время.
+Мотивы: хочет выглядеть хорошо на работе/мероприятии, обновляет гардероб, покупает подарок себе, реагирует на эмоцию, ищет базу гардероба, пришла по рекомендации.
+
+3 типа покупательниц:
+🔵 Тип А «Знает что хочет» — дай 2-3 варианта, быстро и точно, без лишних слов
+🟡 Тип Б «Ищет вдохновение» — показывай образы целиком, мягко веди, открыта к предложениям
+🔴 Тип В «Сомневается» — аргументируй ценностью, не давить, цена важна
 
 ❌ ФРАЗЫ-ТАБУ → ✅ ЗАМЕНА
 «Чем могу помочь?» → «Вы что-то конкретное ищете?»
-«Дорого» → «Носится 3-4 сезона — очень выгодно»
+«Это дорого» → «Носится 3-4 сезона — очень выгодно»
 «Не знаю» → «Сейчас уточню для вас»
 «Нету» → «Этой нет, но есть похожая — покажу?»
 «Вам не идёт» → «Давайте попробуем другой фасон»
+«Подождите» → «Одну секунду, я уже занимаюсь»
 
-👋 ПЕРВЫЙ КОНТАКТ
-Контакт глазами + улыбка + приветствие в 30 сек. Пауза 2-3 мин.
-5 шагов: Приветствие → Зона комфорта → Выявление потребности → Презентация образа → Прощание
+👋 ПЕРВЫЙ КОНТАКТ — 5 ШАГОВ
+1. Приветствие (0-30 сек): контакт глазами + улыбка + «Добрый день, добро пожаловать»
+2. Пауза 2-3 мин: не идти следом, дать осмотреться
+3. Первый контакт: «Вы ищете что-то конкретное или хотите посмотреть новинки?»
+4. Если «просто смотрю»: «Конечно, смотрите спокойно. Если понадоблюсь — я здесь»
+5. Выявление потребности: «Это для повода или на каждый день?» «Есть любимые цвета?»
+
+👑 ПОСТОЯННЫЙ КЛИЕНТ
+Помни имя — обращайся при каждом визите
+Помни предпочтения: любимые цвета, фасоны, отказы
+Не предлагай то, что уже есть
+VIP: сообщай о новинках первой, откладывай вещи без просьбы
 
 👗 ПРИМЕРОЧНАЯ
-✅ Лично проводить, принести размеры, спросить через 3-5 мин
-✅ Оставаться рядом, принять вещи лично после примерки
+1. Лично проводить к примерочной, не просто указать жестом
+2. Принести размеры сразу, предложить 44 и 46
+3. Через 3-5 мин: «Как вам? Принести другой размер?»
+4. Оставаться рядом, не уходить из зоны видимости
+5. Принять вещи лично — не оставлять на полу
 
-🧵 ТКАНИ
-Вискоза — мягкая, дышащая. «Приятная к телу, особенно летом»
-Полиэстер — не мнётся. «Не нужно гладить, всегда аккуратно»
+🧵 ТКАНИ И УХОД
+Вискоза — мягкая, дышащая. «Приятная к телу, особенно летом» Уход: не отжимать, гладить через ткань
 Жаккард — плотная, держит форму. «Выглядит очень дорого»
 Трикотаж — тянется. «Сидит по фигуре, не сковывает»
-Уход: стирка 30°C, вискозу не отжимать, гладить через ткань.
+Полиэстер — не мнётся. «Не нужно гладить, всегда аккуратно»
+Эко-кожа — структурированная. «Стильно, лёгкий уход»
+Если не знаешь состав → «Сейчас уточню на ярлыке»
 
 ⚠️ СЛОЖНЫЕ СИТУАЦИИ
-Недовольный: выслушать → признать → не оправдываться → позвать старшего
-Нет товара: предложить похожее → сроки → записать контакт. Никогда просто «нету»!
-Кража: не обвинять → подойти и предложить помощь → сообщить в Томи
-Клиенту плохо: усадить, воду, позвать коллегу, вызвать 103
+Недовольный клиент: выслушать → признать («Я понимаю, это неприятно») → не оправдываться → решение → поблагодарить
+Нет товара: похожая модель → сроки поставки → записать контакт. Никогда просто «нету»!
+Возврат: не принимать решение самостоятельно — позвать старшего
+Кража: не обвинять публично → подойти и предложить помощь → сообщить в Томи → не задерживать
+Клиенту плохо: усадить, воду, позвать коллегу, вызвать 103, не оставлять одного
+
+🚨 ЭКСТРЕННЫЕ СИТУАЦИИ
+Пожар/задымление: вывести клиентов, вызвать 101, не возвращаться за вещами
+Конфликт между клиентами: не вмешиваться физически, предложить воды, вызвать руководство
 
 🏪 ОПЕРАЦИОННЫЕ СТАНДАРТЫ
-Приход: за 15 мин, проверить зал, кассу, терминалы, открыть Томи
-Смена: каждые 30 мин обход, ценники, примерочные чистые
+Приход: за 15 мин до открытия, внешний вид, обойти зал (примерочные, зеркала, ценники), проверить кассу и терминалы, открыть Томи
+В течение дня: каждые 30 мин обход, после каждого клиента убрать примерочную, ценники на всех вещах
 Закрытие: порядок в зале, Z-отчёт, фото терминалов, форма в Томи
 
 ━━━━━━━━━━━━━━━━━
-Изучи до пятницы — в пятницу будет тест 🎯`,
+Изучи до пятницы — будет тест 🎯`,
     questions: [
-      { q: 'Назови миссию NANE и 5 ценностей', key: 'помочь гардероб уважение экспертиза честность внимание красота' },
-      { q: 'Клиент говорит «дорого». Что отвечаешь?', key: 'носится сезона выгодно' },
-      { q: 'Опиши стандарт работы с примерочной (3 шага)', key: 'проводить лично спросить принести размер принять вещи' },
-      { q: 'Клиент хочет вещь которой нет. Твои действия?', key: 'похожая модель сроки записать контакт' },
-      { q: 'Что делать при подозрении на кражу?', key: 'не обвинять подойти помощь сообщить' }
+      { q: 'Назови миссию NANE и 5 ценностей', key: 'помочь гардероб личность уважение экспертиза честность внимание красота' },
+      { q: 'Как приветствовать клиента при входе и что делать если он говорит «просто смотрю»?', key: 'контакт глазами улыбка приветствие пауза конечно смотрите здесь' },
+      { q: 'Назови 3 фразы-табу и их замены', key: 'чем могу нету дорого конкретное похожая сезона' },
+      { q: 'Опиши стандарт работы с примерочной (3 шага)', key: 'лично проводить размер спросить принять вещи' },
+      { q: 'Клиент хочет вещь которой нет. Твои действия?', key: 'похожая сроки контакт нету нельзя' },
+      { q: 'Что делать при подозрении на кражу?', key: 'не обвинять подойти помощь томи не задерживать' },
+      { q: 'Опиши типы покупательниц (A, Б, В)', key: 'знает хочет вдохновение сомневается' },
+      { q: 'Назови стандарт открытия смены (4 шага)', key: 'внешний вид зал касса терминалы томи' },
+      { q: 'Клиент вернулся с претензией. Твои действия?', key: 'выслушать признать не оправдываться старший поблагодарить' },
+      { q: 'Как работать с постоянным клиентом?', key: 'имя предпочтения покупки vip новинки' }
     ]
   }
 ];
@@ -1893,41 +1926,36 @@ const RANDOM_QUESTIONS = [
 
 // Состояние обучения (в памяти, сбрасывается при рестарте)
 function generateLessonHTML(lesson, weekNum) {
-  const sections = [
-    {
-      title: 'Бренд и миссия',
-      rows: [
-        { label: 'Миссия', text: 'Помочь каждой покупательнице создать гардероб, который отражает её личность.' },
-        { label: '5 ценностей', text: 'Уважение · Экспертиза · Честность · Внимание · Красота' },
-        { label: 'Стиль', text: 'Корея и Европа. Не fast fashion — осознанная мода.' }
-      ]
-    }
-  ];
-
   return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NANE Академия — Неделя ${weekNum}</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px}.container{max-width:560px;margin:0 auto}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}.brand{font-size:20px;font-weight:600;letter-spacing:.04em}.brand-sub{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.1em;margin-top:2px}.header-right{text-align:right;font-size:13px;color:#555}.header-right strong{color:#1a1a1a;display:block}.status{background:#eaf3de;border:0.5px solid #c0dd97;border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:20px}.status-dot{width:8px;height:8px;border-radius:50%;background:#639922;flex-shrink:0}.status-text{font-size:13px;font-weight:500;color:#3B6D11}.sec{font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.12em;margin:18px 0 8px}.card{background:#fff;border:0.5px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px}.row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;font-size:12px}.row:last-child{border:none}.row-label{font-weight:500;color:#1a1a1a;margin-bottom:3px}.row-text{color:#555;line-height:1.6}.taboo-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px}.taboo-row:last-child{border:none}.taboo-bad{color:#E24B4A;text-decoration:line-through;flex:1}.taboo-good{color:#3B6D11;font-weight:500;flex:1;text-align:right}.type-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;display:flex;align-items:center;gap:10px}.type-row:last-child{border:none}.type-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.type-title{font-size:12px;font-weight:500;color:#1a1a1a}.type-sub{font-size:11px;color:#888;margin-top:1px}.step-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;font-size:12px;color:#555;display:flex;gap:8px}.step-row:last-child{border:none}.step-num{color:#3B6D11;font-weight:600;flex-shrink:0}.fabric-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6}.fabric-row:last-child{border:none}.fabric-name{font-size:12px;font-weight:500;color:#1a1a1a}.fabric-desc{font-size:11px;color:#888;margin-top:2px}.situation-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6}.situation-row:last-child{border:none}.situation-title{font-size:12px;font-weight:500;color:#E24B4A}.situation-desc{font-size:11px;color:#888;margin-top:2px}.footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:20px}.footer-card{border-radius:8px;padding:10px;text-align:center}.footer-label{font-size:10px;margin-bottom:2px}.footer-value{font-size:12px;font-weight:600}</style></head>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px}.container{max-width:560px;margin:0 auto}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}.brand{font-size:20px;font-weight:600;letter-spacing:.04em}.brand-sub{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.1em;margin-top:2px}.header-right{text-align:right;font-size:13px;color:#555}.header-right strong{color:#1a1a1a;display:block}.status{background:#eaf3de;border:0.5px solid #c0dd97;border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:20px}.status-dot{width:8px;height:8px;border-radius:50%;background:#639922;flex-shrink:0}.status-text{font-size:13px;font-weight:500;color:#3B6D11}.sec{font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.12em;margin:18px 0 8px}.card{background:#fff;border:0.5px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px}.row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;font-size:12px}.row:last-child{border:none}.row-label{font-weight:500;color:#1a1a1a;margin-bottom:3px}.row-text{color:#555;line-height:1.6}.taboo-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px}.taboo-row:last-child{border:none}.taboo-bad{color:#E24B4A;text-decoration:line-through;flex:1}.taboo-good{color:#3B6D11;font-weight:500;flex:1;text-align:right}.type-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;display:flex;align-items:center;gap:10px}.type-row:last-child{border:none}.type-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.type-title{font-size:12px;font-weight:500;color:#1a1a1a}.type-sub{font-size:11px;color:#888;margin-top:1px}.step-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;font-size:12px;color:#555;display:flex;gap:8px}.step-row:last-child{border:none}.step-num{color:#3B6D11;font-weight:600;flex-shrink:0}.fabric-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6}.fabric-row:last-child{border:none}.fabric-name{font-size:12px;font-weight:500;color:#1a1a1a}.fabric-desc{font-size:11px;color:#888;margin-top:2px}.situation-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6}.situation-row:last-child{border:none}.situation-title{font-size:12px;font-weight:500}.situation-desc{font-size:11px;color:#888;margin-top:2px;line-height:1.5}.footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:20px}.footer-card{border-radius:8px;padding:10px;text-align:center}.footer-label{font-size:10px;margin-bottom:2px}.footer-value{font-size:12px;font-weight:600}</style></head>
 <body><div class="container">
 
 <div class="header">
   <div><div class="brand">NANÉ PARIS</div><div class="brand-sub">Академия продаж</div></div>
-  <div class="header-right"><strong>Неделя ${weekNum}</strong>читается за 5 мин</div>
+  <div class="header-right"><strong>Неделя ${weekNum}</strong>читается за 7 мин</div>
 </div>
-
 <div class="status"><div class="status-dot"></div><span class="status-text">${lesson.topic}</span></div>
 
 <div class="sec">Бренд и миссия</div>
 <div class="card">
-  <div class="row"><div class="row-label">Миссия</div><div class="row-text">Помочь каждой покупательнице создать гардероб, который отражает её личность.</div></div>
+  <div class="row"><div class="row-label">Миссия</div><div class="row-text">Помочь каждой покупательнице создать гардероб, который отражает её личность и стиль жизни.</div></div>
   <div class="row"><div class="row-label">5 ценностей</div><div class="row-text">Уважение · Экспертиза · Честность · Внимание · Красота</div></div>
   <div class="row"><div class="row-label">Позиционирование</div><div class="row-text">Корея и Европа. Премиальный бутик Астаны. Не fast fashion — осознанная мода.</div></div>
 </div>
 
+<div class="sec">Внешний вид</div>
+<div class="card">
+  <div class="row"><div class="row-label" style="color:#3B6D11">✅ Обязательно</div><div class="row-text">Одежда в стиле NANE · аккуратный маникюр и макияж · волосы убраны · бейдж · нейтральный парфюм</div></div>
+  <div class="row"><div class="row-label" style="color:#E24B4A">❌ Запрещено</div><div class="row-text">Спортивная одежда · кроссовки · телефон в руках · жвачка</div></div>
+</div>
+
 <div class="sec">Типы клиентов</div>
 <div class="card">
-  <div class="type-row"><div class="type-dot" style="background:#378ADD"></div><div><div class="type-title">Тип А — знает что хочет</div><div class="type-sub">2-3 варианта, быстро и точно</div></div></div>
-  <div class="type-row"><div class="type-dot" style="background:#EF9F27"></div><div><div class="type-title">Тип Б — ищет вдохновение</div><div class="type-sub">Показывай образы целиком, задавай вопросы</div></div></div>
-  <div class="type-row"><div class="type-dot" style="background:#E24B4A"></div><div><div class="type-title">Тип В — сомневается</div><div class="type-sub">Аргументируй качеством, не давить</div></div></div>
+  <div class="type-row"><div class="type-dot" style="background:#378ADD"></div><div><div class="type-title">Тип А — знает что хочет</div><div class="type-sub">2-3 варианта, быстро и точно, без лишних слов</div></div></div>
+  <div class="type-row"><div class="type-dot" style="background:#EF9F27"></div><div><div class="type-title">Тип Б — ищет вдохновение</div><div class="type-sub">Показывай образы целиком, мягко веди, открыта к предложениям</div></div></div>
+  <div class="type-row"><div class="type-dot" style="background:#E24B4A"></div><div><div class="type-title">Тип В — сомневается</div><div class="type-sub">Аргументируй ценностью, не давить, цена важна</div></div></div>
+  <div class="row"><div class="row-label">Мотивы покупки</div><div class="row-text">Выглядеть хорошо на работе · обновить гардероб · подарок себе · эмоция от вещи · база гардероба · рекомендация подруги</div></div>
 </div>
 
 <div class="sec">Фразы-табу → замена</div>
@@ -1939,30 +1967,54 @@ function generateLessonHTML(lesson, weekNum) {
   <div class="taboo-row"><span class="taboo-bad">«Вам не идёт»</span><span class="taboo-good">«Попробуем другой фасон»</span></div>
 </div>
 
+<div class="sec">Первый контакт — 5 шагов</div>
+<div class="card">
+  <div class="step-row"><span class="step-num">1.</span><span>Приветствие 0-30 сек: контакт глазами + улыбка + «Добрый день»</span></div>
+  <div class="step-row"><span class="step-num">2.</span><span>Пауза 2-3 мин — не идти следом, дать осмотреться</span></div>
+  <div class="step-row"><span class="step-num">3.</span><span>«Вы ищете что-то конкретное или хотите посмотреть новинки?»</span></div>
+  <div class="step-row"><span class="step-num">4.</span><span>Если «просто смотрю» → «Конечно, смотрите спокойно. Я здесь»</span></div>
+  <div class="step-row"><span class="step-num">5.</span><span>Выявление потребности: «Это для повода?» «Есть любимые цвета?»</span></div>
+</div>
+
+<div class="sec">Постоянный клиент</div>
+<div class="card">
+  <div class="row"><div class="row-label">Помни</div><div class="row-text">Имя · предпочтения (цвета, фасоны) · последние покупки</div></div>
+  <div class="row"><div class="row-label">VIP-сервис</div><div class="row-text">Сообщай о новинках первой · откладывай вещи без просьбы · не заставляй ждать</div></div>
+</div>
+
 <div class="sec">Примерочная</div>
 <div class="card">
-  <div class="step-row"><span class="step-num">1.</span><span>Лично проводить к примерочной</span></div>
+  <div class="step-row"><span class="step-num">1.</span><span>Лично проводить к примерочной, не просто указать жестом</span></div>
   <div class="step-row"><span class="step-num">2.</span><span>Принести размеры сразу, предложить 44 и 46</span></div>
-  <div class="step-row"><span class="step-num">3.</span><span>Через 3-5 мин: «Как вам? Принести другой?»</span></div>
-  <div class="step-row"><span class="step-num">4.</span><span>Оставаться рядом, не уходить из зоны видимости</span></div>
-  <div class="step-row"><span class="step-num">5.</span><span>Принять вещи лично, сразу вернуть на место</span></div>
+  <div class="step-row"><span class="step-num">3.</span><span>Через 3-5 мин: «Как вам? Принести другой размер?»</span></div>
+  <div class="step-row"><span class="step-num">4.</span><span>Оставаться рядом — не уходить из зоны видимости</span></div>
+  <div class="step-row"><span class="step-num">5.</span><span>Принять вещи лично — не оставлять на полу кабины</span></div>
 </div>
 
 <div class="sec">Ткани и уход</div>
 <div class="card">
-  <div class="fabric-row"><div class="fabric-name">Вискоза</div><div class="fabric-desc">Мягкая, дышащая — «Приятная к телу, особенно в тёплый сезон»</div></div>
+  <div class="fabric-row"><div class="fabric-name">Вискоза</div><div class="fabric-desc">Мягкая, дышащая — «Приятная к телу, особенно летом» · не отжимать, гладить через ткань</div></div>
   <div class="fabric-row"><div class="fabric-name">Жаккард</div><div class="fabric-desc">Плотная, держит форму — «Выглядит очень дорого»</div></div>
   <div class="fabric-row"><div class="fabric-name">Трикотаж</div><div class="fabric-desc">Тянется, комфортный — «Сидит по фигуре, не сковывает»</div></div>
   <div class="fabric-row"><div class="fabric-name">Полиэстер</div><div class="fabric-desc">Практичный, не мнётся — «Не нужно гладить, всегда аккуратно»</div></div>
-  <div class="fabric-row"><div class="fabric-name">Уход</div><div class="fabric-desc">Стирка 30°C · Вискозу не отжимать · Гладить через ткань</div></div>
+  <div class="fabric-row"><div class="fabric-name">Не знаешь?</div><div class="fabric-desc">«Сейчас уточню на ярлыке» — никогда не угадывай</div></div>
 </div>
 
 <div class="sec">Сложные ситуации</div>
 <div class="card">
-  <div class="situation-row"><div class="situation-title">Недовольный клиент</div><div class="situation-desc">Выслушать → признать → не оправдываться → позвать старшего → поблагодарить</div></div>
-  <div class="situation-row"><div class="situation-title">Нет товара</div><div class="situation-desc">Предложить похожее → уточнить сроки → записать контакт. Никогда просто «нету»!</div></div>
-  <div class="situation-row"><div class="situation-title">Кража</div><div class="situation-desc">Не обвинять публично → подойти и предложить помощь → сообщить в Томи</div></div>
-  <div class="situation-row"><div class="situation-title">Клиенту плохо</div><div class="situation-desc">Усадить · принести воду · позвать коллегу · вызвать 103</div></div>
+  <div class="situation-row"><div class="situation-title" style="color:#E24B4A">Недовольный клиент</div><div class="situation-desc">Выслушать → «Я понимаю, это неприятно» → не оправдываться → решение → поблагодарить за обратную связь</div></div>
+  <div class="situation-row"><div class="situation-title" style="color:#E24B4A">Нет товара</div><div class="situation-desc">Похожая модель → сроки поставки → записать контакт. Никогда просто «нету»!</div></div>
+  <div class="situation-row"><div class="situation-title" style="color:#E24B4A">Возврат</div><div class="situation-desc">Не принимать решение самостоятельно — позвать старшего. Выслушать спокойно.</div></div>
+  <div class="situation-row"><div class="situation-title" style="color:#E24B4A">Кража</div><div class="situation-desc">Не обвинять публично → подойти и предложить помощь → сообщить в Томи → не задерживать</div></div>
+  <div class="situation-row"><div class="situation-title" style="color:#E24B4A">Клиенту плохо</div><div class="situation-desc">Усадить · принести воду · позвать коллегу · вызвать 103 · не оставлять одного</div></div>
+  <div class="situation-row"><div class="situation-title" style="color:#E24B4A">Пожар/ЧС</div><div class="situation-desc">Вывести клиентов → вызвать 101 → не возвращаться за вещами → сообщить руководству</div></div>
+</div>
+
+<div class="sec">Операционные стандарты</div>
+<div class="card">
+  <div class="row"><div class="row-label">Открытие смены</div><div class="row-text">За 15 мин до открытия · внешний вид · обойти зал (примерочные, зеркала, ценники) · проверить кассу и терминалы · открыть Томи</div></div>
+  <div class="row"><div class="row-label">В течение дня</div><div class="row-text">Каждые 30 мин обход · после каждого клиента убрать примерочную · ценники на всех вещах</div></div>
+  <div class="row"><div class="row-label">Закрытие смены</div><div class="row-text">Порядок в зале · Z-отчёт (фото) · фото терминалов Kaspi и Halyk · форма в Томи</div></div>
 </div>
 
 <div class="footer">
@@ -1983,39 +2035,29 @@ function generateLessonHTML(lesson, weekNum) {
 </div></body></html>`;
 }
 
-const trainingState = {}; // { sellerId: { week, phase, testAnswers, testScore, completed } }
-const pendingTestAnswer = {}; // { sellerId: { questionIndex, answers } }
 
+const trainingState = {};
+const pendingTestAnswer = {};
 let trainingPaused = false;
-let currentTrainingWeek = 0; // для совместимости
+let currentTrainingWeek = 0;
 
 async function sendWeeklyTraining(forceLesson) {
   try {
     if (trainingPaused && !forceLesson) return;
     const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
     if (sellers.length === 0) return;
-
     const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-    const dayOfWeek = nowA.getDay(); // 1=пн, 5=пт
+    const dayOfWeek = nowA.getDay();
     const isTest = !forceLesson && dayOfWeek === 5;
     const isLesson = forceLesson || dayOfWeek === 1;
-
     if (!isLesson && !isTest) return;
-
-    // Определяем текущую неделю обучения из Supabase
     let weekNum = 1;
     try {
       const { data } = await supabase.from('training_progress').select('week').order('week', { ascending: false }).limit(1);
       if (data && data.length > 0) weekNum = data[0].week;
     } catch(e) {}
-
     if (isLesson) {
-      // Отправляем урок
-      if (weekNum > NANE_LESSONS.length) {
-        // Обучение завершено — режим случайных вопросов
-        await sendRandomTrainingQuestion();
-        return;
-      }
+      if (weekNum > NANE_LESSONS.length) { await sendRandomTrainingQuestion(); return; }
       const lesson = NANE_LESSONS[weekNum - 1];
       const lessonHtml = generateLessonHTML(lesson, weekNum);
       const lessonFilename = 'urok_nedelya_' + weekNum + '.html';
@@ -2025,22 +2067,12 @@ async function sendWeeklyTraining(forceLesson) {
         trainingState[sellerId] = { week: weekNum, phase: 'learning', completed: false };
         await new Promise(r => setTimeout(r, 1000));
       }
-      // Сохраняем прогресс
-      try {
-        await supabase.from('training_progress').upsert({ week: weekNum, sent_at: new Date().toISOString() }, { onConflict: 'week' });
-      } catch(e) {}
-      for (const ownerId of OWNER_IDS) {
-        await sendTelegram(ownerId, '📚 Урок недели ' + weekNum + ' отправлен\n📖 ' + lesson.topic + '\n👥 Продавцов: ' + sellers.length);
-      }
+      try { await supabase.from('training_progress').upsert({ week: weekNum, sent_at: new Date().toISOString() }, { onConflict: 'week' }); } catch(e) {}
+      for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '📚 Урок недели ' + weekNum + ' отправлен\n📖 ' + lesson.topic + '\n👥 Продавцов: ' + sellers.length);
       if (!forceLesson) currentTrainingWeek = weekNum;
     }
-
     if (isTest) {
-      // Отправляем тест
-      if (weekNum > NANE_LESSONS.length) {
-        await sendRandomTrainingQuestion();
-        return;
-      }
+      if (weekNum > NANE_LESSONS.length) { await sendRandomTrainingQuestion(); return; }
       const lesson = NANE_LESSONS[weekNum - 1];
       const testIntro = '🎯 ТЕСТ — Неделя ' + weekNum + '\n📖 ' + lesson.topic + '\n\nОтвечай развёрнуто, своими словами.\n\n';
       for (const [sellerId] of sellers) {
@@ -2049,15 +2081,9 @@ async function sendWeeklyTraining(forceLesson) {
         trainingState[sellerId] = { ...(trainingState[sellerId] || {}), phase: 'testing', week: weekNum };
         await new Promise(r => setTimeout(r, 1000));
       }
-      for (const ownerId of OWNER_IDS) {
-        await sendTelegram(ownerId, '🎯 Тест недели ' + weekNum + ' отправлен продавцам\n📖 ' + lesson.topic);
-      }
-
-      // Если это была последняя неделя — увеличиваем счётчик для следующего цикла
+      for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '🎯 Тест недели ' + weekNum + ' отправлен продавцам\n📖 ' + lesson.topic);
       if (weekNum === NANE_LESSONS.length) {
-        try {
-          await supabase.from('training_progress').upsert({ week: weekNum + 1, sent_at: new Date().toISOString() }, { onConflict: 'week' });
-        } catch(e) {}
+        try { await supabase.from('training_progress').upsert({ week: weekNum + 1, sent_at: new Date().toISOString() }, { onConflict: 'week' }); } catch(e) {}
       }
     }
   } catch(e) { console.error('sendWeeklyTraining error:', e.message); }
@@ -2066,33 +2092,24 @@ async function sendWeeklyTraining(forceLesson) {
 async function handleTrainingTestAnswer(userId, messageText) {
   const pending = pendingTestAnswer[String(userId)];
   if (!pending) return false;
-
   const { weekNum, questionIndex, answers } = pending;
   const lesson = NANE_LESSONS[weekNum - 1];
   if (!lesson) return false;
-
   answers.push(messageText);
   const nextIndex = questionIndex + 1;
-
   if (nextIndex < lesson.questions.length) {
-    // Следующий вопрос
     pendingTestAnswer[String(userId)].questionIndex = nextIndex;
     pendingTestAnswer[String(userId)].answers = answers;
     await sendTelegram(userId, 'Вопрос ' + (nextIndex + 1) + ' из ' + lesson.questions.length + ':\n\n' + lesson.questions[nextIndex].q);
     return true;
   }
-
-  // Все ответы получены — оцениваем через Claude
   delete pendingTestAnswer[String(userId)];
-
   await sendTelegram(userId, '⏳ Проверяю ответы...');
-
   let score = 0;
   const evaluation = [];
   for (let i = 0; i < lesson.questions.length; i++) {
     const q = lesson.questions[i];
     const answer = answers[i] || '';
-    // Простая проверка по ключевым словам
     const keywords = q.key.split(' ');
     const answerLower = answer.toLowerCase();
     const matched = keywords.filter(kw => answerLower.includes(kw)).length;
@@ -2100,41 +2117,23 @@ async function handleTrainingTestAnswer(userId, messageText) {
     if (isCorrect) score++;
     evaluation.push({ q: q.q, correct: isCorrect });
   }
-
   const total = lesson.questions.length;
   const pct = Math.round(score / total * 100);
-  const passed = pct >= 70;
+  const passed = pct >= 80;
   const emoji = passed ? '✅' : '❌';
-
-  // Результат продавцу
   let resultMsg = emoji + ' Тест завершён!\n\n';
   resultMsg += '📊 Результат: ' + score + '/' + total + ' (' + pct + '%)\n';
-  resultMsg += passed ? '✅ Тест сдан!' : '❌ Нужно повторить материал.';
+  resultMsg += passed ? '✅ Тест сдан! Порог 80% достигнут.' : '❌ Нужно повторить материал. Порог 80% не достигнут.';
   await sendTelegram(userId, resultMsg);
-
-  // Если не сдал — напомнить урок
-  if (!passed) {
-    await sendTelegram(userId, '📖 Перечитай урок недели ' + weekNum + ' и попробуй ещё раз в следующую пятницу.');
-  }
-
-  // Сохраняем результат в дисциплину
+  if (!passed) await sendTelegram(userId, '📖 Перечитай урок и попробуй ещё раз в следующую пятницу.');
   const today = new Date().toLocaleDateString('ru-RU', { timeZone: 'Asia/Almaty', day: '2-digit', month: '2-digit', year: 'numeric' });
   const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
   await dbSaveDiscipline(today, sellerName, 'Тест неделя ' + weekNum, getTime(), score + '/' + total + ' ' + emoji + ' ' + (passed ? 'Сдан' : 'Не сдан'));
-
-  // Результат владельцу
   let ownerMsg = '📊 Результат теста\n👤 ' + sellerName + '\n📖 ' + lesson.topic + '\n\n';
   ownerMsg += '🎯 Балл: ' + score + '/' + total + ' (' + pct + '%) ' + emoji + '\n\n';
-  evaluation.forEach((e, i) => {
-    ownerMsg += (e.correct ? '✅' : '❌') + ' ' + (i+1) + '. ' + e.q.slice(0, 50) + '\n';
-  });
+  evaluation.forEach((e, i) => { ownerMsg += (e.correct ? '✅' : '❌') + ' ' + (i+1) + '. ' + e.q.slice(0, 50) + '\n'; });
   for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, ownerMsg);
-
-  // Помечаем как завершённого если обе недели пройдены
-  if (trainingState[String(userId)]) {
-    trainingState[String(userId)].completed = passed && weekNum === NANE_LESSONS.length;
-  }
-
+  if (trainingState[String(userId)]) trainingState[String(userId)].completed = passed && weekNum === NANE_LESSONS.length;
   return true;
 }
 
@@ -2142,44 +2141,29 @@ async function sendRandomTrainingQuestion() {
   try {
     const sellers = Object.entries(ALLOWED_MAP).filter(([id]) => !OWNER_IDS.includes(id));
     if (sellers.length === 0) return;
-
     const randomQ = RANDOM_QUESTIONS[Math.floor(Math.random() * RANDOM_QUESTIONS.length)];
     const msg = '🧠 ТРЕНИРОВКА ПАМЯТИ\n\nБыстрый вопрос:\n\n' + randomQ + '\n\n_(Ответь своими словами)_';
-
-    for (const [sellerId] of sellers) {
-      await sendTelegram(sellerId, msg);
-      await new Promise(r => setTimeout(r, 1000));
-    }
+    for (const [sellerId] of sellers) { await sendTelegram(sellerId, msg); await new Promise(r => setTimeout(r, 1000)); }
   } catch(e) { console.error('sendRandomTrainingQuestion error:', e.message); }
 }
 
-// Запуск случайных вопросов — 2-3 раза в неделю в рандомное время (11:00-19:00)
 function scheduleRandomQuestions() {
-  // Планируем следующий случайный вопрос
   const scheduleNext = () => {
-    // Случайная задержка от 28 до 60 часов (2-3 раза в неделю)
-    const minHours = 28, maxHours = 60;
-    const delayMs = (minHours + Math.random() * (maxHours - minHours)) * 60 * 60 * 1000;
+    const delayMs = (28 + Math.random() * 32) * 60 * 60 * 1000;
     setTimeout(async () => {
       try {
-        // Проверяем что сейчас рабочее время (11:00-19:00 Алматы)
         const nowA = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Almaty' }));
-        const hour = nowA.getHours();
-        const day = nowA.getDay();
-        // Только в будни и рабочие часы
+        const hour = nowA.getHours(), day = nowA.getDay();
         if (day >= 1 && day <= 6 && hour >= 11 && hour < 19) {
-          // Проверяем что обучение завершено хотя бы у одного продавца
           let hasCompleted = false;
           try {
             const { data } = await supabase.from('training_progress').select('week').order('week', { ascending: false }).limit(1);
             if (data && data.length > 0 && data[0].week > NANE_LESSONS.length) hasCompleted = true;
           } catch(e) {}
-          if (hasCompleted && !trainingPaused) {
-            await sendRandomTrainingQuestion();
-          }
+          if (hasCompleted && !trainingPaused) await sendRandomTrainingQuestion();
         }
       } catch(e) {}
-      scheduleNext(); // планируем следующий
+      scheduleNext();
     }, delayMs);
   };
   scheduleNext();
