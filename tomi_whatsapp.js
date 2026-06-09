@@ -1869,6 +1869,97 @@ const RANDOM_QUESTIONS = [
 ];
 
 // Состояние обучения (в памяти, сбрасывается при рестарте)
+function generateLessonHTML(lesson, weekNum) {
+  const sections = [
+    {
+      title: 'Бренд и миссия',
+      rows: [
+        { label: 'Миссия', text: 'Помочь каждой покупательнице создать гардероб, который отражает её личность.' },
+        { label: '5 ценностей', text: 'Уважение · Экспертиза · Честность · Внимание · Красота' },
+        { label: 'Стиль', text: 'Корея и Европа. Не fast fashion — осознанная мода.' }
+      ]
+    }
+  ];
+
+  return `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NANE Академия — Неделя ${weekNum}</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f0ede8;color:#1a1a1a;padding:20px 16px}.container{max-width:560px;margin:0 auto}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}.brand{font-size:20px;font-weight:600;letter-spacing:.04em}.brand-sub{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:.1em;margin-top:2px}.header-right{text-align:right;font-size:13px;color:#555}.header-right strong{color:#1a1a1a;display:block}.status{background:#eaf3de;border:0.5px solid #c0dd97;border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:8px;margin-bottom:20px}.status-dot{width:8px;height:8px;border-radius:50%;background:#639922;flex-shrink:0}.status-text{font-size:13px;font-weight:500;color:#3B6D11}.sec{font-size:10px;color:#999;text-transform:uppercase;letter-spacing:.12em;margin:18px 0 8px}.card{background:#fff;border:0.5px solid #e8e4de;border-radius:12px;overflow:hidden;margin-bottom:10px}.row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;font-size:12px}.row:last-child{border:none}.row-label{font-weight:500;color:#1a1a1a;margin-bottom:3px}.row-text{color:#555;line-height:1.6}.taboo-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:12px}.taboo-row:last-child{border:none}.taboo-bad{color:#E24B4A;text-decoration:line-through;flex:1}.taboo-good{color:#3B6D11;font-weight:500;flex:1;text-align:right}.type-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;display:flex;align-items:center;gap:10px}.type-row:last-child{border:none}.type-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}.type-title{font-size:12px;font-weight:500;color:#1a1a1a}.type-sub{font-size:11px;color:#888;margin-top:1px}.step-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6;font-size:12px;color:#555;display:flex;gap:8px}.step-row:last-child{border:none}.step-num{color:#3B6D11;font-weight:600;flex-shrink:0}.fabric-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6}.fabric-row:last-child{border:none}.fabric-name{font-size:12px;font-weight:500;color:#1a1a1a}.fabric-desc{font-size:11px;color:#888;margin-top:2px}.situation-row{padding:10px 14px;border-bottom:0.5px solid #f0ece6}.situation-row:last-child{border:none}.situation-title{font-size:12px;font-weight:500;color:#E24B4A}.situation-desc{font-size:11px;color:#888;margin-top:2px}.footer{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:20px}.footer-card{border-radius:8px;padding:10px;text-align:center}.footer-label{font-size:10px;margin-bottom:2px}.footer-value{font-size:12px;font-weight:600}</style></head>
+<body><div class="container">
+
+<div class="header">
+  <div><div class="brand">NANÉ PARIS</div><div class="brand-sub">Академия продаж</div></div>
+  <div class="header-right"><strong>Неделя ${weekNum}</strong>читается за 5 мин</div>
+</div>
+
+<div class="status"><div class="status-dot"></div><span class="status-text">${lesson.topic}</span></div>
+
+<div class="sec">Бренд и миссия</div>
+<div class="card">
+  <div class="row"><div class="row-label">Миссия</div><div class="row-text">Помочь каждой покупательнице создать гардероб, который отражает её личность.</div></div>
+  <div class="row"><div class="row-label">5 ценностей</div><div class="row-text">Уважение · Экспертиза · Честность · Внимание · Красота</div></div>
+  <div class="row"><div class="row-label">Позиционирование</div><div class="row-text">Корея и Европа. Премиальный бутик Астаны. Не fast fashion — осознанная мода.</div></div>
+</div>
+
+<div class="sec">Типы клиентов</div>
+<div class="card">
+  <div class="type-row"><div class="type-dot" style="background:#378ADD"></div><div><div class="type-title">Тип А — знает что хочет</div><div class="type-sub">2-3 варианта, быстро и точно</div></div></div>
+  <div class="type-row"><div class="type-dot" style="background:#EF9F27"></div><div><div class="type-title">Тип Б — ищет вдохновение</div><div class="type-sub">Показывай образы целиком, задавай вопросы</div></div></div>
+  <div class="type-row"><div class="type-dot" style="background:#E24B4A"></div><div><div class="type-title">Тип В — сомневается</div><div class="type-sub">Аргументируй качеством, не давить</div></div></div>
+</div>
+
+<div class="sec">Фразы-табу → замена</div>
+<div class="card">
+  <div class="taboo-row"><span class="taboo-bad">«Чем могу помочь?»</span><span class="taboo-good">«Что-то конкретное ищете?»</span></div>
+  <div class="taboo-row"><span class="taboo-bad">«Это дорого»</span><span class="taboo-good">«Носится 3-4 сезона»</span></div>
+  <div class="taboo-row"><span class="taboo-bad">«Не знаю»</span><span class="taboo-good">«Сейчас уточню»</span></div>
+  <div class="taboo-row"><span class="taboo-bad">«Нету»</span><span class="taboo-good">«Есть похожая — покажу?»</span></div>
+  <div class="taboo-row"><span class="taboo-bad">«Вам не идёт»</span><span class="taboo-good">«Попробуем другой фасон»</span></div>
+</div>
+
+<div class="sec">Примерочная</div>
+<div class="card">
+  <div class="step-row"><span class="step-num">1.</span><span>Лично проводить к примерочной</span></div>
+  <div class="step-row"><span class="step-num">2.</span><span>Принести размеры сразу, предложить 44 и 46</span></div>
+  <div class="step-row"><span class="step-num">3.</span><span>Через 3-5 мин: «Как вам? Принести другой?»</span></div>
+  <div class="step-row"><span class="step-num">4.</span><span>Оставаться рядом, не уходить из зоны видимости</span></div>
+  <div class="step-row"><span class="step-num">5.</span><span>Принять вещи лично, сразу вернуть на место</span></div>
+</div>
+
+<div class="sec">Ткани и уход</div>
+<div class="card">
+  <div class="fabric-row"><div class="fabric-name">Вискоза</div><div class="fabric-desc">Мягкая, дышащая — «Приятная к телу, особенно в тёплый сезон»</div></div>
+  <div class="fabric-row"><div class="fabric-name">Жаккард</div><div class="fabric-desc">Плотная, держит форму — «Выглядит очень дорого»</div></div>
+  <div class="fabric-row"><div class="fabric-name">Трикотаж</div><div class="fabric-desc">Тянется, комфортный — «Сидит по фигуре, не сковывает»</div></div>
+  <div class="fabric-row"><div class="fabric-name">Полиэстер</div><div class="fabric-desc">Практичный, не мнётся — «Не нужно гладить, всегда аккуратно»</div></div>
+  <div class="fabric-row"><div class="fabric-name">Уход</div><div class="fabric-desc">Стирка 30°C · Вискозу не отжимать · Гладить через ткань</div></div>
+</div>
+
+<div class="sec">Сложные ситуации</div>
+<div class="card">
+  <div class="situation-row"><div class="situation-title">Недовольный клиент</div><div class="situation-desc">Выслушать → признать → не оправдываться → позвать старшего → поблагодарить</div></div>
+  <div class="situation-row"><div class="situation-title">Нет товара</div><div class="situation-desc">Предложить похожее → уточнить сроки → записать контакт. Никогда просто «нету»!</div></div>
+  <div class="situation-row"><div class="situation-title">Кража</div><div class="situation-desc">Не обвинять публично → подойти и предложить помощь → сообщить в Томи</div></div>
+  <div class="situation-row"><div class="situation-title">Клиенту плохо</div><div class="situation-desc">Усадить · принести воду · позвать коллегу · вызвать 103</div></div>
+</div>
+
+<div class="footer">
+  <div class="footer-card" style="background:#eaf3de;border:0.5px solid #c0dd97">
+    <div class="footer-label" style="color:#639922">Урок</div>
+    <div class="footer-value" style="color:#3B6D11">Неделя ${weekNum}</div>
+  </div>
+  <div class="footer-card" style="background:#faeeda;border:0.5px solid #FAC775">
+    <div class="footer-label" style="color:#854F0B">Тест</div>
+    <div class="footer-value" style="color:#854F0B">В пятницу</div>
+  </div>
+  <div class="footer-card" style="background:#f7f4ef;border:0.5px solid #e8e4de">
+    <div class="footer-label" style="color:#aaa">Вопросов</div>
+    <div class="footer-value" style="color:#1a1a1a">${lesson.questions.length} шт</div>
+  </div>
+</div>
+
+</div></body></html>`;
+}
+
 const trainingState = {}; // { sellerId: { week, phase, testAnswers, testScore, completed } }
 const pendingTestAnswer = {}; // { sellerId: { questionIndex, answers } }
 
@@ -1903,9 +1994,11 @@ async function sendWeeklyTraining(forceLesson) {
         return;
       }
       const lesson = NANE_LESSONS[weekNum - 1];
-      const lessonMsg = lesson.lesson + '\n\n⏰ В пятницу будет тест по этой теме.';
+      const lessonHtml = generateLessonHTML(lesson, weekNum);
+      const lessonFilename = 'urok_nedelya_' + weekNum + '.html';
+      const lessonCaption = '📚 NANE Академия — Неделя ' + weekNum + ' · Открой в браузере';
       for (const [sellerId] of sellers) {
-        await sendTelegram(sellerId, lessonMsg);
+        await sendTelegramDocument(sellerId, lessonFilename, lessonHtml, lessonCaption);
         trainingState[sellerId] = { week: weekNum, phase: 'learning', completed: false };
         await new Promise(r => setTimeout(r, 1000));
       }
