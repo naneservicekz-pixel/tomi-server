@@ -2017,6 +2017,12 @@ function generateLessonHTML(lesson, weekNum) {
   <div class="row"><div class="row-label">Закрытие смены</div><div class="row-text">Порядок в зале · Z-отчёт (фото) · фото терминалов Kaspi и Halyk · форма в Томи</div></div>
 </div>
 
+<div style="background:#fffbe6;border:0.5px solid #FAC775;border-radius:10px;padding:12px 14px;margin-top:20px;margin-bottom:10px">
+  <div style="font-size:12px;font-weight:500;color:#854F0B;margin-bottom:8px">⚠️ Результат теста влияет на KPI</div>
+  <div style="font-size:12px;color:#555;margin-bottom:4px">✅ Тест сдан (≥80%) — KPI засчитывается</div>
+  <div style="font-size:12px;color:#555">❌ Тест не сдан или пропущен — KPI не засчитывается</div>
+</div>
+
 <div class="footer">
   <div class="footer-card" style="background:#eaf3de;border:0.5px solid #c0dd97">
     <div class="footer-label" style="color:#639922">Урок</div>
