@@ -44,6 +44,7 @@ const pendingResendApprovals = {};
 const pendingPrepayDelete = {};
 const shiftPhotos = {};
 const pendingExpense = {};
+const firstCloseDone = {}; // Ключ: дата, значение: true если первый уже закрыл
 
 function detectCategory(description) {
   const d = (description || '').toLowerCase();
@@ -902,6 +903,11 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
           return cleanReply || '';
         }
+        // Записываем что первое закрытие состоялось — следующий будет вторым
+        const todayKeyClose = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
+        if (s.shiftStatus !== 'second_close') {
+          firstCloseDone[todayKeyClose] = true;
+        }
         const sellerFinal = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
         if (s.shiftStatus === 'second_close' && s.seller2) {
           const dateKey = today.split('.').reverse().join('-');
@@ -1482,10 +1488,24 @@ async function handleMessage(userId, messageText, photoFileId) {
       const data = await loadOwnerData();
       systemPrompt = getOwnerPrompt(senderName, data);
     } else {
-      // is_second влияет ТОЛЬКО на утренний приход (когда нет своей смены в базе).
-      // Как только продавец открыл смену (есть запись в open_shifts) — он равноправен,
-      // и при закрытии всегда получает полный чек-лист.
-      const isSecondForPrompt = isSecondSeller && !hasOpenShift;
+      // Второй продавец получает усечённый промпт ТОЛЬКО при утреннем приходе:
+      // - нет своей смены (ещё не зарегистрирован) → isSecondSeller && !hasOpenShift
+      // - ИЛИ смена только что создана с is_second=true и cash_open=0 (ещё не прошёл чек-лист)
+      // При закрытии (cash_open > 0 или смена уже полноценная) — полный промпт
+      const shiftData = openShifts[userKey];
+      const isJustArrived = shiftData && shiftData.is_second && !shiftData.cash_open;
+      // Проверяем — закрыл ли уже кто-то смену сегодня (второй закрывающий = усечённый)
+      const todayKey2 = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
+      const todayISO2 = todayKey2.split('.').reverse().join('-');
+      let isSecondClosing = hasOpenShift && firstCloseDone[todayKey2] === true;
+      // Дополнительно проверяем Supabase если память сбросилась после рестарта
+      if (hasOpenShift && !isSecondClosing) {
+        try {
+          const { data: todaySale } = await supabase.from('daily_sales').select('seller1').eq('sale_date', todayISO2).maybeSingle();
+          if (todaySale && todaySale.seller1) isSecondClosing = true;
+        } catch(e) {}
+      }
+      const isSecondForPrompt = (!hasOpenShift && isSecondSeller) || isJustArrived || isSecondClosing;
       systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecondForPrompt, firstSellerName);
     }
     const response = await anthropic.messages.create({
