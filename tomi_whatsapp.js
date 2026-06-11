@@ -926,6 +926,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           await sendTelegramDocument(ownerId, filename, htmlReport, '📊 Отчет смены — ' + sellerFinal + ' · ' + today + ' · ' + closeTime);
           // Пересылаем фото по порядку
           let photos = shiftPhotos[String(userId)] || {};
+          // Для second_close — не требуем фото (усечённый чек-лист)
           if (s.shiftStatus === 'second_close' && Object.keys(photos).length === 0) {
             for (const [pid, pdata] of Object.entries(shiftPhotos)) {
               if (pid !== String(userId) && pdata && (pdata.zreport || pdata.kaspi || pdata.halyk)) {
@@ -977,7 +978,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Опоздание!\n👤 ' + a.seller + '\n🕐 ' + (a.time||getTime()));
       }
     } catch(e) {}
-    cleanReply = reply.replace(/LATE_ALERT:\{.*?\}/s, '').trim();
+    cleanReply = reply.replace(/LATE_ALERT:\{[^}]*\}/gs, '').replace(/LATE_ALERT:/g, '').trim();
   }
 
   if (reply.includes('SECOND_ARRIVE:')) {
@@ -1461,6 +1462,11 @@ async function handleMessage(userId, messageText, photoFileId) {
     try {
       await sendTelegram(userId, '📷 Читаю фото...');
 
+      // Если продавец с открытой сменой присылает фото — это фото для закрытия
+      if (!isOwner && hasOpenShift && !pendingGeoAction[userId]) {
+        pendingGeoAction[userId] = 'close_shift';
+      }
+
       // ══════════════════════════════════════════════════════════════
       // ИСПРАВЛЕНО: определяем тип ДО сохранения, потом сохраняем
       // ══════════════════════════════════════════════════════════════
@@ -1493,7 +1499,10 @@ async function handleMessage(userId, messageText, photoFileId) {
       // - ИЛИ смена только что создана с is_second=true и cash_open=0 (ещё не прошёл чек-лист)
       // При закрытии (cash_open > 0 или смена уже полноценная) — полный промпт
       const shiftData = openShifts[userKey];
-      const isJustArrived = shiftData && shiftData.is_second && !shiftData.cash_open;
+      // isJustArrived: is_second И смена открыта менее 30 мин назад (ещё в процессе прихода)
+      const shiftAge = shiftData && shiftData.start_time ? 
+        (Date.now() - new Date(shiftData.start_time).getTime()) / 60000 : 999;
+      const isJustArrived = shiftData && shiftData.is_second && !Number(shiftData.cash_open) && shiftAge < 30;
       // Проверяем — закрыл ли уже кто-то смену сегодня (второй закрывающий = усечённый)
       const todayKey2 = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
       const todayISO2 = todayKey2.split('.').reverse().join('-');
