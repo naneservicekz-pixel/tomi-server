@@ -1679,13 +1679,27 @@ app.post('/webhook', async (req, res) => {
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
         let isSecondSellerCheck = false;
+        const todayStrCheck = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty',day:'2-digit',month:'2-digit',year:'numeric'});
         for (const [otherId, shiftData] of Object.entries(openShifts)) {
-          if (otherId !== String(userId) && shiftData && shiftData.seller) { isSecondSellerCheck = true; break; }
+          if (otherId !== String(userId) && shiftData && shiftData.seller) {
+            // Проверяем что смена сегодняшняя
+            const shiftDateStr = shiftData.start_time ? new Date(shiftData.start_time).toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty',day:'2-digit',month:'2-digit',year:'numeric'}) : '';
+            if (shiftDateStr === todayStrCheck) { isSecondSellerCheck = true; break; }
+          }
         }
         if (!isSecondSellerCheck) {
           try {
             const { data: otherShifts } = await supabase.from('open_shifts').select('*').neq('phone', String(userId));
-            if (otherShifts && otherShifts.length > 0) isSecondSellerCheck = true;
+            if (otherShifts && otherShifts.length > 0) {
+              // Считаем только сегодняшние смены (не вчерашние/тестовые)
+              const todayStr = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty',day:'2-digit',month:'2-digit',year:'numeric'});
+              const todayShifts = otherShifts.filter(s => {
+                if (!s.start_time) return false;
+                const shiftDate = new Date(s.start_time).toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty',day:'2-digit',month:'2-digit',year:'numeric'});
+                return shiftDate === todayStr;
+              });
+              if (todayShifts.length > 0) isSecondSellerCheck = true;
+            }
           } catch(e) {}
         }
         await saveOpenShift(userId, { seller: sellerName, shop: 'NANE PARIS', cash_open: 0, start_time: new Date().toISOString(), is_second: isSecondSellerCheck });
