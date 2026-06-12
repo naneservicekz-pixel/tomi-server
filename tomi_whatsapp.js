@@ -1072,8 +1072,11 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
     const lesson = NANE_LESSONS[weekNum - 1];
     if (lesson) {
       for (const [sellerId] of sellers) {
+        delete pendingTestAnswer[sellerId];
+        await sendTelegram(sellerId, '🎯 ТЕСТ — Неделя ' + weekNum + '\n📖 ' + lesson.topic + '\n\nОтвечай развёрнуто, своими словами.\nПорог: 80% · Результат влияет на KPI.');
+        await new Promise(r => setTimeout(r, 500));
         pendingTestAnswer[sellerId] = { weekNum, questionIndex: 0, answers: [] };
-        await sendTelegram(sellerId, '🎯 ТЕСТ — Неделя ' + weekNum + '\n📖 ' + lesson.topic + '\n\nВопрос 1 из ' + lesson.questions.length + ':\n\n' + lesson.questions[0].q);
+        await sendTelegram(sellerId, '🔸 Вопрос 1 из ' + lesson.questions.length + ':\n\n' + lesson.questions[0].q);
         await new Promise(r => setTimeout(r, 1000));
       }
       await sendTelegram(userId, '✅ Тест отправлен продавцам');
@@ -2105,9 +2108,16 @@ async function sendWeeklyTraining(forceLesson) {
       const lesson = NANE_LESSONS[weekNum - 1];
       const testIntro = '🎯 ТЕСТ — Неделя ' + weekNum + '\n📖 ' + lesson.topic + '\n\nОтвечай развёрнуто, своими словами.\n\n';
       for (const [sellerId] of sellers) {
+        // Сбрасываем возможные старые данные
+        delete pendingTestAnswer[sellerId];
+        // Отправляем интро
+        await sendTelegram(sellerId, testIntro);
+        await new Promise(r => setTimeout(r, 500));
+        // Инициализируем тест
         pendingTestAnswer[sellerId] = { weekNum, questionIndex: 0, answers: [] };
-        await sendTelegram(sellerId, testIntro + 'Вопрос 1 из ' + lesson.questions.length + ':\n\n' + lesson.questions[0].q);
         trainingState[sellerId] = { ...(trainingState[sellerId] || {}), phase: 'testing', week: weekNum };
+        // Отправляем первый вопрос
+        await sendTelegram(sellerId, '🔸 Вопрос 1 из ' + lesson.questions.length + ':\n\n' + lesson.questions[0].q);
         await new Promise(r => setTimeout(r, 1000));
       }
       for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '🎯 Тест недели ' + weekNum + ' отправлен продавцам\n📖 ' + lesson.topic);
@@ -2142,7 +2152,9 @@ async function handleTrainingTestAnswer(userId, messageText) {
     const keywords = q.key.split(' ');
     const answerLower = answer.toLowerCase();
     const matched = keywords.filter(kw => answerLower.includes(kw)).length;
-    const isCorrect = matched >= Math.ceil(keywords.length * 0.4);
+    // Порог 30% ключевых слов (минимум 1 совпадение)
+    const threshold = Math.max(1, Math.ceil(keywords.length * 0.3));
+    const isCorrect = matched >= threshold;
     if (isCorrect) score++;
     evaluation.push({ q: q.q, correct: isCorrect });
   }
@@ -2160,8 +2172,21 @@ async function handleTrainingTestAnswer(userId, messageText) {
   await dbSaveDiscipline(today, sellerName, 'Тест неделя ' + weekNum, getTime(), score + '/' + total + ' ' + emoji + ' ' + (passed ? 'Сдан' : 'Не сдан'));
   let ownerMsg = '📊 Результат теста\n👤 ' + sellerName + '\n📖 ' + lesson.topic + '\n\n';
   ownerMsg += '🎯 Балл: ' + score + '/' + total + ' (' + pct + '%) ' + emoji + '\n\n';
-  evaluation.forEach((e, i) => { ownerMsg += (e.correct ? '✅' : '❌') + ' ' + (i+1) + '. ' + e.q.slice(0, 50) + '\n'; });
-  for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, ownerMsg);
+  // Детальный разбор каждого вопроса с ответом продавца и правильным ответом
+  evaluation.forEach((e, i) => {
+    const q = lesson.questions[i];
+    const sellerAnswer = answers[i] || '(нет ответа)';
+    ownerMsg += (e.correct ? '✅' : '❌') + ' ' + (i+1) + '. ' + e.q + '\n';
+    ownerMsg += '💬 Ответ: ' + sellerAnswer.slice(0, 100) + '\n';
+    if (!e.correct) ownerMsg += '📌 Ключевые слова: ' + (q.key || '').split(' ').slice(0, 5).join(', ') + '\n';
+    ownerMsg += '\n';
+  });
+  // Разбиваем на части если длинное
+  const parts = [];
+  for (let i = 0; i < ownerMsg.length; i += 3500) parts.push(ownerMsg.slice(i, i + 3500));
+  for (const ownerId of OWNER_IDS) {
+    for (const part of parts) await sendTelegram(ownerId, part);
+  }
   if (trainingState[String(userId)]) trainingState[String(userId)].completed = passed && weekNum === NANE_LESSONS.length;
   return true;
 }
