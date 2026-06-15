@@ -481,7 +481,7 @@ async function downloadTelegramFile(fileId) {
 
 async function readPhotoWithClaude(base64Image, photoType) {
   let prompt = photoType === 'zreport'
-    ? 'Это Z-отчет из ROSTA. Верни ТОЛЬКО JSON: {"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi":0,"ret_halyk":0,"ret_cash":0}'
+    ? 'Это Z-отчет из ROSTA. Верни ТОЛЬКО JSON без пояснений:\n{"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi":0,"ret_halyk":0,"ret_cash":0}\nВАЖНО: ret_kaspi, ret_halyk, ret_cash — это ВОЗВРАТЫ, всегда положительные числа (знак минус НЕ ставить, он учтётся при расчёте). Ищи строки содержащие слово "Возврат" или отрицательные суммы.'
     : photoType === 'kaspi_terminal' ? 'Это отчет Kaspi терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
     : photoType === 'halyk_terminal' ? 'Это отчет Halyk терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
     : 'Опиши документ. Извлеки все числовые данные по продажам.';
