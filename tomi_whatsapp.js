@@ -767,14 +767,22 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       if (jsonStr) {
         const p = JSON.parse(jsonStr);
         const rows = await dbGetPrepays('all');
+        const searchStr = String(p.id||'').trim().toLowerCase();
+        let found = null;
+        // Ищем по ID или по имени клиента
         for (const row of rows) {
-          if (String(row.prep_id).trim().toUpperCase() === String(p.id).trim().toUpperCase()) {
-            await supabase.from('prepayments').update({ status: '🟢 Закрыта', notes: p.notes||'Товар выдан' }).eq('prep_id', row.prep_id);
-            break;
-          }
+          const matchId = String(row.prep_id||'').trim().toUpperCase() === searchStr.toUpperCase();
+          const matchName = String(row.client_name||'').trim().toLowerCase().includes(searchStr);
+          if (matchId || matchName) { found = row; break; }
+        }
+        if (found) {
+          await supabase.from('prepayments').update({ status: '🟢 Закрыта', notes: p.notes||'Товар выдан' }).eq('prep_id', found.prep_id);
+          await sendTelegram(userId, '✅ Предоплата закрыта\n👤 ' + found.client_name + '\n🆔 ' + found.prep_id + '\n💰 ' + Number(found.amount||0).toLocaleString('ru-RU') + ' тг');
+        } else {
+          await sendTelegram(userId, '❌ Предоплата не найдена: ' + p.id + '\nПроверь ID или имя клиента.');
         }
       }
-    } catch(e) {}
+    } catch(e) { console.error('PREPAY_CLOSE error:', e.message); }
     cleanReply = reply.replace(/PREPAY_CLOSE:\{.*?\}/s, '').trim();
   }
 
@@ -879,8 +887,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff });
         if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff });
         const allPrepaysRaw = await dbGetPrepays('all');
-        const todayClosedPrepays = allPrepaysRaw.filter(p => String(p.status||'').toLowerCase().includes('закрыт'))
-          .map(p => ({ id: String(p.prep_id||''), client: String(p.client_name||''), amount: Number(p.amount||0), channel: String(p.channel||'') }));
+        // Учитываем ВСЕ предоплаты — и закрытые и открытые
+        // Открытая предоплата тоже может объяснить расхождение (товар выдан сегодня)
+        const todayClosedPrepays = allPrepaysRaw
+          .map(p => ({ id: String(p.prep_id||''), client: String(p.client_name||''), amount: Number(p.amount||0), channel: String(p.channel||''), status: String(p.status||'') }));
         const prepayExplanations = [];
         const explainedDiffs = new Set();
         channelDiffs.forEach(cd => {
