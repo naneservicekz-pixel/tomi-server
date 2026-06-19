@@ -588,7 +588,8 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'ЖДИ фото. Когда получила — сравни с ROSTA. Расхождение >500 тг — СТОП, спроси причину.\n\n' +
     'ВАЖНО: НЕ проси два фото сразу. Каждое фото — отдельным сообщением после получения предыдущего.\n' +
     'ВАЖНО: НЕ называй фото "второе фото Halyk" или "ещё одно фото" — только Z-отчёт, Kaspi, Halyk.\n\n' +
-    'ШАГ 4 — НАЛИЧНЫЕ: сколько в кассе на конец?\n' +
+    'ШАГ 4 — НАЛИЧНЫЕ: спроси "Сколько наличных в кассе сейчас? Пересчитай." Запомни как cashActual.\n' +
+    '  (Томи сравнит с: открытие + продажи нал из ROSTA − инкассация)\n' +
     'ШАГ 5 — ЛИЧНАЯ КАРТА. ШАГ 6 — ИНКАССАЦИЯ.\n' +
     'ШАГ 7 — ЗАЛ. ШАГ 8 — ГОСТЕВАЯ.\n' +
     'ШАГ 9 — ГЕОЛОКАЦИЯ: после геолокации выдай SHIFT_CLOSE.\n' +
@@ -878,7 +879,23 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         if (finalRevenue <= 0 && rostaCheck <= 0) { finalRevenue = 0; console.warn('SHIFT_CLOSE: finalRevenue=0, проверь данные'); }
         const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
         const halykNet = (s.tHalyk||0)-(s.tHalykRet||0);
-        const cashSales = (s.cashActual||0)-(s.cashOpen||0)+(s.cashPayouts||0)+(s.inkasso||0)+(s.rRetCash||0);
+        // cashSales = продажи наличными из ROSTA (источник истины)
+        const cashSales = (s.rCash||0) - (s.rRetCash||0);
+        
+        // СВЕРКА КАССЫ: cashOpen + rCash = ожидаемый остаток в кассе
+        // cashActual = сколько продавец физически пересчитал
+        // Если есть инкассация — вычитаем её из ожидаемого
+        const cashExpected = (s.cashOpen||0) + (s.rCash||0) - (s.rRetCash||0) - (s.inkasso||0);
+        const cashActualVal = s.cashActual || 0;
+        const cashBoxDiff = cashActualVal - cashExpected;
+        if (Math.abs(cashBoxDiff) > 500) {
+          const sign = cashBoxDiff > 0 ? '+' : '';
+          const dir = cashBoxDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
+          for (const ownerId of OWNER_IDS) {
+            await sendTelegram(ownerId, '💰 РАСХОЖДЕНИЕ КАССЫ при закрытии!\n👤 ' + (shift.seller||sellerName) + '\n💰 Ожидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\n   (открытие ' + Number(s.cashOpen||0).toLocaleString() + ' + продажи ' + Number(cashSales).toLocaleString() + ' − инкассация ' + Number(s.inkasso||0).toLocaleString() + ')\n💰 Факт в кассе: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг\n❌ ' + dir + ': ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг');
+          }
+          await sendTelegram(userId, '⚠️ Расхождение кассы: ' + dir + ' ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\nОжидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\nФакт: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг');
+        }
         const factTotal = kaspiNet + halykNet + cashSales + (s.rPersonal||0) + (s.rBonus||0);
         const diff = factTotal - rostaTotal;
         const totalRet = (s.rRetKaspi||0)+(s.rRetOnlineKaspi||0)+(s.rRetHalyk||0)+(s.rRetHalykOnline||0)+(s.rRetCash||0)+(s.rRetPersonal||0);
@@ -2378,7 +2395,7 @@ ${diffDetails}${prepaySection}${notesSection}
 </div>
 <div class="sec">Касса и сверка</div>
 <div class="grid2">
-<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Продажи нал</span><span class="row-value">${fmt(cashSales)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}<div class="row-total"><span>Итого в кассе</span><span style="color:#1D9E75">${fmt((s.cashOpen||0)+(s.rCash||0))}</span></div></div>
+<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие (факт)</span><span class="row-value">${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал (ROSTA)</span><span class="row-value">${fmt(cashSales)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}<div class="row"><span class="row-label">Ожидалось в кассе</span><span class="row-value">${fmt((s.cashOpen||0)+cashSales-(s.inkasso||0))}</span></div>${(s.cashActual||0)>0?'<div class="row"><span class="row-label">Факт в кассе</span><span class="row-value" style="color:'+( Math.abs((s.cashActual||0)-((s.cashOpen||0)+cashSales-(s.inkasso||0)))>500 ? "#E24B4A":"#1D9E75")+'">'+fmt(s.cashActual||0)+'</span></div>':''}<div class="row-total"><span>Итого в кассе</span><span style="color:#1D9E75">${fmt((s.cashOpen||0)+(s.rCash||0))}</span></div></div>
 <div class="card"><div class="card-title">🔍 Сверка</div><div class="row"><span class="row-label">ROSTA</span><span class="row-value">${fmt(rostaTotal)}</span></div><div class="row"><span class="row-label">ФАКТ</span><span class="row-value">${fmt(factTotal)}</span></div><div class="row"><span class="row-label">Разница</span><span class="row-value" style="color:${diffColor};font-weight:600;">${diffSign}${fmt(diff)}</span></div></div>
 </div>
 <div class="grid3">${channelStatus}</div>
