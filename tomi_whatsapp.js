@@ -43,6 +43,7 @@ const lastShiftReports = {};
 const pendingResendApprovals = {};
 const pendingPrepayDelete = {};
 const shiftPhotos = {};
+const shiftOCR = {}; // Структурные данные OCR по фото: { userKey: { zreport:{...}, kaspi:{...}, halyk:{...} } }
 const pendingExpense = {};
 const firstCloseDone = {}; // Ключ: дата, значение: true если первый уже закрыл
 
@@ -481,7 +482,7 @@ async function downloadTelegramFile(fileId) {
 
 async function readPhotoWithClaude(base64Image, photoType) {
   let prompt = photoType === 'zreport'
-    ? 'Это Z-отчет из ROSTA. Верни ТОЛЬКО JSON без пояснений:\n{"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi_qr":0,"ret_online_kaspi":0,"ret_halyk_qr":0,"ret_online_halyk":0,"ret_cash":0,"ret_personal":0}\nВАЖНО:\n- ret_kaspi_qr = возврат "Kaspi QR (Возврат)"\n- ret_online_kaspi = возврат "Онлайн Каспи (Возврат)"\n- ret_halyk_qr = возврат "Halyk QR (Возврат)"\n- ret_online_halyk = возврат "Онлайн Халык (Возврат)"\n- ret_cash = возврат "Наличные (Возврат)"\n- ret_personal = возврат "Личная карта (Возврат)"\n- Все значения ПОЛОЖИТЕЛЬНЫЕ (знак минус НЕ ставить). Проверь: сумма продаж минус все возвраты должна совпасть с ИТОГО Z-отчёта.'
+    ? 'Это Z-отчет (Итоговый отчёт) из ROSTA. В блоке «Отчёт по видам оплат» строки могут иметь номера-префиксы (например «1.Halyk QR», «5.Онлайн Каспи»). Игнорируй номер, читай название и сумму. Верни ТОЛЬКО JSON без пояснений:\n{"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi_qr":0,"ret_online_kaspi":0,"ret_halyk_qr":0,"ret_online_halyk":0,"ret_cash":0,"ret_personal":0,"itogo":0}\nСООТВЕТСТВИЕ НАЗВАНИЙ (продажи):\n- "Kaspi QR" → kaspi_qr\n- "Онлайн Каспи" / "Онлайн Kaspi" → online_kaspi\n- "Halyk QR" → halyk_qr\n- "Онлайн Халык" / "Онлайн Halyk" → online_halyk\n- "Наличные" → cash\n- "Личная карта" / "Личная карточка" (с любым именем, напр. «Личная карточка Айнуша») → personal\n- "Бонусы" → bonus\nВОЗВРАТЫ (строки со словом «Возврат», обычно с минусом):\n- "Kaspi QR (Возврат)" → ret_kaspi_qr\n- "Онлайн Каспи (Возврат)" → ret_online_kaspi\n- "Halyk QR (Возврат)" → ret_halyk_qr\n- "Онлайн Халык (Возврат)" → ret_online_halyk\n- "Наличные (Возврат)" → ret_cash\n- "Личная карта (Возврат)" → ret_personal\n- itogo = число в строке "Итого:" внизу блока видов оплат\nПРАВИЛА:\n- Все значения ПОЛОЖИТЕЛЬНЫЕ (минус НЕ ставить, в т.ч. для возвратов).\n- Если строки нет — ставь 0.\n- ПРОВЕРКА: (kaspi_qr+online_kaspi+halyk_qr+online_halyk+cash+personal+bonus) − (все ret_*) должно равняться itogo. Если не сходится — перечитай суммы внимательнее.'
     : photoType === 'kaspi_terminal' ? 'Это отчет Kaspi терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
     : photoType === 'halyk_terminal' ? 'Это отчет Halyk терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
     : 'Опиши документ. Извлеки все числовые данные по продажам.';
@@ -867,6 +868,50 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       const jsonStr = reply.match(/SHIFT_CLOSE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
+        // ═══════════════════════════════════════════════════════════════
+        // ИСТОЧНИК ИСТИНЫ — структурный OCR, а НЕ цифры из чата.
+        // Чат-модель теряет цифры за время чек-листа → берём прямо из OCR.
+        // ═══════════════════════════════════════════════════════════════
+        const ocr = shiftOCR[String(userId)] || {};
+        if (ocr.zreport) {
+          const z = ocr.zreport;
+          const pick = (a, b) => (a !== undefined && a !== null) ? Number(a) : (Number(b) || 0);
+          s.rKaspi        = pick(z.kaspi_qr,        s.rKaspi);
+          s.rOnline       = pick(z.online_kaspi,    s.rOnline);
+          s.rHalyk        = pick(z.halyk_qr,        s.rHalyk);
+          s.rHalykOnline  = pick(z.online_halyk,    s.rHalykOnline);
+          s.rCash         = pick(z.cash,            s.rCash);
+          s.rPersonal     = pick(z.personal,        s.rPersonal);
+          s.rBonus        = pick(z.bonus,           s.rBonus);
+          s.rRetKaspi       = pick(z.ret_kaspi_qr,    s.rRetKaspi);
+          s.rRetOnlineKaspi = pick(z.ret_online_kaspi, s.rRetOnlineKaspi);
+          s.rRetHalyk       = pick(z.ret_halyk_qr,    s.rRetHalyk);
+          s.rRetHalykOnline = pick(z.ret_online_halyk, s.rRetHalykOnline);
+          s.rRetCash        = pick(z.ret_cash,        s.rRetCash);
+          s.rRetPersonal    = pick(z.ret_personal,    s.rRetPersonal);
+          // rostaCheck = сумма по видам − все возвраты (контрольная сумма из самого Z-отчёта)
+          s.rostaCheck = (s.rKaspi+s.rOnline+s.rHalyk+s.rHalykOnline+s.rCash+s.rPersonal+s.rBonus)
+            - (s.rRetKaspi+s.rRetOnlineKaspi+s.rRetHalyk+s.rRetHalykOnline+s.rRetCash+s.rRetPersonal);
+        }
+        if (ocr.kaspi) { s.tKaspi = Number(ocr.kaspi.gross)||0; s.tKaspiRet = Number(ocr.kaspi.returns)||0; }
+        if (ocr.halyk) { s.tHalyk = Number(ocr.halyk.gross)||0; s.tHalykRet = Number(ocr.halyk.returns)||0; }
+        // ВАЛИДАЦИЯ: если Z-отчёт не распознан (нет ни одного канала продаж) — не строим кривой отчёт
+        if (ocr.zreport) {
+          const channelsSum = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0);
+          if (channelsSum <= 0) {
+            await sendTelegram(userId, '⚠️ Z-отчёт распознан некорректно (нулевые продажи по всем каналам). Перешли фото Z-отчёта чётче — без бликов, весь блок «Отчёт по видам оплат» в кадре.');
+            cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+            return cleanReply || '';
+          }
+          // Контрольная сумма: распознанные виды оплат должны сойтись с печатным "Итого:"
+          const itogo = Number(ocr.zreport.itogo) || 0;
+          if (itogo > 0 && Math.abs(s.rostaCheck - itogo) > 1000) {
+            await sendTelegram(userId, '⚠️ Z-отчёт распознан с ошибкой: сумма по видам оплат (' + s.rostaCheck.toLocaleString('ru-RU') + ' ₸) не сходится с «Итого» в чеке (' + itogo.toLocaleString('ru-RU') + ' ₸). Перешли фото Z-отчёта чётче.');
+            for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ ' + (sellerName) + ': Z-отчёт не сошёлся при распознавании (' + s.rostaCheck.toLocaleString('ru-RU') + ' ≠ ' + itogo.toLocaleString('ru-RU') + '). Смена не закрыта.');
+            cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+            return cleanReply || '';
+          }
+        }
         const shift = openShifts[String(userId)] || await loadOpenShift(userId) || {};
         const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         const closeTime = getTime();
@@ -987,6 +1032,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           }
         }
         delete shiftPhotos[String(userId)];
+        delete shiftOCR[String(userId)];
         for (const [sellerId] of Object.entries(ALLOWED_MAP)) {
           if (!OWNER_IDS.includes(sellerId)) {
             await sendTelegramDocument(sellerId, 'den_' + today.replace(/\./g,'_') + '.html', htmlReport, '📊 Итоги дня ' + today);
@@ -1531,6 +1577,19 @@ async function handleMessage(userId, messageText, photoFileId) {
 
       const base64 = await downloadTelegramFile(photoFileId);
       const ocrResult = await readPhotoWithClaude(base64, photoType);
+      // КРИТИЧНО: сохраняем РАСПОЗНАННЫЕ ЦИФРЫ структурно сразу при чтении фото.
+      // Иначе чат-модель теряет их за ~8 шагов чек-листа и обнуляет в SHIFT_CLOSE.
+      try {
+        const m = ocrResult.match(/\{[\s\S]*\}/);
+        if (m) {
+          if (!shiftOCR[userKey]) shiftOCR[userKey] = {};
+          const parsed = JSON.parse(m[0]);
+          if (photoType === 'zreport') shiftOCR[userKey].zreport = parsed;
+          else if (photoType === 'kaspi_terminal') shiftOCR[userKey].kaspi = parsed;
+          else if (photoType === 'halyk_terminal') shiftOCR[userKey].halyk = parsed;
+          console.log('OCR сохранён структурно:', photoType, JSON.stringify(parsed));
+        }
+      } catch (e) { console.error('OCR parse error:', e.message, '| raw:', ocrResult); }
       const contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
         : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
         : photoType === 'halyk_terminal' ? 'Прочитала Halyk терминал:\n' + ocrResult
@@ -1723,6 +1782,7 @@ app.post('/webhook', async (req, res) => {
         try { await supabase.from('conversations').delete().eq('phone', String(userId)); } catch(e) {}
         // Сбрасываем фото предыдущей смены
         delete shiftPhotos[String(userId)];
+        delete shiftOCR[String(userId)];
         pendingGeoAction[userId] = 'open_shift';
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
