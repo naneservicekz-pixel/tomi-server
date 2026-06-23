@@ -622,6 +622,9 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'ЗАЛ — всё убрано, товар на местах?\n' +
     'ГОСТЕВАЯ — всё в порядке, убрано?\n' +
     'ГЕОЛОКАЦИЯ — "Пришли геолокацию через скрепку." После геолокации выдай SHIFT_CLOSE.\n' +
+    'ЕСЛИ ПОСЛЕ ЗАКРЫТИЯ СИСТЕМА ПОКАЗАЛА РАСХОЖДЕНИЕ ПО КАНАЛУ (Kaspi/Halyk):\n' +
+    '— если продавец говорит, что это из-за предоплаты (сегодня выкуп товара по предоплате): спроси «Какая предоплата? Назови имя клиента или ID» (можешь показать PREPAY_LIST:открытые). Когда назовут — выдай SHIFT_CLOSE заново с тем же набором цифр и добавь поле prepayApplied, напр.: "prepayApplied":[{"channel":"Kaspi","ref":"Жулдыз"}] (ref — имя клиента или ID предоплаты). Система сама привяжет предоплату и закроет смену.\n' +
+    '— если причина другая: впиши её в notes и выдай SHIFT_CLOSE заново. Сама расхождения НЕ считай.\n' +
     '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetOnlineKaspi":0,"rRetHalyk":0,"rRetHalykOnline":0,"rRetCash":0,"rRetPersonal":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}';
 }
 
@@ -1059,24 +1062,40 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           .map(p => ({ id: String(p.prep_id||''), client: String(p.client_name||''), amount: Number(p.amount||0), channel: String(p.channel||''), status: String(p.status||'') }));
         const prepayExplanations = [];
         const explainedDiffs = new Set();
+        const chMatchFor = (channel) => (p => (channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
+                (channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
+                (channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash'))));
+        // АВТО-сопоставление: предоплата объясняет расхождение в ОБЕ стороны (излишек ИЛИ недостача)
         channelDiffs.forEach(cd => {
-          if (cd.diff > 0) {
-            const TOL = 1000; // допуск сходимости по сумме
-            const chMatch = p => (cd.channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
-                (cd.channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
-                (cd.channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash')));
-            // Только предоплаты этого канала; расхождение объяснено, лишь если суммы СХОДЯТСЯ
-            const channelPrepays = todayClosedPrepays.filter(chMatch);
-            const single = channelPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
-            const sumCh = channelPrepays.reduce((acc, p) => acc + p.amount, 0);
-            const sumClose = Math.abs(sumCh - Math.abs(cd.diff)) < TOL;
-            // запасной вариант: предоплата без канала, но точно по сумме
-            const byAmountAnyChannel = todayClosedPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
-            let matching = [];
-            if (single.length > 0) matching = single;
-            else if (sumClose && channelPrepays.length > 0) matching = channelPrepays;
-            else if (byAmountAnyChannel.length > 0) matching = byAmountAnyChannel;
-            if (matching.length > 0) { prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching }); explainedDiffs.add(cd.channel); }
+          const TOL = 1000; // допуск сходимости по сумме
+          const channelPrepays = todayClosedPrepays.filter(chMatchFor(cd.channel));
+          const single = channelPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
+          const sumCh = channelPrepays.reduce((acc, p) => acc + p.amount, 0);
+          const sumClose = Math.abs(sumCh - Math.abs(cd.diff)) < TOL;
+          const byAmountAnyChannel = todayClosedPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
+          let matching = [];
+          if (single.length > 0) matching = single;
+          else if (sumClose && channelPrepays.length > 0) matching = channelPrepays;
+          else if (byAmountAnyChannel.length > 0) matching = byAmountAnyChannel;
+          if (matching.length > 0) { prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching }); explainedDiffs.add(cd.channel); }
+        });
+        // РУЧНОЕ применение: продавец назвал предоплату (ID или имя), которой объясняется расхождение по каналу.
+        // Доверяем владельцу/продавцу: сумма может не совпадать в точности (аванс частичный) — фиксируем как объяснение.
+        const applied = Array.isArray(s.prepayApplied) ? s.prepayApplied : [];
+        applied.forEach(ap => {
+          const ref = String(ap.ref || ap.id || ap.client || '').trim().toLowerCase();
+          if (!ref) return;
+          const found = todayClosedPrepays.find(p => p.id.toLowerCase() === ref || (p.client && p.client.toLowerCase().includes(ref)));
+          if (!found) return;
+          // канал: явно указан в ap.channel, иначе берём из самой предоплаты
+          let ch = ap.channel || '';
+          if (!ch) { const lc = found.channel.toLowerCase(); ch = (lc.includes('kaspi')||lc.includes('каспи'))?'Kaspi':(lc.includes('halyk')||lc.includes('халык'))?'Halyk':(lc.includes('нал')||lc.includes('cash'))?'Наличные':''; }
+          // привязываем к расхождению этого канала (если оно есть), иначе к любому необъяснённому
+          let target = channelDiffs.find(cd => cd.channel === ch && !explainedDiffs.has(cd.channel));
+          if (!target) target = channelDiffs.find(cd => !explainedDiffs.has(cd.channel));
+          if (target) {
+            prepayExplanations.push({ channel: target.channel, diff: target.diff, prepays: [found], manual: true });
+            explainedDiffs.add(target.channel);
           }
         });
         const unexplainedDiffs = channelDiffs.filter(cd => !explainedDiffs.has(cd.channel));
@@ -1086,9 +1105,16 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           unexplainedDiffs.forEach(cd => {
             const sign = cd.diff > 0 ? '+' : '';
             const dir = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
-            blockMsg += '❌ ' + cd.channel + ': ' + dir + ' ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
+            blockMsg += '❌ ' + cd.channel + ': ' + dir + ' ' + sign + Number(cd.diff).toLocaleString('ru-RU') + ' тг\n';
+            if (cd.channel === 'Kaspi') {
+              const rostaK = (s.rKaspi||0)+(s.rOnline||0)-(s.rRetKaspi||0)-(s.rRetOnlineKaspi||0);
+              blockMsg += '   ROSTA ' + rostaK.toLocaleString('ru-RU') + ' (QR ' + (s.rKaspi||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rOnline||0).toLocaleString('ru-RU') + ((s.rRetKaspi||0)+(s.rRetOnlineKaspi||0)>0?' − возвраты '+((s.rRetKaspi||0)+(s.rRetOnlineKaspi||0)).toLocaleString('ru-RU'):'') + ') vs терминал ' + ((s.tKaspi||0)-(s.tKaspiRet||0)).toLocaleString('ru-RU') + '\n';
+            } else if (cd.channel === 'Halyk') {
+              const rostaH = (s.rHalyk||0)+(s.rHalykOnline||0)-(s.rRetHalyk||0)-(s.rRetHalykOnline||0);
+              blockMsg += '   ROSTA ' + rostaH.toLocaleString('ru-RU') + ' (QR ' + (s.rHalyk||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rHalykOnline||0).toLocaleString('ru-RU') + ') vs терминал ' + ((s.tHalyk||0)-(s.tHalykRet||0)).toLocaleString('ru-RU') + '\n';
+            }
           });
-          blockMsg += '\nОбъясни причину и закрой смену снова.';
+          blockMsg += '\nЕсли это из-за предоплаты (сегодня был выкуп товара по предоплате) — напиши: «предоплата <имя клиента или ID>», и я закрою смену, отнеся расхождение к этой предоплате.\nЕсли причина другая — просто напиши её одной фразой и я закрою смену с пометкой для руководителя.';
           await sendTelegram(userId, blockMsg);
           // Владельцу — полный HTML-отчёт для контроля, даже если смена не закрыта
           const sellerForBlock = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
@@ -2568,6 +2594,9 @@ function generatePrepaysHTML(list, type) {
 
 function generateShiftHTML(data) {
   const { sellerName, date, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations } = data;
+  // Касса: продажи наличными ГРОСС («Наличные» из Z-отчёта), ожидаемая = открытие + наличные − инкассация − выплаты
+  const cashSalesGross = (s.rCash||0);
+  const cashExpectedHtml = (s.cashOpen||0) + cashSalesGross - (s.inkasso||0) - (s.cashPayouts||0);
   const _explCh = new Set((prepayExplanations||[]).map(p => p.channel));
   const _unexpl = (channelDiffs||[]).filter(cd => Math.abs(cd.diff) >= 500 && !_explCh.has(cd.channel));
   const isOk = Math.abs(diff) < 500 || _unexpl.length === 0;
@@ -2646,7 +2675,7 @@ ${diffDetails}${prepaySection}${notesSection}
 </div>
 <div class="sec">Касса и сверка</div>
 <div class="grid2">
-<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие (факт)</span><span class="row-value">${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал (ROSTA)</span><span class="row-value">${fmt(cashSales)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}<div class="row"><span class="row-label">Ожидалось в кассе</span><span class="row-value">${fmt((s.cashOpen||0)+cashSales-(s.inkasso||0))}</span></div>${(s.cashActual||0)>0?'<div class="row"><span class="row-label">Факт в кассе</span><span class="row-value" style="color:'+( Math.abs((s.cashActual||0)-((s.cashOpen||0)+cashSales-(s.inkasso||0)))>500 ? "#E24B4A":"#1D9E75")+'">'+fmt(s.cashActual||0)+'</span></div>':''}<div class="row-total"><span>Итого в кассе</span><span style="color:#1D9E75">${fmt((s.cashOpen||0)+(s.rCash||0))}</span></div></div>
+<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие (факт)</span><span class="row-value">${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал (ROSTA)</span><span class="row-value">${fmt(cashSalesGross)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}${(s.cashPayouts||0)>0?'<div class="row"><span class="row-label">Выплаты из кассы</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.cashPayouts)+'</span></div>':''}<div class="row"><span class="row-label">Ожидалось в кассе</span><span class="row-value">${fmt(cashExpectedHtml)}</span></div>${(s.cashActual||0)>0?'<div class="row"><span class="row-label">Факт в кассе</span><span class="row-value" style="color:'+( Math.abs((s.cashActual||0)-cashExpectedHtml)>500 ? "#E24B4A":"#1D9E75")+'">'+fmt(s.cashActual||0)+'</span></div>':''}<div class="row-total"><span>Расхождение кассы</span><span style="color:${Math.abs((s.cashActual||0)-cashExpectedHtml)>500?'#E24B4A':'#1D9E75'}">${((s.cashActual||0)-cashExpectedHtml)>0?'+':''}${fmt((s.cashActual||0)-cashExpectedHtml)}</span></div></div>
 <div class="card"><div class="card-title">🔍 Сверка</div><div class="row"><span class="row-label">ROSTA</span><span class="row-value">${fmt(rostaTotal)}</span></div><div class="row"><span class="row-label">ФАКТ</span><span class="row-value">${fmt(factTotal)}</span></div><div class="row"><span class="row-label">Разница</span><span class="row-value" style="color:${diffColor};font-weight:600;">${diffSign}${fmt(diff)}</span></div></div>
 </div>
 <div class="grid3">${channelStatus}</div>
