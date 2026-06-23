@@ -928,7 +928,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           if (channelsSum <= 0) {
             await sendTelegram(userId, '⚠️ Z-отчёт распознан некорректно (нулевые продажи по всем каналам). Перешли фото Z-отчёта чётче — без бликов, весь блок «Отчёт по видам оплат» в кадре.');
             cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
-            return cleanReply || '';
+            { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
           }
           // Контрольная сумма: распознанные виды оплат должны сойтись с печатным "Итого:"
           const itogo = Number(ocr.zreport.itogo) || 0;
@@ -936,7 +936,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             await sendTelegram(userId, '⚠️ Z-отчёт распознан с ошибкой: сумма по видам оплат (' + s.rostaCheck.toLocaleString('ru-RU') + ' ₸) не сходится с «Итого» в чеке (' + itogo.toLocaleString('ru-RU') + ' ₸). Перешли фото Z-отчёта чётче.');
             for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ ' + (sellerName) + ': Z-отчёт не сошёлся при распознавании (' + s.rostaCheck.toLocaleString('ru-RU') + ' ≠ ' + itogo.toLocaleString('ru-RU') + '). Смена не закрыта.');
             cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
-            return cleanReply || '';
+            { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
           }
         }
         const shift = openShifts[String(userId)] || await loadOpenShift(userId) || {};
@@ -1036,7 +1036,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + sellerForBlock);
           }
           cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
-          return cleanReply || '';
+          { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
         }
         // Записываем что первое закрытие состоялось — следующий будет вторым
         const todayKeyClose = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
