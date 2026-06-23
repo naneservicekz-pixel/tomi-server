@@ -1022,7 +1022,19 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           });
           blockMsg += '\nОбъясни причину и закрой смену снова.';
           await sendTelegram(userId, blockMsg);
-          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + (shift.seller || sellerName));
+          // Владельцу — полный HTML-отчёт для контроля, даже если смена не закрыта
+          const sellerForBlock = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
+          try {
+            const htmlBlock = generateShiftHTML({ sellerName: sellerForBlock, date: today, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations });
+            const fnBlock = 'otchet_NE_ZAKRYTA_' + today.replace(/\./g,'_') + '_' + sellerForBlock + '.html';
+            for (const ownerId of OWNER_IDS) {
+              await sendTelegram(ownerId, '⚠️ Расхождение при закрытии — смена НЕ закрыта!\n👤 ' + sellerForBlock + '\nПродавец должен объяснить причину. Полный отчёт с аналитикой ниже 👇');
+              await sendTelegramDocument(ownerId, fnBlock, htmlBlock, '📊 Отчёт (СМЕНА НЕ ЗАКРЫТА) — ' + sellerForBlock + ' · ' + today + ' · ' + closeTime);
+            }
+          } catch(e) {
+            console.error('block report error:', e.message);
+            for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + sellerForBlock);
+          }
           cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
           return cleanReply || '';
         }
