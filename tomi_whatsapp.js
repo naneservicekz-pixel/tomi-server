@@ -49,6 +49,7 @@ const PLAN_TOTAL = 27000000; // план магазина/мес
 const SELLER_PLANS = {'Асель':8550000,'Зарина':10350000,'Луиза':8100000}; // личные планы
 const pendingExpense = {};
 const pendingDayReset = {}; // Подтверждение сброса дня владельцем
+const pendingClose = {}; // Закрытие, заблокированное расхождением — ждём предоплату/причину от продавца
 const firstCloseDone = {}; // Ключ: дата, значение: true если первый уже закрыл
 
 function detectCategory(description) {
@@ -663,7 +664,7 @@ async function resetDayForSellers(ids, wipeSales, wipeAllShifts) {
     try { await supabase.from('open_shifts').delete().eq('phone', sid); } catch(e) {}
     try { await supabase.from('conversations').delete().eq('phone', sid); } catch(e) {}
     try { await supabase.from('last_reports').delete().eq('user_id', sid); } catch(e) {}
-    delete shiftOCR[sid]; delete shiftPhotos[sid]; delete pendingGeoAction[sid];
+    delete shiftOCR[sid]; delete shiftPhotos[sid]; delete pendingGeoAction[sid]; delete pendingClose[sid];
     delete lastShiftReports[sid]; delete conversations[sid]; delete openShifts[sid];
     count++;
   }
@@ -674,6 +675,7 @@ async function resetDayForSellers(ids, wipeSales, wipeAllShifts) {
     for (const k of Object.keys(shiftOCR)) delete shiftOCR[k];
     for (const k of Object.keys(shiftPhotos)) delete shiftPhotos[k];
     for (const k of Object.keys(pendingGeoAction)) delete pendingGeoAction[k];
+    for (const k of Object.keys(pendingClose)) delete pendingClose[k];
   }
   if (wipeSales) { try { await supabase.from('daily_sales').delete().eq('sale_date', dateKey); } catch(e) {} }
   delete firstCloseDone[today];
@@ -1130,8 +1132,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + sellerForBlock);
           }
           cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+          pendingClose[String(userId)] = s; // запоминаем закрытие — продавец назовёт предоплату/причину и код достроит закрытие
           { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
         }
+        delete pendingClose[String(userId)]; // закрытие прошло — снимаем отложенное состояние
         // Записываем что первое закрытие состоялось — следующий будет вторым
         const todayKeyClose = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         // Закрытие НЕ заблокировано (есть заметка/предоплата), но если расхождение по терминалу осталось необъяснённым предоплатой — не прячем, шлём владельцу
@@ -1184,6 +1188,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         }
         delete shiftPhotos[String(userId)];
         delete shiftOCR[String(userId)];
+        delete pendingClose[String(userId)];
         for (const [sellerId] of Object.entries(ALLOWED_MAP)) {
           if (!OWNER_IDS.includes(sellerId)) {
             await sendTelegramDocument(sellerId, 'den_' + today.replace(/\./g,'_') + '.html', htmlReport, '📊 Итоги дня ' + today);
@@ -1723,6 +1728,39 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     }
   }
 
+  // ── Детерминированное завершение закрытия после расхождения ──
+  // Если закрытие ждёт объяснения (pendingClose) и пришёл текст — код сам достраивает SHIFT_CLOSE,
+  // НЕ полагаясь на то, что модель выдаст большой тег (она часто вместо этого просто «рассказывает»).
+  if (pendingClose[userKey] && messageText && !photoFileId) {
+    const text = messageText.trim();
+    const lc = text.toLowerCase();
+    const isQuestion = /\?\s*$/.test(text) || /^(дальше|что дальше|а что|как|почему|зачем|когда|куда)\b/i.test(lc);
+    let prepayRef = null;
+    try {
+      const prepays = await dbGetPrepays('all');
+      const m = (prepays || []).find(p => {
+        const id = String(p.prep_id||'').toLowerCase();
+        const cl = String(p.client_name||'').toLowerCase();
+        return (id && lc.includes(id)) || (cl && cl.length > 2 && lc.includes(cl));
+      });
+      if (m) prepayRef = String(m.prep_id || m.client_name);
+    } catch(e) {}
+    if (prepayRef || (!isQuestion && text.length >= 6)) {
+      const s2 = Object.assign({}, pendingClose[userKey]);
+      if (prepayRef) s2.prepayApplied = [{ ref: prepayRef }];
+      else s2.notes = ((s2.notes ? s2.notes + '; ' : '') + text);
+      conversations[userKey] = conversations[userKey] || [];
+      conversations[userKey].push({ role: 'user', content: messageText });
+      const syntheticClose = 'SHIFT_CLOSE:' + JSON.stringify(s2);
+      const cr = await handleSystemCommands(syntheticClose, userId, senderName, messageText);
+      conversations[userKey].push({ role: 'assistant', content: cr && cr.trim() ? cr : 'Смена закрыта.' });
+      if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
+      if (cr && cr.trim()) await sendTelegram(userId, cr);
+      return;
+    }
+    // иначе (вопрос / слишком короткое) — пусть модель ответит и подскажет, что писать
+  }
+
   let userContent;
   if (photoFileId) {
     try {
@@ -2043,7 +2081,7 @@ app.post('/webhook', async (req, res) => {
         pendingGeoAction[userId] = 'close_shift';
         // Старт закрытия — детерминированно просим ПЕРВОЕ фото. Сбрасываем прошлый сбор, чтобы не «слетало» в короткий чек-лист.
         const _uk = String(userId);
-        delete shiftPhotos[_uk]; delete shiftOCR[_uk];
+        delete shiftPhotos[_uk]; delete shiftOCR[_uk]; delete pendingClose[_uk];
         const startMsg = 'Начинаем закрытие смены.\n\nШаг 1 — пришли фото Z-отчёта ROSTA (первое фото).';
         if (!conversations[_uk]) conversations[_uk] = await loadConversation(userId);
         conversations[_uk] = sanitizeMessages(conversations[_uk] || []);
