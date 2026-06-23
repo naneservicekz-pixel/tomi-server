@@ -650,7 +650,7 @@ function getOwnerPrompt(ownerName, data) {
 }
 
 // Сброс дня: чистит БД и память по указанным продавцам (для тестов закрытия)
-async function resetDayForSellers(ids, wipeSales) {
+async function resetDayForSellers(ids, wipeSales, wipeAllShifts) {
   const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
   const dateKey = today.split('.').reverse().join('-'); // ГГГГ-ММ-ДД
   let count = 0;
@@ -663,9 +663,17 @@ async function resetDayForSellers(ids, wipeSales) {
     delete lastShiftReports[sid]; delete conversations[sid]; delete openShifts[sid];
     count++;
   }
+  if (wipeAllShifts) {
+    // сносим ВСЕ открытые смены, включая осиротевшие (от удалённых тест-аккаунтов/заблокированных закрытий)
+    try { await supabase.from('open_shifts').delete().neq('phone', ''); } catch(e) {}
+    for (const k of Object.keys(openShifts)) delete openShifts[k];
+    for (const k of Object.keys(shiftOCR)) delete shiftOCR[k];
+    for (const k of Object.keys(shiftPhotos)) delete shiftPhotos[k];
+    for (const k of Object.keys(pendingGeoAction)) delete pendingGeoAction[k];
+  }
   if (wipeSales) { try { await supabase.from('daily_sales').delete().eq('sale_date', dateKey); } catch(e) {} }
   delete firstCloseDone[today];
-  console.log('resetDayForSellers:', JSON.stringify({ ids, wipeSales, dateKey, count }));
+  console.log('resetDayForSellers:', JSON.stringify({ ids, wipeSales, wipeAllShifts, dateKey, count }));
   return { dateKey, count };
 }
 
@@ -679,7 +687,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
       if (cmd === 'да' || cmd === 'yes') {
         const tgt = pendingDayReset[String(userId)];
         delete pendingDayReset[String(userId)];
-        const r = await resetDayForSellers(tgt.ids, tgt.wipeSales);
+        const r = await resetDayForSellers(tgt.ids, tgt.wipeSales, tgt.wipeAllShifts);
         await sendTelegram(userId, '✅ Сброс выполнен.\nПродавцов очищено: ' + r.count + (tgt.wipeSales ? '\nПродажи дня ' + r.dateKey + ' удалены.' : '') + '\nОткрытые смены, история и фото обнулены. Можно открывать смену заново.');
         return '';
       } else if (cmd === 'нет' || cmd === 'no') {
@@ -699,9 +707,9 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         else { await sendTelegram(userId, '❌ Не нашла продавца «' + arg + '».\nДоступные: ' + (sellerIds.map(id => ALLOWED_MAP[id]).join(', ') || 'нет') + '.\nИли напиши «СБРОС ДНЯ» — сбросить всех.'); return ''; }
       }
       if (ids.length === 0) { await sendTelegram(userId, '❌ Нет продавцов для сброса.'); return ''; }
-      pendingDayReset[String(userId)] = { ids, wipeSales };
+      pendingDayReset[String(userId)] = { ids, wipeSales, wipeAllShifts: isAll };
       const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
-      await sendTelegram(userId, '⚠️ СБРОС за ' + today + ' для: ' + label + '\n\nУдалю НЕОБРАТИМО:\n• открытые смены\n• историю чатов и распознанные фото\n• сохранённые отчёты' + (wipeSales ? '\n• продажи дня ' + today : '') + '\n\nОтветь ДА — сбросить, НЕТ — отмена.');
+      await sendTelegram(userId, '⚠️ СБРОС за ' + today + ' для: ' + label + '\n\nУдалю НЕОБРАТИМО:\n• ' + (isAll ? 'ВСЕ открытые смены (вкл. осиротевшие)' : 'открытую смену') + '\n• историю чатов и распознанные фото\n• сохранённые отчёты' + (wipeSales ? '\n• продажи дня ' + today : '') + '\n\nОтветь ДА — сбросить, НЕТ — отмена.');
       return '';
     }
   }
@@ -1661,13 +1669,16 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
   let isSecondSeller = isSecondSellerFromShift;
   let firstSellerName = '';
   if (!isOwner && !hasOpenShift) {
+    const _today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty',day:'2-digit',month:'2-digit',year:'numeric'});
+    const _isToday = st => st && new Date(st).toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty',day:'2-digit',month:'2-digit',year:'numeric'}) === _today;
     for (const [otherId, shiftData] of Object.entries(openShifts)) {
-      if (otherId !== userKey && shiftData && shiftData.seller) { isSecondSeller = true; firstSellerName = shiftData.seller; break; }
+      if (otherId !== userKey && shiftData && shiftData.seller && _isToday(shiftData.start_time)) { isSecondSeller = true; firstSellerName = shiftData.seller; break; }
     }
     if (!isSecondSeller) {
       try {
         const { data: allShifts } = await supabase.from('open_shifts').select('*').neq('phone', userKey);
-        if (allShifts && allShifts.length > 0) { isSecondSeller = true; firstSellerName = allShifts[0].seller || ''; }
+        const todays = (allShifts || []).filter(sh => _isToday(sh.start_time));
+        if (todays.length > 0) { isSecondSeller = true; firstSellerName = todays[0].seller || ''; }
       } catch(e) {}
     }
   }
