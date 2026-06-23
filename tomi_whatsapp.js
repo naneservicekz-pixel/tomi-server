@@ -44,6 +44,9 @@ const pendingResendApprovals = {};
 const pendingPrepayDelete = {};
 const shiftPhotos = {};
 const shiftOCR = {}; // Структурные данные OCR по фото: { userKey: { zreport:{...}, kaspi:{...}, halyk:{...} } }
+const userLocks = {}; // Сериализация сообщений одного пользователя (защита от гонок)
+const PLAN_TOTAL = 27000000; // план магазина/мес
+const SELLER_PLANS = {'Асель':8550000,'Зарина':10350000,'Луиза':8100000}; // личные планы
 const pendingExpense = {};
 const firstCloseDone = {}; // Ключ: дата, значение: true если первый уже закрыл
 
@@ -481,7 +484,20 @@ async function downloadTelegramFile(fileId) {
 }
 
 async function readPhotoWithClaude(base64Image, photoType) {
-  let prompt = photoType === 'zreport'
+  let prompt;
+  if (photoType === 'auto' || !photoType) {
+    prompt = 'Это фото финансового отчёта магазина одежды NANE. СНАЧАЛА определи ТИП документа по визуальным признакам:\n'
+      + '• zreport — ИТОГОВЫЙ ОТЧЕТ кассовой программы ROSTA: заголовок «ИТОГОВЫЙ ОТЧЕТ» или «Смена», таблица «Отчёт по видам оплат» со СПИСКОМ из нескольких каналов (Halyk QR, Kaspi QR, Онлайн Каспи, Наличные и т.д.) и строка «Итого». Обычно ч/б распечатка или скрин с компьютера.\n'
+      + '• kaspi_terminal — экран терминала Kaspi: КРАСНЫЙ интерфейс, логотип Kaspi.kz, надпись Smart POS или «Через Smart POS», строки «N продаж», «N возврата», «Итого за период». ОДИН канал.\n'
+      + '• halyk_terminal — экран терминала Halyk: ЗЕЛЁНЫЙ интерфейс, «Отчёт по продажам», строки «Оплата (N)», «Возврат (N)», «Отмена (N)», «Итого». ОДИН канал.\n'
+      + 'ГЛАВНЫЙ ПРИЗНАК: в Z-отчёте НЕСКОЛЬКО видов оплат списком и слова «видам оплат»; у терминала — итог по ОДНОМУ каналу. Kaspi красный, Halyk зелёный.\n\n'
+      + 'ЗАТЕМ верни ТОЛЬКО JSON, без пояснений и markdown.\n'
+      + 'Если терминал:\n{"type":"kaspi_terminal","gross":0,"returns":0,"net":0}\nили\n{"type":"halyk_terminal","gross":0,"returns":0,"net":0}\n(gross = сумма оплат/продаж, returns = сумма возвратов положительным числом, net = итог).\n\n'
+      + 'Если Z-отчёт ROSTA:\n{"type":"zreport","kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi_qr":0,"ret_online_kaspi":0,"ret_halyk_qr":0,"ret_online_halyk":0,"ret_cash":0,"ret_personal":0,"itogo":0}\n'
+      + 'Сопоставление (продажи): Kaspi QR→kaspi_qr; Онлайн Каспи/Онлайн Kaspi→online_kaspi; Halyk QR→halyk_qr; Онлайн Халык/Онлайн Halyk→online_halyk; Наличные→cash; Личная карта/Личная карточка (с любым именем)→personal; Бонусы→bonus.\n'
+      + 'Возвраты (строки со словом Возврат): Kaspi QR (Возврат)→ret_kaspi_qr; Онлайн Каспи (Возврат)→ret_online_kaspi; Halyk QR (Возврат)→ret_halyk_qr; Онлайн Халык (Возврат)→ret_online_halyk; Наличные (Возврат)→ret_cash; Личная карта (Возврат)→ret_personal. itogo = число в строке «Итого:».\n'
+      + 'Все значения ПОЛОЖИТЕЛЬНЫЕ. Нет строки — 0. Игнорируй префиксы «1.», «5.». ПРОВЕРКА zreport: сумма продаж − сумма возвратов = itogo.';
+  } else prompt = photoType === 'zreport'
     ? 'Это Z-отчет (Итоговый отчёт) из ROSTA. В блоке «Отчёт по видам оплат» строки могут иметь номера-префиксы (например «1.Halyk QR», «5.Онлайн Каспи»). Игнорируй номер, читай название и сумму. Верни ТОЛЬКО JSON без пояснений:\n{"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi_qr":0,"ret_online_kaspi":0,"ret_halyk_qr":0,"ret_online_halyk":0,"ret_cash":0,"ret_personal":0,"itogo":0}\nСООТВЕТСТВИЕ НАЗВАНИЙ (продажи):\n- "Kaspi QR" → kaspi_qr\n- "Онлайн Каспи" / "Онлайн Kaspi" → online_kaspi\n- "Halyk QR" → halyk_qr\n- "Онлайн Халык" / "Онлайн Halyk" → online_halyk\n- "Наличные" → cash\n- "Личная карта" / "Личная карточка" (с любым именем, напр. «Личная карточка Айнуша») → personal\n- "Бонусы" → bonus\nВОЗВРАТЫ (строки со словом «Возврат», обычно с минусом):\n- "Kaspi QR (Возврат)" → ret_kaspi_qr\n- "Онлайн Каспи (Возврат)" → ret_online_kaspi\n- "Halyk QR (Возврат)" → ret_halyk_qr\n- "Онлайн Халык (Возврат)" → ret_online_halyk\n- "Наличные (Возврат)" → ret_cash\n- "Личная карта (Возврат)" → ret_personal\n- itogo = число в строке "Итого:" внизу блока видов оплат\nПРАВИЛА:\n- Все значения ПОЛОЖИТЕЛЬНЫЕ (минус НЕ ставить, в т.ч. для возвратов).\n- Если строки нет — ставь 0.\n- ПРОВЕРКА: (kaspi_qr+online_kaspi+halyk_qr+online_halyk+cash+personal+bonus) − (все ret_*) должно равняться itogo. Если не сходится — перечитай суммы внимательнее.'
     : photoType === 'kaspi_terminal' ? 'Это отчет Kaspi терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
     : photoType === 'halyk_terminal' ? 'Это отчет Halyk терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
@@ -493,7 +509,8 @@ async function readPhotoWithClaude(base64Image, photoType) {
       { type: 'text', text: prompt }
     ]}]
   });
-  return response.content[0].text;
+  const block = (response.content || []).find(b => b.type === 'text' && b.text);
+  return block ? block.text : '{}';
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -503,32 +520,41 @@ async function readPhotoWithClaude(base64Image, photoType) {
 // Фото 3 = Halyk терминал
 // ══════════════════════════════════════════════════════════════════════
 
-function savePhotoByOrder(userId, photoFileId) {
-  if (!shiftPhotos[String(userId)]) shiftPhotos[String(userId)] = {};
-  const photos = shiftPhotos[String(userId)];
-  let savedAs = '';
-  if (!photos.zreport) {
-    photos.zreport = photoFileId;
-    savedAs = 'zreport (фото 1)';
-  } else if (!photos.kaspi) {
-    photos.kaspi = photoFileId;
-    savedAs = 'kaspi (фото 2)';
-  } else if (!photos.halyk) {
-    photos.halyk = photoFileId;
-    savedAs = 'halyk (фото 3)';
-  } else {
-    photos.extra = photoFileId;
-    savedAs = 'extra (фото 4+)';
+// (устаревшие savePhotoByOrder/getPhotoTypeByOrder удалены — тип определяется по содержимому)
+
+// Персист OCR в таблицу conversations (переживает редеплой, без новых колонок)
+async function persistOCR(userId, type, obj) {
+  try { await supabase.from('conversations').insert([{ phone:String(userId), role:'user', content:'[OCR:'+type+']'+JSON.stringify(obj) }]); } catch(e) {}
+}
+// Восстановление shiftOCR из истории (после рестарта), если память сброшена
+function rebuildShiftOCR(userKey) {
+  const conv = conversations[userKey] || [];
+  if (!shiftOCR[userKey]) shiftOCR[userKey] = {};
+  for (const msg of conv) {
+    const txt = typeof msg.content === 'string' ? msg.content
+      : (Array.isArray(msg.content) ? msg.content.map(c => (c && c.text) || '').join(' ') : '');
+    const re = /\[OCR:(zreport|kaspi_terminal|halyk_terminal)\](\{[\s\S]*?\})/g;
+    let mt;
+    while ((mt = re.exec(txt))) {
+      try {
+        const obj = JSON.parse(mt[2]);
+        if (mt[1] === 'zreport') shiftOCR[userKey].zreport = obj;
+        else if (mt[1] === 'kaspi_terminal') shiftOCR[userKey].kaspi = obj;
+        else if (mt[1] === 'halyk_terminal') shiftOCR[userKey].halyk = obj;
+      } catch(e) {}
+    }
   }
-  console.log('Photo saved as:', savedAs, 'for user:', userId, '| shiftPhotos:', JSON.stringify(photos));
-  return savedAs;
+  return shiftOCR[userKey];
 }
 
-function getPhotoTypeByOrder(userId) {
-  const photos = shiftPhotos[String(userId)] || {};
-  if (!photos.zreport) return 'zreport';
-  if (!photos.kaspi) return 'kaspi_terminal';
-  return 'halyk_terminal';
+// Сохранение фото по РАСПОЗНАННОМУ типу (не по порядку)
+function savePhotoByType(userId, type, photoFileId) {
+  if (!shiftPhotos[String(userId)]) shiftPhotos[String(userId)] = {};
+  const photos = shiftPhotos[String(userId)];
+  if (type === 'zreport') photos.zreport = photoFileId;
+  else if (type === 'kaspi_terminal') photos.kaspi = photoFileId;
+  else if (type === 'halyk_terminal') photos.halyk = photoFileId;
+  console.log('Photo saved by type:', type, '| shiftPhotos:', JSON.stringify(photos));
 }
 
 function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, firstSellerName) {
@@ -872,6 +898,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         // ИСТОЧНИК ИСТИНЫ — структурный OCR, а НЕ цифры из чата.
         // Чат-модель теряет цифры за время чек-листа → берём прямо из OCR.
         // ═══════════════════════════════════════════════════════════════
+        if (!shiftOCR[String(userId)] || !shiftOCR[String(userId)].zreport) rebuildShiftOCR(String(userId));
         const ocr = shiftOCR[String(userId)] || {};
         if (ocr.zreport) {
           const z = ocr.zreport;
@@ -966,12 +993,21 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const explainedDiffs = new Set();
         channelDiffs.forEach(cd => {
           if (cd.diff > 0) {
-            const matching = todayClosedPrepays.filter(p => {
-              const chMatch = (cd.channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
+            const TOL = 1000; // допуск сходимости по сумме
+            const chMatch = p => (cd.channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
                 (cd.channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
                 (cd.channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash')));
-              return chMatch || Math.abs(p.amount - Math.abs(cd.diff)) < 1000;
-            });
+            // Только предоплаты этого канала; расхождение объяснено, лишь если суммы СХОДЯТСЯ
+            const channelPrepays = todayClosedPrepays.filter(chMatch);
+            const single = channelPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
+            const sumCh = channelPrepays.reduce((acc, p) => acc + p.amount, 0);
+            const sumClose = Math.abs(sumCh - Math.abs(cd.diff)) < TOL;
+            // запасной вариант: предоплата без канала, но точно по сумме
+            const byAmountAnyChannel = todayClosedPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
+            let matching = [];
+            if (single.length > 0) matching = single;
+            else if (sumClose && channelPrepays.length > 0) matching = channelPrepays;
+            else if (byAmountAnyChannel.length > 0) matching = byAmountAnyChannel;
             if (matching.length > 0) { prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching }); explainedDiffs.add(cd.channel); }
           }
         });
@@ -1316,7 +1352,7 @@ async function sendWeeklySalesReport() {
     const weekTotal = weekSales.reduce((sum,s) => sum+Number(s.revenue||0), 0);
     const avgDay = weekSales.length > 0 ? Math.round(weekTotal/weekSales.length) : 0;
     const monthTotal = sales.reduce((sum,s) => sum+Number(s.revenue||0), 0);
-    const plan = 27000000;
+    const plan = PLAN_TOTAL;
     const pct = Math.round(monthTotal/plan*100);
     const remains = Math.max(0, plan-monthTotal);
     const daysLeft = new Date(year,month,0).getDate()-nowA.getDate();
@@ -1334,7 +1370,16 @@ async function sendWeeklySalesReport() {
   } catch(e) { console.error('sendWeeklySalesReport error:', e.message); }
 }
 
-async function handleMessage(userId, messageText, photoFileId) {
+// Обёртка: сообщения одного userId обрабатываются строго по очереди (без гонок за общим состоянием)
+function handleMessage(userId, messageText, photoFileId) {
+  const key = String(userId);
+  const prev = userLocks[key] || Promise.resolve();
+  const run = prev.catch(() => {}).then(() => _handleMessageInner(userId, messageText, photoFileId));
+  userLocks[key] = run.catch(() => {});
+  return run;
+}
+
+async function _handleMessageInner(userId, messageText, photoFileId) {
   const senderName = ALLOWED_MAP[String(userId)];
   if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт.'); return; }
   const isOwner = OWNER_IDS.includes(String(userId));
@@ -1459,7 +1504,7 @@ async function handleMessage(userId, messageText, photoFileId) {
         const { error } = await supabase.from('daily_sales').update({ rosta_profit: profitAmount }).eq('sale_date', profitDate);
         if (!error) { await sendTelegram(userId, '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг'); }
         else {
-          await supabase.from('daily_sales').insert([{ sale_date: profitDate, revenue: 0, rosta_profit: profitAmount, month: parseInt(profitDate.split('-')[1]), year: parseInt(profitDate.split('-')[0]) }]);
+          await supabase.from('daily_sales').upsert({ sale_date: profitDate, revenue: 0, rosta_profit: profitAmount, month: parseInt(profitDate.split('-')[1]), year: parseInt(profitDate.split('-')[0]) }, { onConflict: 'sale_date' });
           await sendTelegram(userId, '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг');
         }
         return;
@@ -1572,29 +1617,72 @@ async function handleMessage(userId, messageText, photoFileId) {
       // ══════════════════════════════════════════════════════════════
       // ИСПРАВЛЕНО: определяем тип ДО сохранения, потом сохраняем
       // ══════════════════════════════════════════════════════════════
-      const photoType = getPhotoTypeByOrder(userId);  // сначала смотрим порядок
-      savePhotoByOrder(userId, photoFileId);           // потом сохраняем
-
+      // Тип фото определяется ПО СОДЕРЖИМОМУ (надёжнее порядка прихода).
       const base64 = await downloadTelegramFile(photoFileId);
-      const ocrResult = await readPhotoWithClaude(base64, photoType);
-      // КРИТИЧНО: сохраняем РАСПОЗНАННЫЕ ЦИФРЫ структурно сразу при чтении фото.
-      // Иначе чат-модель теряет их за ~8 шагов чек-листа и обнуляет в SHIFT_CLOSE.
+      const ocrResult = await readPhotoWithClaude(base64, 'auto');
+      let photoType = 'unknown', isReshoot = false;
       try {
         const m = ocrResult.match(/\{[\s\S]*\}/);
         if (m) {
           if (!shiftOCR[userKey]) shiftOCR[userKey] = {};
           const parsed = JSON.parse(m[0]);
-          if (photoType === 'zreport') shiftOCR[userKey].zreport = parsed;
-          else if (photoType === 'kaspi_terminal') shiftOCR[userKey].kaspi = parsed;
-          else if (photoType === 'halyk_terminal') shiftOCR[userKey].halyk = parsed;
-          console.log('OCR сохранён структурно:', photoType, JSON.stringify(parsed));
+          const t = parsed.type;
+          if (t === 'zreport') { photoType = 'zreport'; shiftOCR[userKey].zreport = parsed; }
+          else if (t === 'kaspi_terminal') { photoType = 'kaspi_terminal'; shiftOCR[userKey].kaspi = parsed; }
+          else if (t === 'halyk_terminal') { photoType = 'halyk_terminal'; shiftOCR[userKey].halyk = parsed; }
+          if (photoType !== 'unknown') {
+            const sp0 = shiftPhotos[userKey] || {};
+            isReshoot = (photoType==='zreport'&&!!sp0.zreport)||(photoType==='kaspi_terminal'&&!!sp0.kaspi)||(photoType==='halyk_terminal'&&!!sp0.halyk);
+            savePhotoByType(userId, photoType, photoFileId);
+            await persistOCR(userId, photoType, parsed);
+          }
+          console.log('OCR тип по содержимому:', photoType, JSON.stringify(parsed));
         }
       } catch (e) { console.error('OCR parse error:', e.message, '| raw:', ocrResult); }
-      const contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
-        : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
-        : photoType === 'halyk_terminal' ? 'Прочитала Halyk терминал:\n' + ocrResult
-        : 'Прочитала фото:\n' + ocrResult;
-      userContent = [{ type: 'text', text: messageText || 'Прочитай данные с фото.' }, { type: 'text', text: contextText }];
+      // ── Пошаговый приём с подтверждением (детерминированно, без угадывания модели) ──
+      const isClosing = !isOwner && (hasOpenShift || pendingGeoAction[userId] === 'close_shift');
+      if (isClosing) {
+        const LBL = { zreport:'Z-отчёт ROSTA', kaspi_terminal:'Kaspi терминал', halyk_terminal:'Halyk терминал' };
+        const money = n => Number(n||0).toLocaleString('ru-RU') + ' \u20b8';
+        if (photoType === 'unknown') {
+          await sendTelegram(userId, '\u2753 Не пойму, что на фото. Это Z-отчёт ROSTA, Kaspi или Halyk терминал?\nПереснимите чётко: целиком, без бликов. Z-отчёт \u2014 со списком «Отчёт по видам оплат».');
+          return;
+        }
+        const oc = shiftOCR[userKey] || {};
+        let nums = '';
+        if (photoType === 'zreport' && oc.zreport) {
+          const d = oc.zreport;
+          const sales = (d.kaspi_qr||0)+(d.online_kaspi||0)+(d.halyk_qr||0)+(d.online_halyk||0)+(d.cash||0)+(d.personal||0)+(d.bonus||0);
+          const rets = (d.ret_kaspi_qr||0)+(d.ret_online_kaspi||0)+(d.ret_halyk_qr||0)+(d.ret_online_halyk||0)+(d.ret_cash||0)+(d.ret_personal||0);
+          nums = 'продажи ' + money(sales) + ', возвраты ' + money(rets) + ', Итого ' + money(d.itogo || (sales-rets));
+        } else {
+          const d = photoType === 'kaspi_terminal' ? oc.kaspi : oc.halyk;
+          if (d) nums = 'оплаты ' + money(d.gross) + ', возвраты ' + money(d.returns) + ', нетто ' + money(d.net != null ? d.net : (d.gross||0)-(d.returns||0));
+        }
+        const sp = shiftPhotos[userKey] || {};
+        const have = [], miss = [];
+        for (const [k, slot] of [['zreport','zreport'],['kaspi_terminal','kaspi'],['halyk_terminal','halyk']]) {
+          (sp[slot] ? have : miss).push(LBL[k]);
+        }
+        let msg = (isReshoot ? '\ud83d\udd04 Обновила «' : '\u2705 Принято как «') + LBL[photoType] + '».\nРаспознала: ' + nums + '.\nЕсли цифры неверны \u2014 переснимите это фото.';
+        msg += '\n\n\ud83d\udccb Собрано: ' + (have.length ? have.join(', ') : '\u2014');
+        if (miss.length) {
+          msg += '\n\u23f3 Жду: ' + miss.join(', ') + '.\nПришлите следующее фото.';
+          await sendTelegram(userId, msg);
+          conversations[userKey].push({ role:'user', content:'[Системно: принято фото «'+LBL[photoType]+'» ('+nums+'). Собрано: '+have.join(', ')+'. Жду: '+miss.join(', ')+'. НЕ проси уже принятые фото.]' });
+          if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
+          return;
+        }
+        msg += '\n\n\u2705 Все 3 отчёта собраны. Перехожу к закрытию \u2014 ответьте на вопросы по кассе.';
+        await sendTelegram(userId, msg);
+        userContent = [{ type:'text', text:'[Системно: приняты ВСЕ 3 отчёта \u2014 Z-отчёт ROSTA, Kaspi терминал, Halyk терминал. Цифры распознаны и сохранены, фото заново НЕ проси. Продолжай закрытие со следующего шага: спроси наличные в кассе, затем остальные шаги вплоть до SHIFT_CLOSE.]' }];
+      } else {
+        const contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
+          : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
+          : photoType === 'halyk_terminal' ? 'Прочитала Halyk терминал:\n' + ocrResult
+          : 'Прочитала фото:\n' + ocrResult;
+        userContent = [{ type: 'text', text: messageText || 'Прочитай данные с фото.' }, { type: 'text', text: contextText }];
+      }
     } catch(e) { userContent = messageText || 'Не удалось прочитать фото.'; }
   } else {
     userContent = messageText;
@@ -2336,7 +2424,7 @@ async function sendMorningDigest() {
     const sales = await dbGetSales(month, year);
     const prepays = await dbGetPrepays('open');
     const monthTotal = (sales||[]).reduce((sum,s) => sum+Number(s.revenue||0), 0);
-    const plan = 27000000;
+    const plan = PLAN_TOTAL;
     const pct = Math.round(monthTotal/plan*100);
     const remains = Math.max(0, plan-monthTotal);
     const daysLeft = new Date(year,month,0).getDate()-nowA.getDate();
@@ -2477,7 +2565,7 @@ async function generateDashboardHTML() {
       const sellers = [s.seller1,s.seller2].filter(Boolean);
       if (sellers.length > 0) { const share = rev/sellers.length; sellers.forEach(name => { if (sellerSales[name]!==undefined) sellerSales[name]+=share; }); }
     });
-    const plan = 27000000;
+    const plan = PLAN_TOTAL;
     const personalPlans = { 'Асель':8550000, 'Зарина':10350000, 'Луиза':8100000 };
     const salaryCalc = await calcSalary(curMonth, curYear);
     const sc = salaryCalc ? salaryCalc.sellers : {};
@@ -2521,7 +2609,7 @@ async function generateFullReport(userId, month, year) {
 
     const KE=14000, TAX=0.03, BONUS_PLAN=30000, KPI_ONE=25000;
     const getPct = r => r>=1000000?0.027:r>=750000?0.022:r>=500000?0.017:0.012;
-    const plans = {'Асель':8550000,'Зарина':10350000,'Луиза':8100000};
+    const plans = SELLER_PLANS;
     const sellers = ['Асель','Зарина','Луиза'];
     const COLORS = {
       'Асель': {bg:'#fdf0ec',tx:'#a03020',hd:'#c87060',css:'ca'},
@@ -2582,7 +2670,7 @@ async function generateFullReport(userId, month, year) {
     const expTotal = expenses.reduce((s,e) => s + Number(e.amount||0), 0);
     const netProfit = totalProfit > 0 ? totalProfit - totalTax - totalFot : 0;
     const fotPct = totalRev > 0 ? (totalFot/totalRev*100).toFixed(1) : '0';
-    const planTotal = 27000000;
+    const planTotal = PLAN_TOTAL;
     const dt = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'});
 
     // ── CSS ──
