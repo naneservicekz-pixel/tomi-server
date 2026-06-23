@@ -2480,12 +2480,15 @@ function generatePrepaysHTML(list, type) {
 
 function generateShiftHTML(data) {
   const { sellerName, date, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations } = data;
-  const isOk = Math.abs(diff) < 500;
-  const isDanger = !isOk && Math.abs(diff) >= 500;
+  const _explCh = new Set((prepayExplanations||[]).map(p => p.channel));
+  const _unexpl = (channelDiffs||[]).filter(cd => Math.abs(cd.diff) >= 500 && !_explCh.has(cd.channel));
+  const isOk = Math.abs(diff) < 500 || _unexpl.length === 0;
+  const _explainedNonzero = isOk && Math.abs(diff) >= 500;
+  const isDanger = !isOk;
   const statusBg   = isOk ? '#eaf3de' : '#fcebeb';
   const statusBorder = isOk ? '#c0dd97' : '#F7C1C1';
   const statusDot  = isOk ? '#639922' : '#E24B4A';
-  const statusText = isOk ? 'Все каналы сходятся — смена закрыта корректно' : 'РАСХОЖДЕНИЕ — требует внимания';
+  const statusText = !isOk ? 'РАСХОЖДЕНИЕ — требует внимания' : (_explainedNonzero ? 'Расхождение объяснено предоплатой — смена закрыта' : 'Все каналы сходятся — смена закрыта корректно');
   const statusColor = isOk ? '#3B6D11' : '#A32D2D';
   const diffColor  = diff >= 0 ? '#1D9E75' : '#E24B4A';
   const diffSign   = diff >= 0 ? '+' : '';
