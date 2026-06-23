@@ -302,11 +302,24 @@ function calcDistance(lat1, lon1, lat2, lon2) {
   return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
 }
 
+// Чистит массив сообщений для Anthropic: без пустых, начинается с user (иначе API 400)
+function sanitizeMessages(msgs) {
+  let arr = (msgs || []).filter(m => {
+    if (!m || !m.role) return false;
+    const c = m.content;
+    if (typeof c === 'string') return c.trim() !== '';
+    if (Array.isArray(c)) return c.length > 0 && c.some(b => (b && b.text && String(b.text).trim() !== '') || (b && b.type === 'image'));
+    return false;
+  });
+  while (arr.length && arr[0].role !== 'user') arr.shift();
+  return arr;
+}
+
 async function loadConversation(userId) {
   try {
-    const { data } = await supabase.from('conversations').select('role, content').eq('phone', String(userId)).order('created_at', { ascending: true }).limit(40);
+    const { data } = await supabase.from('conversations').select('role, content, created_at').eq('phone', String(userId)).order('created_at', { ascending: false }).limit(40);
     if (!data || data.length === 0) return [];
-    return data.map(r => ({ role: r.role, content: r.content }));
+    return data.reverse().map(r => ({ role: r.role, content: r.content }));
   } catch(e) { return []; }
 }
 
@@ -1649,6 +1662,7 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
   }
 
   if (!conversations[userKey]) conversations[userKey] = await loadConversation(userId);
+  conversations[userKey] = sanitizeMessages(conversations[userKey]);
   if (!openShifts[userKey]) { const dbShift = await loadOpenShift(userId); if (dbShift) openShifts[userKey] = dbShift; }
 
   // Проверка устаревшей смены
@@ -1799,9 +1813,11 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
       const isSecondForPrompt = (!hasOpenShift && isSecondSeller) || isJustArrived || isSecondClosing;
       systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecondForPrompt, firstSellerName);
     }
+    let msgsForApi = sanitizeMessages(conversations[userKey]);
+    if (msgsForApi.length === 0) msgsForApi = [{ role: 'user', content: messageText || 'Продолжай.' }];
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 2000,
-      system: systemPrompt, messages: conversations[userKey]
+      system: systemPrompt, messages: msgsForApi
     });
     const reply = response.content.filter(b => b.type === 'text' && b.text).map(b => b.text.trim()).filter(t => t.length > 0).join('\n').trim();
     if (!reply) { await sendTelegram(userId, 'Произошла ошибка. Попробуй еще раз.'); return; }
@@ -1810,8 +1826,9 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     const cleanReply = await handleSystemCommands(reply, userId, senderName, messageText);
     if (cleanReply && cleanReply.trim()) await sendTelegram(userId, cleanReply);
   } catch(e) {
-    console.error('Claude error:', e.message);
+    console.error('Claude error:', e.message, e.status || '', JSON.stringify(e.error || {}).slice(0, 300));
     await sendTelegram(userId, 'Произошла ошибка. Попробуй еще раз.');
+    try { for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '\u26a0\ufe0f Диагностика Томи: ' + (e.message || 'неизвестно') + (e.status ? ' [' + e.status + ']' : '')); } catch(_) {}
   }
 }
 
