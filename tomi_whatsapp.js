@@ -2041,6 +2041,18 @@ app.post('/webhook', async (req, res) => {
         return;
       } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены') || lower.includes('закрыть смену') || lower.includes('закрываю') || lower.includes('закрытие')) {
         pendingGeoAction[userId] = 'close_shift';
+        // Старт закрытия — детерминированно просим ПЕРВОЕ фото. Сбрасываем прошлый сбор, чтобы не «слетало» в короткий чек-лист.
+        const _uk = String(userId);
+        delete shiftPhotos[_uk]; delete shiftOCR[_uk];
+        const startMsg = 'Начинаем закрытие смены.\n\nШаг 1 — пришли фото Z-отчёта ROSTA (первое фото).';
+        if (!conversations[_uk]) conversations[_uk] = await loadConversation(userId);
+        conversations[_uk] = sanitizeMessages(conversations[_uk] || []);
+        conversations[_uk].push({ role: 'user', content: messageText });
+        conversations[_uk].push({ role: 'assistant', content: startMsg });
+        if (conversations[_uk].length > 40) conversations[_uk] = conversations[_uk].slice(-40);
+        await saveMessages(userId, messageText, startMsg);
+        await sendTelegram(userId, startMsg);
+        return;
       }
     }
 
