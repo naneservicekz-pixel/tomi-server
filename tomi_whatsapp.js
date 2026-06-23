@@ -612,28 +612,16 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'ШАГ 3 — ТЕРМИНАЛЫ. ШАГ 4 — ЗАЛ. ШАГ 5 — ПРИМЕРОЧНЫЕ. ШАГ 6 — ГОСТЕВАЯ. ШАГ 7 — УПАКОВКА. ШАГ 8 — ТЕЛЕФОН.\n' +
     'ШАГ 9 — ROSTA: после "да" выдай SHIFT_OPEN с реальной суммой кассы.\n' +
     '=> SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":СУММА,"time":"' + now + '"}\n\n' +
-    'ЗАКРЫТИЕ СМЕНЫ — СТРОГИЙ ПОРЯДОК ФОТО (КРИТИЧЕСКИ ВАЖНО):\n' +
-    'Фото запрашивай СТРОГО по одному, в этом порядке:\n\n' +
-    'ШАГ 1 — Z-ОТЧЕТ ROSTA:\nСкажи: "Пришли фото Z-отчёта ROSTA (первое фото)."\n' +
-    'ЖДИ фото. Когда получила — читай данные:\n' +
-    '- "Kaspi QR" → rKaspi, "Онлайн Каспи" → rOnline\n' +
-    '- "Halyk QR" → rHalyk, "Онлайн Халык" → rHalykOnline\n' +
-    '- "Наличные" → rCash\n' +
-    '- Возвраты: "Kaspi QR" → rRetKaspi, "Онлайн Каспи" → rRetOnlineKaspi\n' +
-    '- Возвраты: "Halyk QR" → rRetHalyk, "Онлайн Халык" → rRetHalykOnline\n' +
-    '- Возвраты: "Наличные" → rRetCash, "Личная карта" → rRetPersonal\n' +
-    '- rostaCheck = строка ИТОГО из Z-отчёта\n\n' +
-    'ШАГ 2 — KASPI ТЕРМИНАЛ:\nСкажи: "Теперь пришли фото отчёта Kaspi терминала (второе фото)."\n' +
-    'ЖДИ фото. Когда получила — сравни с ROSTA. Расхождение >500 тг — СТОП, спроси причину.\n\n' +
-    'ШАГ 3 — HALYK ТЕРМИНАЛ:\nСкажи: "Теперь пришли фото отчёта Halyk терминала (третье фото)."\n' +
-    'ЖДИ фото. Когда получила — сравни с ROSTA. Расхождение >500 тг — СТОП, спроси причину.\n\n' +
-    'ВАЖНО: НЕ проси два фото сразу. Каждое фото — отдельным сообщением после получения предыдущего.\n' +
-    'ВАЖНО: НЕ называй фото "второе фото Halyk" или "ещё одно фото" — только Z-отчёт, Kaspi, Halyk.\n\n' +
-    'ШАГ 4 — НАЛИЧНЫЕ: спроси "Сколько наличных в кассе сейчас? Пересчитай." Запомни как cashActual.\n' +
-    '  (Томи сравнит с: открытие + продажи нал из ROSTA − инкассация)\n' +
-    'ШАГ 5 — ЛИЧНАЯ КАРТА. ШАГ 6 — ИНКАССАЦИЯ.\n' +
-    'ШАГ 7 — ЗАЛ. ШАГ 8 — ГОСТЕВАЯ.\n' +
-    'ШАГ 9 — ГЕОЛОКАЦИЯ: после геолокации выдай SHIFT_CLOSE.\n' +
+    'ЗАКРЫТИЕ СМЕНЫ:\n' +
+    'КРИТИЧЕСКИ ВАЖНО ПРО ФОТО: фото Z-отчёта ROSTA, Kaspi и Halyk терминалов принимает и распознаёт СИСТЕМА автоматически — она сама подтверждает приём каждого фото и пишет "Все 3 отчёта собраны". Тебе НЕ нужно просить эти фото, НЕ повторяй шаги с фото, НЕ говори "пришли фото". Если в истории уже есть "приняты системой" — фото готовы, сразу веди опрос по кассе.\n' +
+    'КРИТИЧЕСКИ ВАЖНО ПРО КАССУ: НЕ считай сам ожидаемую наличность, расхождения, излишки и недостачи и не называй эти цифры — всю сверку (касса, каналы, план/факт) делает СИСТЕМА автоматически после SHIFT_CLOSE. Твоя задача — собрать ответы и выдать SHIFT_CLOSE. Если продавец спорит о цифрах — не пересчитывай, скажи, что сверку сделает система.\n\n' +
+    'Опрос по кассе (СТРОГО по одному вопросу за сообщение):\n' +
+    'НАЛИЧНЫЕ — "Сколько наличных в кассе сейчас? Пересчитай." (запомни как cashActual)\n' +
+    'ЛИЧНАЯ КАРТА — были ли продажи через личную карту?\n' +
+    'ИНКАССАЦИЯ — была ли инкассация сегодня? на какую сумму? (inkasso)\n' +
+    'ЗАЛ — всё убрано, товар на местах?\n' +
+    'ГОСТЕВАЯ — всё в порядке, убрано?\n' +
+    'ГЕОЛОКАЦИЯ — "Пришли геолокацию через скрепку." После геолокации выдай SHIFT_CLOSE.\n' +
     '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetOnlineKaspi":0,"rRetHalyk":0,"rRetHalykOnline":0,"rRetCash":0,"rRetPersonal":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}';
 }
 
@@ -1017,6 +1005,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           }
         }
         const shift = openShifts[String(userId)] || await loadOpenShift(userId) || {};
+        // ИСТОЧНИК ИСТИНЫ по кассе открытия — сохранённая смена (введено на ШАГ 2 открытия), а не память чат-модели
+        if (shift && shift.cash_open != null) s.cashOpen = Number(shift.cash_open) || 0;
         const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         const closeTime = getTime();
         // Все 6 типов возвратов из Z-отчёта
@@ -1028,22 +1018,24 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         if (finalRevenue <= 0 && rostaCheck <= 0) { finalRevenue = 0; console.warn('SHIFT_CLOSE: finalRevenue=0, проверь данные'); }
         const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
         const halykNet = (s.tHalyk||0)-(s.tHalykRet||0);
-        // cashSales = продажи наличными из ROSTA (источник истины)
+        // Продажи наличными: ГРОСС (строка «Наличные» из Z-отчёта) — для физической кассы и показа продавцу
+        const cashSalesGross = (s.rCash||0);
+        // NET (за вычетом возвратов наличными) — для сверки выручки план/факт
         const cashSales = (s.rCash||0) - (s.rRetCash||0);
-        
-        // СВЕРКА КАССЫ: cashOpen + rCash = ожидаемый остаток в кассе
-        // cashActual = сколько продавец физически пересчитал
-        // Если есть инкассация — вычитаем её из ожидаемого
-        const cashExpected = (s.cashOpen||0) + (s.rCash||0) - (s.rRetCash||0) - (s.inkasso||0);
+
+        // ФИЗИЧЕСКАЯ КАССА: ожидаемая наличность = открытие + продажи наличными − инкассация − выплаты из кассы
+        // (возвраты наличными НЕ вычитаем — по правилу учёта NANE: «начало смены + продажи»)
+        const cashExpected = (s.cashOpen||0) + cashSalesGross - (s.inkasso||0) - (s.cashPayouts||0);
         const cashActualVal = s.cashActual || 0;
         const cashBoxDiff = cashActualVal - cashExpected;
         if (Math.abs(cashBoxDiff) > 500) {
           const sign = cashBoxDiff > 0 ? '+' : '';
           const dir = cashBoxDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
+          const payoutStr = (s.cashPayouts||0) > 0 ? ' − выплаты ' + Number(s.cashPayouts||0).toLocaleString() : '';
           for (const ownerId of OWNER_IDS) {
-            await sendTelegram(ownerId, '💰 РАСХОЖДЕНИЕ КАССЫ при закрытии!\n👤 ' + (shift.seller||sellerName) + '\n💰 Ожидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\n   (открытие ' + Number(s.cashOpen||0).toLocaleString() + ' + продажи ' + Number(cashSales).toLocaleString() + ' − инкассация ' + Number(s.inkasso||0).toLocaleString() + ')\n💰 Факт в кассе: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг\n❌ ' + dir + ': ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг');
+            await sendTelegram(ownerId, '💰 РАСХОЖДЕНИЕ КАССЫ при закрытии!\n👤 ' + (shift.seller||sellerName) + '\n💰 Ожидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\n   (открытие ' + Number(s.cashOpen||0).toLocaleString() + ' + продажи наличными ' + Number(cashSalesGross).toLocaleString() + ' − инкассация ' + Number(s.inkasso||0).toLocaleString() + payoutStr + ')\n💰 Факт в кассе: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг\n❌ ' + dir + ': ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг');
           }
-          await sendTelegram(userId, '⚠️ Расхождение кассы: ' + dir + ' ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\nОжидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\nФакт: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг');
+          await sendTelegram(userId, '⚠️ Расхождение кассы: ' + dir + ' ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\nОжидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг (открытие ' + Number(s.cashOpen||0).toLocaleString() + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString() + ')\nФакт: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг');
         }
         const factTotal = kaspiNet + halykNet + cashSales + (s.rPersonal||0) + (s.rBonus||0);
         const diff = factTotal - rostaTotal;
@@ -1057,10 +1049,9 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const halykROSTANet = (s.rHalyk||0) + (s.rHalykOnline||0) - (s.rRetHalyk||0) - (s.rRetHalykOnline||0); // ROSTA чистые
         const kaspiDiff = kaspiFactNet - kaspiROSTANet;
         const halykDiff = halykFactNet - halykROSTANet;
-        const cashDiff = cashSales - (s.rCash||0);
         if (Math.abs(kaspiDiff) > 500) channelDiffs.push({ channel: 'Kaspi', diff: kaspiDiff });
         if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff });
-        if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff });
+        // Наличные НЕ сверяем как «канал терминала»: для них нет терминала, проверка — физический пересчёт кассы (cashBoxDiff выше)
         const allPrepaysRaw = await dbGetPrepays('all');
         // Учитываем ВСЕ предоплаты — и закрытые и открытые
         // Открытая предоплата тоже может объяснить расхождение (товар выдан сегодня)
@@ -1117,6 +1108,15 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         }
         // Записываем что первое закрытие состоялось — следующий будет вторым
         const todayKeyClose = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
+        // Закрытие НЕ заблокировано (есть заметка/предоплата), но если расхождение по терминалу осталось необъяснённым предоплатой — не прячем, шлём владельцу
+        if (unexplainedDiffs.length > 0) {
+          for (const ownerId of OWNER_IDS) {
+            let warn = '⚠️ Смена закрыта С РАСХОЖДЕНИЕМ\n👤 ' + (shift.seller||sellerName) + '\n';
+            unexplainedDiffs.forEach(cd => { const sg = cd.diff>0?'+':''; const dr = cd.diff>0?'излишек':'недостача'; warn += '• ' + cd.channel + ': ' + dr + ' ' + sg + Number(cd.diff).toLocaleString('ru-RU') + ' тг\n'; });
+            if (hasNotes) warn += '📝 Причина (со слов продавца): ' + s.notes;
+            await sendTelegram(ownerId, warn);
+          }
+        }
         if (s.shiftStatus !== 'second_close') {
           firstCloseDone[todayKeyClose] = true;
         }
@@ -1766,9 +1766,13 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
           if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
           return;
         }
-        msg += '\n\n\u2705 Все 3 отчёта собраны. Перехожу к закрытию \u2014 ответьте на вопросы по кассе.';
+        const cashQ = 'Шаг — Наличные. Сколько наличных в кассе сейчас? Пересчитай и напиши сумму.';
+        msg += '\n\n\u2705 Все 3 отчёта собраны. Перехожу к закрытию.\n\n' + cashQ;
         await sendTelegram(userId, msg);
-        userContent = [{ type:'text', text:'[Системно: приняты ВСЕ 3 отчёта \u2014 Z-отчёт ROSTA, Kaspi терминал, Halyk терминал. Цифры распознаны и сохранены, фото заново НЕ проси. Продолжай закрытие со следующего шага: спроси наличные в кассе, затем остальные шаги вплоть до SHIFT_CLOSE.]' }];
+        // Фиксируем в истории, что фото уже приняты и задан вопрос по кассе — чтобы модель НЕ переспрашивала фото
+        conversations[userKey].push({ role: 'assistant', content: 'Все 3 отчёта (Z-отчёт, Kaspi, Halyk) приняты системой. ' + cashQ });
+        if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
+        return;
       } else {
         const contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
           : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
