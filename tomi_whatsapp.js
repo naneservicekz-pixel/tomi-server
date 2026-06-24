@@ -1805,8 +1805,16 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
       return;
     }
     if (mentionsPrepay && !prepayRef) {
-      // упомянул предоплату, но не назвал клиента — спрашиваем коротко, НЕ вываливаем весь список
-      const ask = 'Какая предоплата? Напиши имя клиента или ID (например: «Жулдыз» или «PREP-0106»).';
+      // показываем список открытых предоплат, чтобы продавец выбрал (он не обязан помнить все)
+      let ask;
+      try {
+        const list = await loadPrepays('open');
+        if (!list.length) ask = 'Открытых предоплат нет. Если расхождение по другой причине — напиши её одной фразой, закрою с пометкой для руководителя.';
+        else {
+          ask = '📋 Открытые предоплаты (' + list.length + ').\nНапиши имя клиента или ID, чтобы привязать к расхождению:\n\n';
+          list.forEach(p => { ask += '🟡 ' + p.client + (p.id ? ' — ' + p.id : '') + (p.amount ? ' · ' + Number(p.amount).toLocaleString('ru-RU') + ' ₸' : '') + '\n'; });
+        }
+      } catch(e) { ask = 'Напиши имя клиента или ID предоплаты (например: «Жулдыз» или «PREP-0106»).'; }
       conversations[userKey] = conversations[userKey] || [];
       conversations[userKey].push({ role: 'user', content: messageText });
       conversations[userKey].push({ role: 'assistant', content: ask });
