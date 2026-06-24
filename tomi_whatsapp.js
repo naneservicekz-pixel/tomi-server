@@ -1805,20 +1805,23 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
       return;
     }
     if (mentionsPrepay && !prepayRef) {
-      // показываем список открытых предоплат, чтобы продавец выбрал (он не обязан помнить все)
-      let ask;
+      // показываем ПОЛНЫЙ список открытых предоплат (с товаром) + красивый HTML — как в обычной команде «Предоплаты»
       try {
         const list = await loadPrepays('open');
-        if (!list.length) ask = 'Открытых предоплат нет. Если расхождение по другой причине — напиши её одной фразой, закрою с пометкой для руководителя.';
-        else {
-          ask = '📋 Открытые предоплаты (' + list.length + ').\nНапиши имя клиента или ID, чтобы привязать к расхождению:\n\n';
-          list.forEach(p => { ask += '🟡 ' + p.client + (p.id ? ' — ' + p.id : '') + (p.amount ? ' · ' + Number(p.amount).toLocaleString('ru-RU') + ' ₸' : '') + '\n'; });
+        if (!list.length) {
+          await sendTelegram(userId, 'Открытых предоплат нет. Если расхождение по другой причине — напиши её одной фразой, закрою с пометкой для руководителя.');
+        } else {
+          let msg = '📋 Открытые предоплаты (' + list.length + ').\nНапиши имя клиента или ID, чтобы привязать к расхождению:\n\n';
+          list.forEach((p, i) => { msg += '🟡 №'+(i+1)+' '+p.client+'\n'+(p.id?'🆔 '+p.id+'\n':'')+(p.items&&p.items.length?'👗 '+p.items.join(', ')+'\n':'')+'💰 Аванс: '+Number(p.amount).toLocaleString('ru-RU')+' тг\n\n'; });
+          await sendTelegram(userId, msg);
+          const htmlContent = generatePrepaysHTML(list, 'open');
+          const filename = 'prepays_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
+          await sendTelegramDocument(userId, filename, htmlContent, '📋 Предоплаты — открой в браузере');
         }
-      } catch(e) { ask = 'Напиши имя клиента или ID предоплаты (например: «Жулдыз» или «PREP-0106»).'; }
+      } catch(e) { await sendTelegram(userId, 'Напиши имя клиента или ID предоплаты (например: «Жулдыз» или «PREP-0106»).'); }
       conversations[userKey] = conversations[userKey] || [];
       conversations[userKey].push({ role: 'user', content: messageText });
-      conversations[userKey].push({ role: 'assistant', content: ask });
-      await sendTelegram(userId, ask);
+      conversations[userKey].push({ role: 'assistant', content: '[Показан список открытых предоплат — продавец выберет имя/ID]' });
       return;
     }
     // иначе (вопрос / слишком короткое) — пусть модель ответит и подскажет, что писать
