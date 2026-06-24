@@ -1010,6 +1010,12 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           }
         }
         const shift = openShifts[String(userId)] || await loadOpenShift(userId) || {};
+        // Защита от повторного/«призрачного» закрытия: если открытой смены нет — не закрываем (иначе считается по нулям)
+        if (!openShifts[String(userId)] && !shift.seller && !shift.start_time) {
+          delete pendingClose[String(userId)];
+          await sendTelegram(userId, 'Смена уже закрыта или ещё не открыта. Чтобы начать новую — напиши «Начала смену».');
+          return reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+        }
         // ИСТОЧНИК ИСТИНЫ по кассе открытия — сохранённая смена (введено на ШАГ 2 открытия), а не память чат-модели
         if (shift && shift.cash_open != null) s.cashOpen = Number(shift.cash_open) || 0;
         const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
@@ -1102,8 +1108,16 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         });
         const unexplainedDiffs = channelDiffs.filter(cd => !explainedDiffs.has(cd.channel));
         const hasNotes = s.notes && s.notes.trim().length > 10;
-        if (unexplainedDiffs.length > 0 && !hasNotes && prepayExplanations.length === 0) {
-          let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — необъяснённые расхождения!\n\n';
+        const cashProblem = Math.abs(cashBoxDiff) > 500;
+        if ((unexplainedDiffs.length > 0 || cashProblem) && !hasNotes) {
+          let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — расхождения!\n\n';
+          if (cashProblem) {
+            const csign = cashBoxDiff > 0 ? '+' : '';
+            const cdir = cashBoxDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
+            blockMsg += '💵 КАССА: ' + cdir + ' ' + csign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\n';
+            blockMsg += '   ожидалось ' + Number(cashExpected).toLocaleString('ru-RU') + ' (открытие ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString('ru-RU') + '), ты указал ' + Number(cashActualVal).toLocaleString('ru-RU') + '\n';
+            blockMsg += '   ⮕ пересчитай кассу и пришли точную сумму одним числом.\n\n';
+          }
           unexplainedDiffs.forEach(cd => {
             const sign = cd.diff > 0 ? '+' : '';
             const dir = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
@@ -1116,7 +1130,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
               blockMsg += '   ROSTA ' + rostaH.toLocaleString('ru-RU') + ' (QR ' + (s.rHalyk||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rHalykOnline||0).toLocaleString('ru-RU') + ') vs терминал ' + ((s.tHalyk||0)-(s.tHalykRet||0)).toLocaleString('ru-RU') + '\n';
             }
           });
-          blockMsg += '\nЕсли это из-за предоплаты (сегодня был выкуп товара по предоплате) — напиши: «предоплата <имя клиента или ID>», и я закрою смену, отнеся расхождение к этой предоплате.\nЕсли причина другая — просто напиши её одной фразой и я закрою смену с пометкой для руководителя.';
+          if (unexplainedDiffs.length > 0) blockMsg += '\nПо терминалу: если из-за предоплаты — напиши «предоплата <имя клиента или ID>». Если другая причина — напиши её одной фразой, закрою с пометкой для руководителя.';
+          else blockMsg += 'Если касса верна и расхождение объяснимо — напиши причину одной фразой, закрою с пометкой.';
           await sendTelegram(userId, blockMsg);
           // Владельцу — полный HTML-отчёт для контроля, даже если смена не закрыта
           const sellerForBlock = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
@@ -1745,15 +1760,21 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
       });
       if (m) prepayRef = String(m.prep_id || m.client_name);
     } catch(e) {}
-    if (prepayRef || (!isQuestion && text.length >= 6)) {
+    // Пересчёт кассы: продавец прислал сумму (число), возможно с «наличные/касса». Это НЕ причина — это поправка cashActual.
+    const digitsM = text.replace(/[\s\u00a0]/g, '').match(/\d{4,}/);
+    const cashKeyword = /налич|касс|\bнал\b/i.test(lc);
+    const residual = lc.replace(/[\d\s\u00a0.,]/g, '').replace(/налич\w*|касс\w*|тенге|тг|штук/gi, '').trim();
+    const isCashEntry = !prepayRef && digitsM && (cashKeyword || residual.length <= 3);
+    if (prepayRef || isCashEntry || (!isQuestion && text.length >= 6)) {
       const s2 = Object.assign({}, pendingClose[userKey]);
       if (prepayRef) s2.prepayApplied = [{ ref: prepayRef }];
+      else if (isCashEntry) { s2.cashActual = Number(digitsM[0]); } // пересчёт кассы — без пометки, просто перепроверяем
       else s2.notes = ((s2.notes ? s2.notes + '; ' : '') + text);
       conversations[userKey] = conversations[userKey] || [];
       conversations[userKey].push({ role: 'user', content: messageText });
       const syntheticClose = 'SHIFT_CLOSE:' + JSON.stringify(s2);
       const cr = await handleSystemCommands(syntheticClose, userId, senderName, messageText);
-      conversations[userKey].push({ role: 'assistant', content: cr && cr.trim() ? cr : 'Смена закрыта.' });
+      conversations[userKey].push({ role: 'assistant', content: cr && cr.trim() ? cr : 'Принято.' });
       if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
       if (cr && cr.trim()) await sendTelegram(userId, cr);
       return;
