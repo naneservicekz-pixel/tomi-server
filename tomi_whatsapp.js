@@ -303,6 +303,26 @@ function calcDistance(lat1, lon1, lat2, lon2) {
   return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
 }
 
+// Извлекает JSON после тега по БАЛАНСУ скобок (работает с вложенными {}, напр. prepayApplied:[{...}])
+function extractTagJSON(text, tag) {
+  const key = tag + ':{';
+  const i = text.indexOf(key);
+  if (i < 0) return null;
+  const start = i + tag.length + 1;
+  let depth = 0, end = -1;
+  for (let j = start; j < text.length; j++) {
+    if (text[j] === '{') depth++;
+    else if (text[j] === '}') { depth--; if (depth === 0) { end = j + 1; break; } }
+  }
+  if (end < 0) return null;
+  return { json: text.slice(start, end), from: i, to: end };
+}
+function stripTag(text, tag) {
+  const r = extractTagJSON(text, tag);
+  if (!r) return (text || '').trim();
+  return (text.slice(0, r.from) + text.slice(r.to)).trim();
+}
+
 // Чистит массив сообщений для Anthropic: без пустых, начинается с user (иначе API 400)
 function sanitizeMessages(msgs) {
   let arr = (msgs || []).filter(m => {
@@ -925,7 +945,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
   if (reply.includes('SHIFT_OPEN:')) {
     try {
-      const jsonStr = reply.match(/SHIFT_OPEN:(\{.*?\})/s)?.[1];
+      const jsonStr = (extractTagJSON(reply, 'SHIFT_OPEN')||{}).json;
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
         const lastCash = await loadLastCash();
@@ -961,7 +981,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
   if (reply.includes('SHIFT_CLOSE:')) {
     try {
-      const jsonStr = reply.match(/SHIFT_CLOSE:(\{.*?\})/s)?.[1];
+      const jsonStr = (extractTagJSON(reply, 'SHIFT_CLOSE')||{}).json;
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
         // ═══════════════════════════════════════════════════════════════
@@ -997,7 +1017,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           const channelsSum = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0);
           if (channelsSum <= 0) {
             await sendTelegram(userId, '⚠️ Z-отчёт распознан некорректно (нулевые продажи по всем каналам). Перешли фото Z-отчёта чётче — без бликов, весь блок «Отчёт по видам оплат» в кадре.');
-            cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+            cleanReply = stripTag(reply, 'SHIFT_CLOSE');
             { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
           }
           // Контрольная сумма: распознанные виды оплат должны сойтись с печатным "Итого:"
@@ -1005,7 +1025,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           if (itogo > 0 && Math.abs(s.rostaCheck - itogo) > 1000) {
             await sendTelegram(userId, '⚠️ Z-отчёт распознан с ошибкой: сумма по видам оплат (' + s.rostaCheck.toLocaleString('ru-RU') + ' ₸) не сходится с «Итого» в чеке (' + itogo.toLocaleString('ru-RU') + ' ₸). Перешли фото Z-отчёта чётче.');
             for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ ' + (sellerName) + ': Z-отчёт не сошёлся при распознавании (' + s.rostaCheck.toLocaleString('ru-RU') + ' ≠ ' + itogo.toLocaleString('ru-RU') + '). Смена не закрыта.');
-            cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+            cleanReply = stripTag(reply, 'SHIFT_CLOSE');
             { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
           }
         }
@@ -1014,7 +1034,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         if (!openShifts[String(userId)] && !shift.seller && !shift.start_time) {
           delete pendingClose[String(userId)];
           await sendTelegram(userId, 'Смена уже закрыта или ещё не открыта. Чтобы начать новую — напиши «Начала смену».');
-          return reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+          return stripTag(reply, 'SHIFT_CLOSE');
         }
         // ИСТОЧНИК ИСТИНЫ по кассе открытия — сохранённая смена (введено на ШАГ 2 открытия), а не память чат-модели
         if (shift && shift.cash_open != null) s.cashOpen = Number(shift.cash_open) || 0;
@@ -1146,7 +1166,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             console.error('block report error:', e.message);
             for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + sellerForBlock);
           }
-          cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+          cleanReply = stripTag(reply, 'SHIFT_CLOSE');
           pendingClose[String(userId)] = s; // запоминаем закрытие — продавец назовёт предоплату/причину и код достроит закрытие
           { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
         }
@@ -1209,6 +1229,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             await sendTelegramDocument(sellerId, 'den_' + today.replace(/\./g,'_') + '.html', htmlReport, '📊 Итоги дня ' + today);
           }
         }
+        // Чёткое подтверждение продавцу (+ какая предоплата привязана)
+        const prepInfo = prepayExplanations.length ? ('\n📌 Расхождение по ' + prepayExplanations.map(e => e.channel).join(', ') + ' отнесено к предоплате: ' + prepayExplanations.map(e => e.prepays.map(p => p.client + (p.amount ? ' (' + Number(p.amount).toLocaleString('ru-RU') + ' ₸)' : '')).join(', ')).join('; ')) : '';
+        const noteInfo = (s.notes && s.notes.trim().length > 10) ? ('\n📝 Причина: ' + s.notes.trim()) : '';
+        await sendTelegram(userId, '✅ Смена закрыта.' + prepInfo + noteInfo + '\nОтчёт отправлен. Хорошей работы!');
         delete openShifts[String(userId)];
         await deleteOpenShift(userId);
         if (s.shiftStatus === 'second_close') {
@@ -1216,7 +1240,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         }
       }
     } catch(e) { console.error('SHIFT_CLOSE error:', e.message); }
-    cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+    cleanReply = stripTag(reply, 'SHIFT_CLOSE');
   }
 
   if (reply.includes('CASH_ALERT:')) {
@@ -1683,8 +1707,8 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     }
   }
 
-  // Предоплаты для продавцов
-  if (!isOwner && messageText) {
+  // Предоплаты для продавцов (но НЕ когда закрытие ждёт объяснения — тогда обрабатывает перехват ниже)
+  if (!isOwner && messageText && !pendingClose[userKey]) {
     const msgLP = messageText.toLowerCase().trim();
     if (/предоплат|prepay/.test(msgLP) && !/новая|создать|добавить|внести/.test(msgLP)) {
       const list = await loadPrepays('open');
@@ -1765,7 +1789,8 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     const cashKeyword = /налич|касс|\bнал\b/i.test(lc);
     const residual = lc.replace(/[\d\s\u00a0.,]/g, '').replace(/налич\w*|касс\w*|тенге|тг|штук/gi, '').trim();
     const isCashEntry = !prepayRef && digitsM && (cashKeyword || residual.length <= 3);
-    if (prepayRef || isCashEntry || (!isQuestion && text.length >= 6)) {
+    const mentionsPrepay = /предоплат|выкуп|аванс/i.test(lc);
+    if (prepayRef || isCashEntry || (!mentionsPrepay && !isQuestion && text.length >= 6)) {
       const s2 = Object.assign({}, pendingClose[userKey]);
       if (prepayRef) s2.prepayApplied = [{ ref: prepayRef }];
       else if (isCashEntry) { s2.cashActual = Number(digitsM[0]); } // пересчёт кассы — без пометки, просто перепроверяем
@@ -1777,6 +1802,15 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
       conversations[userKey].push({ role: 'assistant', content: cr && cr.trim() ? cr : 'Принято.' });
       if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
       if (cr && cr.trim()) await sendTelegram(userId, cr);
+      return;
+    }
+    if (mentionsPrepay && !prepayRef) {
+      // упомянул предоплату, но не назвал клиента — спрашиваем коротко, НЕ вываливаем весь список
+      const ask = 'Какая предоплата? Напиши имя клиента или ID (например: «Жулдыз» или «PREP-0106»).';
+      conversations[userKey] = conversations[userKey] || [];
+      conversations[userKey].push({ role: 'user', content: messageText });
+      conversations[userKey].push({ role: 'assistant', content: ask });
+      await sendTelegram(userId, ask);
       return;
     }
     // иначе (вопрос / слишком короткое) — пусть модель ответит и подскажет, что писать
