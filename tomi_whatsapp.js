@@ -1090,6 +1090,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           .map(p => ({ id: String(p.prep_id||''), client: String(p.client_name||''), amount: Number(p.amount||0), channel: String(p.channel||''), status: String(p.status||'') }));
         const prepayExplanations = [];
         const explainedDiffs = new Set();
+        const coveredByChannel = {}; // сколько расхождения канала покрыто предоплатами (в тенге)
         const chMatchFor = (channel) => (p => (channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
                 (channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
                 (channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash'))));
@@ -1105,7 +1106,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           if (single.length > 0) matching = single;
           else if (sumClose && channelPrepays.length > 0) matching = channelPrepays;
           else if (byAmountAnyChannel.length > 0) matching = byAmountAnyChannel;
-          if (matching.length > 0) { prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching }); explainedDiffs.add(cd.channel); }
+          if (matching.length > 0) { prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching, exact: single.length > 0 }); explainedDiffs.add(cd.channel); coveredByChannel[cd.channel] = (coveredByChannel[cd.channel]||0) + matching.reduce((a,p)=>a+(Number(p.amount)||0),0); }
         });
         // РУЧНОЕ применение: продавец назвал предоплату (ID или имя), которой объясняется расхождение по каналу.
         // Доверяем владельцу/продавцу: сумма может не совпадать в точности (аванс частичный) — фиксируем как объяснение.
@@ -1123,10 +1124,20 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           if (!target) target = channelDiffs.find(cd => !explainedDiffs.has(cd.channel));
           if (target) {
             prepayExplanations.push({ channel: target.channel, diff: target.diff, prepays: [found], manual: true });
-            explainedDiffs.add(target.channel);
+            coveredByChannel[target.channel] = (coveredByChannel[target.channel]||0) + (Number(found.amount)||0);
           }
         });
-        const unexplainedDiffs = channelDiffs.filter(cd => !explainedDiffs.has(cd.channel));
+        // Канал считается объяснённым, только если предоплаты покрыли расхождение ПОЛНОСТЬЮ (с допуском).
+        // Иначе остаётся НЕПОКРЫТЫЙ остаток — он блокирует закрытие, чтобы продавец объяснил разницу.
+        const TOL_COVER = 1000;
+        const unexplainedDiffs = [];
+        channelDiffs.forEach(cd => {
+          if (explainedDiffs.has(cd.channel)) return; // авто-сопоставление закрыло точно по сумме
+          const covered = coveredByChannel[cd.channel] || 0;
+          const residual = Math.abs(cd.diff) - covered;
+          if (residual > TOL_COVER) unexplainedDiffs.push({ channel: cd.channel, diff: cd.diff, residual, covered });
+          else if (covered > 0) explainedDiffs.add(cd.channel); // предоплаты покрыли полностью
+        });
         const hasNotes = s.notes && s.notes.trim().length > 10;
         const cashProblem = Math.abs(cashBoxDiff) > 500;
         if ((unexplainedDiffs.length > 0 || cashProblem) && !hasNotes) {
@@ -1142,7 +1153,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             const sign = cd.diff > 0 ? '+' : '';
             const dir = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
             blockMsg += '❌ ' + cd.channel + ': ' + dir + ' ' + sign + Number(cd.diff).toLocaleString('ru-RU') + ' тг\n';
-            if (cd.channel === 'Kaspi') {
+            if (cd.covered > 0) {
+              blockMsg += '   предоплата покрыла ' + Number(cd.covered).toLocaleString('ru-RU') + ' из ' + Math.abs(cd.diff).toLocaleString('ru-RU') + ' → ОСТАЛОСЬ ' + Number(cd.residual).toLocaleString('ru-RU') + ' тг\n';
+              blockMsg += '   ⮕ объясни остаток: ещё предоплата или причина.\n';
+            } else if (cd.channel === 'Kaspi') {
               const rostaK = (s.rKaspi||0)+(s.rOnline||0)-(s.rRetKaspi||0)-(s.rRetOnlineKaspi||0);
               blockMsg += '   ROSTA ' + rostaK.toLocaleString('ru-RU') + ' (QR ' + (s.rKaspi||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rOnline||0).toLocaleString('ru-RU') + ((s.rRetKaspi||0)+(s.rRetOnlineKaspi||0)>0?' − возвраты '+((s.rRetKaspi||0)+(s.rRetOnlineKaspi||0)).toLocaleString('ru-RU'):'') + ') vs терминал ' + ((s.tKaspi||0)-(s.tKaspiRet||0)).toLocaleString('ru-RU') + '\n';
             } else if (cd.channel === 'Halyk') {
@@ -1150,7 +1164,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
               blockMsg += '   ROSTA ' + rostaH.toLocaleString('ru-RU') + ' (QR ' + (s.rHalyk||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rHalykOnline||0).toLocaleString('ru-RU') + ') vs терминал ' + ((s.tHalyk||0)-(s.tHalykRet||0)).toLocaleString('ru-RU') + '\n';
             }
           });
-          if (unexplainedDiffs.length > 0) blockMsg += '\nПо терминалу: если из-за предоплаты — напиши «предоплата <имя клиента или ID>». Если другая причина — напиши её одной фразой, закрою с пометкой для руководителя.';
+          if (unexplainedDiffs.length > 0) blockMsg += '\nПо терминалу: если из-за предоплаты — напиши «предоплата <имя клиента или ID>» (можно несколько). Если причина другая — напиши её одной фразой, закрою с пометкой для руководителя.';
           else blockMsg += 'Если касса верна и расхождение объяснимо — напиши причину одной фразой, закрою с пометкой.';
           await sendTelegram(userId, blockMsg);
           // Владельцу — полный HTML-отчёт для контроля, даже если смена не закрыта
@@ -1171,13 +1185,34 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
         }
         delete pendingClose[String(userId)]; // закрытие прошло — снимаем отложенное состояние
+        // ВЫКУП: привязанные предоплаты закрываются (товар выдан, клиент доплатил) — больше не висят в открытых
+        const closedPrepays = [];
+        try {
+          const seenPrep = new Set();
+          const namedRefs = (Array.isArray(s.prepayApplied) ? s.prepayApplied : []).map(a => String(a.ref || a.id || a.client || '').trim().toLowerCase()).filter(Boolean);
+          for (const e of prepayExplanations) {
+            for (const pp of (e.prepays || [])) {
+              const pid = String(pp.id || pp.prep_id || '').trim();
+              const pname = String(pp.client || pp.client_name || '').trim();
+              const lid = pid.toLowerCase(), lname = pname.toLowerCase();
+              const named = namedRefs.some(r => (lid && lid === r) || (lname && (lname.includes(r) || r.includes(lname))));
+              if (!(e.manual || named || e.exact)) continue; // закрываем: названные продавцом, вручную, или точно совпавшие по сумме — не рыхлые авто
+              const key = (pid || pname).toLowerCase();
+              if (!key || seenPrep.has(key)) continue;
+              seenPrep.add(key);
+              if (pid) await supabase.from('prepayments').update({ status: '🟢 Закрыта', notes: 'Выкуп — товар выдан, смена ' + today }).eq('prep_id', pid);
+              else await supabase.from('prepayments').update({ status: '🟢 Закрыта', notes: 'Выкуп — товар выдан, смена ' + today }).eq('client_name', pname);
+              closedPrepays.push(pname + (pp.amount ? ' (' + Number(pp.amount).toLocaleString('ru-RU') + ' ₸)' : ''));
+            }
+          }
+        } catch(e) { console.error('close prepay on shift-close error:', e.message); }
         // Записываем что первое закрытие состоялось — следующий будет вторым
         const todayKeyClose = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         // Закрытие НЕ заблокировано (есть заметка/предоплата), но если расхождение по терминалу осталось необъяснённым предоплатой — не прячем, шлём владельцу
         if (unexplainedDiffs.length > 0) {
           for (const ownerId of OWNER_IDS) {
             let warn = '⚠️ Смена закрыта С РАСХОЖДЕНИЕМ\n👤 ' + (shift.seller||sellerName) + '\n';
-            unexplainedDiffs.forEach(cd => { const sg = cd.diff>0?'+':''; const dr = cd.diff>0?'излишек':'недостача'; warn += '• ' + cd.channel + ': ' + dr + ' ' + sg + Number(cd.diff).toLocaleString('ru-RU') + ' тг\n'; });
+            unexplainedDiffs.forEach(cd => { const sg = cd.diff>0?'+':''; const dr = cd.diff>0?'излишек':'недостача'; warn += '• ' + cd.channel + ': ' + dr + ' ' + sg + Number(cd.diff).toLocaleString('ru-RU') + ' тг'; if (cd.covered > 0) warn += ' (предоплата покрыла ' + Number(cd.covered).toLocaleString('ru-RU') + ', остаток ' + Number(cd.residual).toLocaleString('ru-RU') + ')'; warn += '\n'; });
             if (hasNotes) warn += '📝 Причина (со слов продавца): ' + s.notes;
             await sendTelegram(ownerId, warn);
           }
@@ -1231,8 +1266,9 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         }
         // Чёткое подтверждение продавцу (+ какая предоплата привязана)
         const prepInfo = prepayExplanations.length ? ('\n📌 Расхождение по ' + prepayExplanations.map(e => e.channel).join(', ') + ' отнесено к предоплате: ' + prepayExplanations.map(e => e.prepays.map(p => p.client + (p.amount ? ' (' + Number(p.amount).toLocaleString('ru-RU') + ' ₸)' : '')).join(', ')).join('; ')) : '';
+        const closedInfo = closedPrepays.length ? ('\n📦 Предоплата закрыта (товар выдан): ' + closedPrepays.join(', ') + ' — больше не в списке открытых.') : '';
         const noteInfo = (s.notes && s.notes.trim().length > 10) ? ('\n📝 Причина: ' + s.notes.trim()) : '';
-        await sendTelegram(userId, '✅ Смена закрыта.' + prepInfo + noteInfo + '\nОтчёт отправлен. Хорошей работы!');
+        await sendTelegram(userId, '✅ Смена закрыта.' + prepInfo + closedInfo + noteInfo + '\nОтчёт отправлен. Хорошей работы!');
         delete openShifts[String(userId)];
         await deleteOpenShift(userId);
         if (s.shiftStatus === 'second_close') {
@@ -1792,7 +1828,7 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     const mentionsPrepay = /предоплат|выкуп|аванс/i.test(lc);
     if (prepayRef || isCashEntry || (!mentionsPrepay && !isQuestion && text.length >= 6)) {
       const s2 = Object.assign({}, pendingClose[userKey]);
-      if (prepayRef) s2.prepayApplied = [{ ref: prepayRef }];
+      if (prepayRef) s2.prepayApplied = [...(Array.isArray(pendingClose[userKey].prepayApplied) ? pendingClose[userKey].prepayApplied : []), { ref: prepayRef }];
       else if (isCashEntry) { s2.cashActual = Number(digitsM[0]); } // пересчёт кассы — без пометки, просто перепроверяем
       else s2.notes = ((s2.notes ? s2.notes + '; ' : '') + text);
       conversations[userKey] = conversations[userKey] || [];
