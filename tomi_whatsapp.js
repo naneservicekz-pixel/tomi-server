@@ -1094,19 +1094,18 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const chMatchFor = (channel) => (p => (channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
                 (channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
                 (channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash'))));
-        // АВТО-сопоставление: предоплата объясняет расхождение в ОБЕ стороны (излишек ИЛИ недостача)
+        // ПОДСКАЗКИ (не авто-привязка!): ищем предоплаты, похожие по сумме на расхождение, и ПРЕДЛАГАЕМ продавцу подтвердить.
+        // Сами НЕ закрываем и НЕ привязываем — иначе можно молча закрыть чужую карточку (вариант Б).
+        const prepaySuggestions = {}; // channel -> [предоплаты-кандидаты]
         channelDiffs.forEach(cd => {
           const TOL = 1000; // допуск сходимости по сумме
           const channelPrepays = todayClosedPrepays.filter(chMatchFor(cd.channel));
           const single = channelPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
-          const sumCh = channelPrepays.reduce((acc, p) => acc + p.amount, 0);
-          const sumClose = Math.abs(sumCh - Math.abs(cd.diff)) < TOL;
           const byAmountAnyChannel = todayClosedPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
-          let matching = [];
-          if (single.length > 0) matching = single;
-          else if (sumClose && channelPrepays.length > 0) matching = channelPrepays;
-          else if (byAmountAnyChannel.length > 0) matching = byAmountAnyChannel;
-          if (matching.length > 0) { prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching, exact: single.length > 0 }); explainedDiffs.add(cd.channel); coveredByChannel[cd.channel] = (coveredByChannel[cd.channel]||0) + matching.reduce((a,p)=>a+(Number(p.amount)||0),0); }
+          let cand = [];
+          if (single.length > 0) cand = single;
+          else if (byAmountAnyChannel.length > 0) cand = byAmountAnyChannel;
+          if (cand.length > 0) prepaySuggestions[cd.channel] = cand.slice(0, 5);
         });
         // РУЧНОЕ применение: продавец назвал предоплату (ID или имя), которой объясняется расхождение по каналу.
         // Доверяем владельцу/продавцу: сумма может не совпадать в точности (аванс частичный) — фиксируем как объяснение.
@@ -1162,6 +1161,18 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             } else if (cd.channel === 'Halyk') {
               const rostaH = (s.rHalyk||0)+(s.rHalykOnline||0)-(s.rRetHalyk||0)-(s.rRetHalykOnline||0);
               blockMsg += '   ROSTA ' + rostaH.toLocaleString('ru-RU') + ' (QR ' + (s.rHalyk||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rHalykOnline||0).toLocaleString('ru-RU') + ') vs терминал ' + ((s.tHalyk||0)-(s.tHalykRet||0)).toLocaleString('ru-RU') + '\n';
+            }
+            // ПОДСКАЗКА (только предложение — не привязываем сами): если есть предоплата, похожая по сумме
+            if (!(cd.covered > 0)) {
+              const sug = prepaySuggestions[cd.channel];
+              if (sug && sug.length === 1) {
+                blockMsg += '   💡 Возможно, это выкуп предоплаты: ' + sug[0].client + ' (' + Number(sug[0].amount).toLocaleString('ru-RU') + ' ₸' + (sug[0].id ? ', ' + sug[0].id : '') + ')\n';
+                blockMsg += '   ⮕ если да — напиши имя клиента или ID для подтверждения; если нет — причину.\n';
+              } else if (sug && sug.length > 1) {
+                blockMsg += '   💡 Похоже на выкуп одной из предоплат (подтверди, какой именно):\n';
+                sug.forEach(p => { blockMsg += '      • ' + p.client + ' (' + Number(p.amount).toLocaleString('ru-RU') + ' ₸' + (p.id ? ', ' + p.id : '') + ')\n'; });
+                blockMsg += '   ⮕ напиши имя клиента или ID нужной; если не выкуп — причину.\n';
+              }
             }
           });
           if (unexplainedDiffs.length > 0) blockMsg += '\nПо терминалу: если из-за предоплаты — напиши «предоплата <имя клиента или ID>» (можно несколько). Если причина другая — напиши её одной фразой, закрою с пометкой для руководителя.';
