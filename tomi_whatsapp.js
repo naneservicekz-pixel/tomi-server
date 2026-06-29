@@ -1094,10 +1094,22 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const chMatchFor = (channel) => (p => (channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
                 (channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
                 (channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash'))));
+        // Перепутанный терминал: Kaspi и Halyk разошлись одинаково и противоположно
+        // (одну сумму пробили не на тот банк). Итог по картам сходится → это НЕ выкуп и НЕ пропажа денег, а ошибка канала.
+        let terminalSwap = null;
+        {
+          const kd = channelDiffs.find(c => c.channel === 'Kaspi');
+          const hd = channelDiffs.find(c => c.channel === 'Halyk');
+          if (kd && hd && (kd.diff > 0) !== (hd.diff > 0) && Math.abs(kd.diff + hd.diff) < 2000 && Math.min(Math.abs(kd.diff), Math.abs(hd.diff)) > 500) {
+            terminalSwap = { amount: Math.round((Math.abs(kd.diff) + Math.abs(hd.diff)) / 2), channels: ['Kaspi', 'Halyk'] };
+          }
+        }
         // ПОДСКАЗКИ (не авто-привязка!): ищем предоплаты, похожие по сумме на расхождение, и ПРЕДЛАГАЕМ продавцу подтвердить.
         // Сами НЕ закрываем и НЕ привязываем — иначе можно молча закрыть чужую карточку (вариант Б).
         const prepaySuggestions = {}; // channel -> [предоплаты-кандидаты]
         channelDiffs.forEach(cd => {
+          if (terminalSwap) return;        // перепутанный терминал — предоплату не предлагаем
+          if (cd.diff >= 0) return;        // выкуп предоплаты даёт НЕДОСТАЧУ на терминале, излишек он не объясняет
           const TOL = 1000; // допуск сходимости по сумме
           const channelPrepays = todayClosedPrepays.filter(chMatchFor(cd.channel));
           const single = channelPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
@@ -1148,7 +1160,16 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             blockMsg += '   ожидалось ' + Number(cashExpected).toLocaleString('ru-RU') + ' (открытие ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString('ru-RU') + '), ты указал ' + Number(cashActualVal).toLocaleString('ru-RU') + '\n';
             blockMsg += '   ⮕ пересчитай кассу и пришли точную сумму одним числом.\n\n';
           }
+          if (terminalSwap) {
+            const kd2 = channelDiffs.find(c => c.channel === 'Kaspi'), hd2 = channelDiffs.find(c => c.channel === 'Halyk');
+            blockMsg += '🔁 Похоже, ПЕРЕПУТАН ТЕРМИНАЛ: одну сумму ~' + terminalSwap.amount.toLocaleString('ru-RU') + ' ₸ пробили не на тот банк.\n';
+            if (kd2) blockMsg += '   • Kaspi: ' + (kd2.diff>0?'+':'') + Number(kd2.diff).toLocaleString('ru-RU') + ' тг\n';
+            if (hd2) blockMsg += '   • Halyk: ' + (hd2.diff>0?'+':'') + Number(hd2.diff).toLocaleString('ru-RU') + ' тг\n';
+            blockMsg += '   итог по картам сходится — деньги на месте, перепутан только банк.\n';
+            blockMsg += '   ⮕ если так — напиши «перепутал терминал», закрою с пометкой. Если другая причина — напиши её.\n';
+          }
           unexplainedDiffs.forEach(cd => {
+            if (terminalSwap && (cd.channel === 'Kaspi' || cd.channel === 'Halyk')) return; // объяснено перепутанным терминалом
             const sign = cd.diff > 0 ? '+' : '';
             const dir = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
             blockMsg += '❌ ' + cd.channel + ': ' + dir + ' ' + sign + Number(cd.diff).toLocaleString('ru-RU') + ' тг\n';
@@ -1175,8 +1196,9 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
               }
             }
           });
-          if (unexplainedDiffs.length > 0) blockMsg += '\nПо терминалу: если из-за предоплаты — напиши «предоплата <имя клиента или ID>» (можно несколько). Если причина другая — напиши её одной фразой, закрою с пометкой для руководителя.';
-          else blockMsg += 'Если касса верна и расхождение объяснимо — напиши причину одной фразой, закрою с пометкой.';
+          const realCardUnexpl = unexplainedDiffs.filter(cd => !(terminalSwap && (cd.channel === 'Kaspi' || cd.channel === 'Halyk')));
+          if (realCardUnexpl.length > 0) blockMsg += '\nПо терминалу: если из-за предоплаты — напиши «предоплата <имя клиента или ID>» (можно несколько). Если причина другая — напиши её одной фразой, закрою с пометкой для руководителя.';
+          else if (!terminalSwap) blockMsg += 'Если касса верна и расхождение объяснимо — напиши причину одной фразой, закрою с пометкой.';
           await sendTelegram(userId, blockMsg);
           // Владельцу — полный HTML-отчёт для контроля, даже если смена не закрыта
           const sellerForBlock = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
@@ -1836,7 +1858,7 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     const cashKeyword = /налич|касс|\bнал\b/i.test(lc);
     const residual = lc.replace(/[\d\s\u00a0.,]/g, '').replace(/налич\w*|касс\w*|тенге|тг|штук/gi, '').trim();
     const isCashEntry = !prepayRef && digitsM && (cashKeyword || residual.length <= 3);
-    const mentionsPrepay = /предоплат|выкуп|аванс/i.test(lc);
+    const mentionsPrepay = /предоп|предапл|выкуп|аванс/i.test(lc);
     if (prepayRef || isCashEntry || (!mentionsPrepay && !isQuestion && text.length >= 6)) {
       const s2 = Object.assign({}, pendingClose[userKey]);
       if (prepayRef) s2.prepayApplied = [...(Array.isArray(pendingClose[userKey].prepayApplied) ? pendingClose[userKey].prepayApplied : []), { ref: prepayRef }];
