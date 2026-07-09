@@ -637,7 +637,8 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'КРИТИЧЕСКИ ВАЖНО ПРО ФОТО: фото Z-отчёта ROSTA, Kaspi и Halyk терминалов принимает и распознаёт СИСТЕМА автоматически — она сама подтверждает приём каждого фото и пишет "Все 3 отчёта собраны". Тебе НЕ нужно просить эти фото, НЕ повторяй шаги с фото, НЕ говори "пришли фото". Если в истории уже есть "приняты системой" — фото готовы, сразу веди опрос по кассе.\n' +
     'КРИТИЧЕСКИ ВАЖНО ПРО КАССУ: НЕ считай сам ожидаемую наличность, расхождения, излишки и недостачи и не называй эти цифры — всю сверку (касса, каналы, план/факт) делает СИСТЕМА автоматически после SHIFT_CLOSE. Твоя задача — собрать ответы и выдать SHIFT_CLOSE. Если продавец спорит о цифрах — не пересчитывай, скажи, что сверку сделает система.\n\n' +
     'Опрос по кассе (СТРОГО по одному вопросу за сообщение):\n' +
-    'НАЛИЧНЫЕ — "Сколько наличных в кассе сейчас? Пересчитай." (запомни как cashActual)\n' +
+    'НАЛИЧНЫЕ — "Пересчитай ВСЮ наличность в кассе прямо сейчас (на момент закрытия) и напиши итоговую сумму одним числом." Это всё, что физически лежит в кассе СЕЙЧАС, включая продажи, сделанные ПОСЛЕ инкассации. (запомни как cashActual)\n' +
+    'ВАЖНО про кассу: НЕ спрашивай "сколько осталось после инкассации" — инкассацию система вычтет сама из ожидаемой суммы. Тебе нужен только ИТОГОВЫЙ пересчёт всей наличности в кассе на момент закрытия (после инкассации касса могла снова пополниться продажами — считаем финальный остаток).\n' +
     'ЛИЧНАЯ КАРТА — были ли продажи через личную карту?\n' +
     'ИНКАССАЦИЯ — была ли инкассация сегодня? на какую сумму? (inkasso)\n' +
     'ЗАЛ — всё убрано, товар на местах?\n' +
@@ -1059,14 +1060,18 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const cashExpected = (s.cashOpen||0) + cashSalesGross - (s.inkasso||0) - (s.cashPayouts||0);
         const cashActualVal = s.cashActual || 0;
         const cashBoxDiff = cashActualVal - cashExpected;
-        if (Math.abs(cashBoxDiff) > 500) {
+        // Отдельный касса-алерт — ТОЛЬКО для мелкого расхождения (500–1000 ₸), которое не блокирует смену.
+        // При значимом расхождении (>1000) касса показывается один раз внутри блока «Смена не закрыта» — без дублей.
+        if (Math.abs(cashBoxDiff) > 500 && Math.abs(cashBoxDiff) <= 1000) {
           const sign = cashBoxDiff > 0 ? '+' : '';
           const dir = cashBoxDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
           const payoutStr = (s.cashPayouts||0) > 0 ? ' − выплаты ' + Number(s.cashPayouts||0).toLocaleString() : '';
           for (const ownerId of OWNER_IDS) {
             await sendTelegram(ownerId, '💰 РАСХОЖДЕНИЕ КАССЫ при закрытии!\n👤 ' + (shift.seller||sellerName) + '\n💰 Ожидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\n   (открытие ' + Number(s.cashOpen||0).toLocaleString() + ' + продажи наличными ' + Number(cashSalesGross).toLocaleString() + ' − инкассация ' + Number(s.inkasso||0).toLocaleString() + payoutStr + ')\n💰 Факт в кассе: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг\n❌ ' + dir + ': ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг');
           }
-          await sendTelegram(userId, '⚠️ Расхождение кассы: ' + dir + ' ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\nОжидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг (открытие ' + Number(s.cashOpen||0).toLocaleString() + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString() + ')\nФакт: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг');
+          const inkStr = (s.inkasso||0) > 0 ? ' − инкассация ' + Number(s.inkasso||0).toLocaleString('ru-RU') : '';
+          const payStr2 = (s.cashPayouts||0) > 0 ? ' − выплаты ' + Number(s.cashPayouts||0).toLocaleString('ru-RU') : '';
+          await sendTelegram(userId, '⚠️ Расхождение кассы: ' + dir + ' ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\nОжидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг (открытие ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString('ru-RU') + inkStr + payStr2 + ')\nФакт: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг');
         }
         const factTotal = kaspiNet + halykNet + cashSales + (s.rPersonal||0) + (s.rBonus||0);
         const diff = factTotal - rostaTotal;
@@ -1149,18 +1154,28 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           if (residual > TOL_COVER) unexplainedDiffs.push({ channel: cd.channel, diff: cd.diff, residual, covered });
           else if (covered > 0) explainedDiffs.add(cd.channel); // предоплаты покрыли полностью
         });
-        const hasNotes = s.notes && s.notes.trim().length > 10;
-        const cashProblem = Math.abs(cashBoxDiff) > 500;
-        if ((unexplainedDiffs.length > 0 || cashProblem) && !hasNotes) {
+        const cardNote = s.notes && s.notes.trim().length > 10;      // причина ПО КАРТАМ
+        const cashNote = s.cashNote && s.cashNote.trim().length > 3;  // причина ПО КАССЕ (отдельно!)
+        const cashProblem = Math.abs(cashBoxDiff) > 1000;             // порог значимости кассы
+        const cashResolved = !cashProblem || cashNote;               // касса: сошлась ИЛИ объяснена своей причиной
+        const cardsResolved = unexplainedDiffs.length === 0 || cardNote; // карты: сошлись ИЛИ объяснены
+        if (!(cashResolved && cardsResolved)) {
           let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — расхождения!\n\n';
-          if (cashProblem) {
+          if (cashProblem && !cashNote) {
             const csign = cashBoxDiff > 0 ? '+' : '';
             const cdir = cashBoxDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
             blockMsg += '💵 КАССА: ' + cdir + ' ' + csign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\n';
-            blockMsg += '   ожидалось ' + Number(cashExpected).toLocaleString('ru-RU') + ' (открытие ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString('ru-RU') + '), ты указал ' + Number(cashActualVal).toLocaleString('ru-RU') + '\n';
-            blockMsg += '   ⮕ пересчитай кассу и пришли точную сумму одним числом.\n\n';
+            blockMsg += '   ожидалось ' + Number(cashExpected).toLocaleString('ru-RU') + ' (открытие ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString('ru-RU') + ((s.inkasso||0)>0 ? ' − инкассация ' + Number(s.inkasso||0).toLocaleString('ru-RU') : '') + ((s.cashPayouts||0)>0 ? ' − выплаты ' + Number(s.cashPayouts||0).toLocaleString('ru-RU') : '') + '), ты указал ' + Number(cashActualVal).toLocaleString('ru-RU') + '\n';
+            // Частая ошибка: назвали остаток БЕЗ учёта наличных продаж (напр. остаток сразу после инкассации).
+            // Признак — недостача ≈ сумме наличных продаж.
+            if (cashBoxDiff < 0 && cashSalesGross > 0 && Math.abs(Math.abs(cashBoxDiff) - cashSalesGross) < 2000) {
+              blockMsg += '   ⚠️ Недостача совпадает с наличными продажами (' + Number(cashSalesGross).toLocaleString('ru-RU') + '). Похоже, ты назвал остаток БЕЗ учёта продаж — например, сразу после инкассации.\n';
+              blockMsg += '   ⮕ пересчитай ВСЮ наличность в кассе сейчас (включая продажи после инкассации) — должно быть ≈ ' + Number(cashExpected).toLocaleString('ru-RU') + '. Если продажи уже сдал/инкассировал — укажи полную сумму инкассации. Если денег правда не хватает — напиши «касса: причина».\n\n';
+            } else {
+              blockMsg += '   ⮕ пересчитай кассу (пришли точную сумму одним числом). Если денег правда не хватает — напиши «касса: причина», закрою с пометкой руководителю.\n\n';
+            }
           }
-          if (terminalSwap) {
+          if (!cardNote && terminalSwap) {
             const kd2 = channelDiffs.find(c => c.channel === 'Kaspi'), hd2 = channelDiffs.find(c => c.channel === 'Halyk');
             blockMsg += '🔁 Похоже, ПЕРЕПУТАН ТЕРМИНАЛ: одну сумму ~' + terminalSwap.amount.toLocaleString('ru-RU') + ' ₸ пробили не на тот банк.\n';
             if (kd2) blockMsg += '   • Kaspi: ' + (kd2.diff>0?'+':'') + Number(kd2.diff).toLocaleString('ru-RU') + ' тг\n';
@@ -1169,6 +1184,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             blockMsg += '   ⮕ если так — напиши «перепутал терминал», закрою с пометкой. Если другая причина — напиши её.\n';
           }
           unexplainedDiffs.forEach(cd => {
+            if (cardNote) return; // карты уже объяснены причиной
             if (terminalSwap && (cd.channel === 'Kaspi' || cd.channel === 'Halyk')) return; // объяснено перепутанным терминалом
             const sign = cd.diff > 0 ? '+' : '';
             const dir = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
@@ -1183,22 +1199,29 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
               const rostaH = (s.rHalyk||0)+(s.rHalykOnline||0)-(s.rRetHalyk||0)-(s.rRetHalykOnline||0);
               blockMsg += '   ROSTA ' + rostaH.toLocaleString('ru-RU') + ' (QR ' + (s.rHalyk||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rHalykOnline||0).toLocaleString('ru-RU') + ') vs терминал ' + ((s.tHalyk||0)-(s.tHalykRet||0)).toLocaleString('ru-RU') + '\n';
             }
-            // ПОДСКАЗКА (только предложение — не привязываем сами): если есть предоплата, похожая по сумме
+            // ПОДСКАЗКА (только предложение — не привязываем сами)
             if (!(cd.covered > 0)) {
-              const sug = prepaySuggestions[cd.channel];
-              if (sug && sug.length === 1) {
-                blockMsg += '   💡 Возможно, это выкуп предоплаты: ' + sug[0].client + ' (' + Number(sug[0].amount).toLocaleString('ru-RU') + ' ₸' + (sug[0].id ? ', ' + sug[0].id : '') + ')\n';
-                blockMsg += '   ⮕ если да — напиши имя клиента или ID для подтверждения; если нет — причину.\n';
-              } else if (sug && sug.length > 1) {
-                blockMsg += '   💡 Похоже на выкуп одной из предоплат (подтверди, какой именно):\n';
-                sug.forEach(p => { blockMsg += '      • ' + p.client + ' (' + Number(p.amount).toLocaleString('ru-RU') + ' ₸' + (p.id ? ', ' + p.id : '') + ')\n'; });
-                blockMsg += '   ⮕ напиши имя клиента или ID нужной; если не выкуп — причину.\n';
+              if (cd.diff > 0) {
+                // ИЗЛИШЕК: терминал собрал больше, чем продано в ROSTA → похоже, СЕГОДНЯ приняли авансы (предоплаты).
+                // Товар не выдан → карточки предоплат НЕ закрываем, они остаются открытыми.
+                blockMsg += '   💡 Похоже, сегодня приняли авансы (предоплаты) на эту сумму — деньги на терминале, товар ещё не выдан.\n';
+                blockMsg += '   ⮕ если так — напиши «авансы приняты», закрою с пометкой (предоплаты останутся открытыми). Если другая причина — напиши её.\n';
+              } else {
+                const sug = prepaySuggestions[cd.channel];
+                if (sug && sug.length === 1) {
+                  blockMsg += '   💡 Возможно, это выкуп предоплаты: ' + sug[0].client + ' (' + Number(sug[0].amount).toLocaleString('ru-RU') + ' ₸' + (sug[0].id ? ', ' + sug[0].id : '') + ')\n';
+                  blockMsg += '   ⮕ если да — напиши имя клиента или ID для подтверждения; если нет — причину.\n';
+                } else if (sug && sug.length > 1) {
+                  blockMsg += '   💡 Похоже на выкуп одной из предоплат (подтверди, какой именно):\n';
+                  sug.forEach(p => { blockMsg += '      • ' + p.client + ' (' + Number(p.amount).toLocaleString('ru-RU') + ' ₸' + (p.id ? ', ' + p.id : '') + ')\n'; });
+                  blockMsg += '   ⮕ напиши имя клиента или ID нужной; если не выкуп — причину.\n';
+                }
               }
             }
           });
-          const realCardUnexpl = unexplainedDiffs.filter(cd => !(terminalSwap && (cd.channel === 'Kaspi' || cd.channel === 'Halyk')));
-          if (realCardUnexpl.length > 0) blockMsg += '\nПо терминалу: если из-за предоплаты — напиши «предоплата <имя клиента или ID>» (можно несколько). Если причина другая — напиши её одной фразой, закрою с пометкой для руководителя.';
-          else if (!terminalSwap) blockMsg += 'Если касса верна и расхождение объяснимо — напиши причину одной фразой, закрою с пометкой.';
+          const realCardUnexpl = cardNote ? [] : unexplainedDiffs.filter(cd => !(terminalSwap && (cd.channel === 'Kaspi' || cd.channel === 'Halyk')));
+          if (realCardUnexpl.length > 0) blockMsg += '\nПо картам: если из-за предоплаты — напиши «предоплата <имя клиента или ID>» (можно несколько). Если причина другая — напиши «карты: причина».';
+          if ((cashProblem && !cashNote) && realCardUnexpl.length > 0) blockMsg += '\n(Касса и карты объясняются отдельно — смена закроется, когда закрыты обе.)';
           await sendTelegram(userId, blockMsg);
           // Владельцу — полный HTML-отчёт для контроля, даже если смена не закрыта
           const sellerForBlock = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
@@ -1214,6 +1237,8 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
             for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + sellerForBlock);
           }
           cleanReply = stripTag(reply, 'SHIFT_CLOSE');
+          s._cashOpen = (cashProblem && !cashNote);            // касса ещё требует объяснения
+          s._cardsOpen = (realCardUnexpl.length > 0);          // карты ещё требуют объяснения
           pendingClose[String(userId)] = s; // запоминаем закрытие — продавец назовёт предоплату/причину и код достроит закрытие
           { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
         }
@@ -1224,6 +1249,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           const seenPrep = new Set();
           const namedRefs = (Array.isArray(s.prepayApplied) ? s.prepayApplied : []).map(a => String(a.ref || a.id || a.client || '').trim().toLowerCase()).filter(Boolean);
           for (const e of prepayExplanations) {
+            if (e.diff >= 0) continue; // ИЗЛИШЕК = аванс принят сегодня, товар НЕ выдан → карточку не закрываем
             for (const pp of (e.prepays || [])) {
               const pid = String(pp.id || pp.prep_id || '').trim();
               const pname = String(pp.client || pp.client_name || '').trim();
@@ -1242,12 +1268,20 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         // Записываем что первое закрытие состоялось — следующий будет вторым
         const todayKeyClose = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         // Закрытие НЕ заблокировано (есть заметка/предоплата), но если расхождение по терминалу осталось необъяснённым предоплатой — не прячем, шлём владельцу
-        if (unexplainedDiffs.length > 0) {
+        // Расхождение по КАРТАМ, закрытое причиной — владельцу
+        if (unexplainedDiffs.length > 0 && s.notes && s.notes.trim().length > 0) {
           for (const ownerId of OWNER_IDS) {
-            let warn = '⚠️ Смена закрыта С РАСХОЖДЕНИЕМ\n👤 ' + (shift.seller||sellerName) + '\n';
+            let warn = '⚠️ Смена закрыта С РАСХОЖДЕНИЕМ ПО КАРТАМ\n👤 ' + (shift.seller||sellerName) + '\n';
             unexplainedDiffs.forEach(cd => { const sg = cd.diff>0?'+':''; const dr = cd.diff>0?'излишек':'недостача'; warn += '• ' + cd.channel + ': ' + dr + ' ' + sg + Number(cd.diff).toLocaleString('ru-RU') + ' тг'; if (cd.covered > 0) warn += ' (предоплата покрыла ' + Number(cd.covered).toLocaleString('ru-RU') + ', остаток ' + Number(cd.residual).toLocaleString('ru-RU') + ')'; warn += '\n'; });
-            if (hasNotes) warn += '📝 Причина (со слов продавца): ' + s.notes;
+            warn += '📝 Причина (карты): ' + s.notes;
             await sendTelegram(ownerId, warn);
+          }
+        }
+        // КАССА закрыта ПРИЧИНОЙ (а не пересчётом) — красный флаг: возможна реальная недостача/излишек
+        if (s.cashNote && s.cashNote.trim().length > 0 && Math.abs(cashBoxDiff) > 1000) {
+          const cf = cashBoxDiff < 0 ? 'НЕДОСТАЧА' : 'ИЗЛИШЕК';
+          for (const ownerId of OWNER_IDS) {
+            await sendTelegram(ownerId, '🔴 КАССА закрыта ПРИЧИНОЙ (не пересчётом) — ПРОВЕРЬ!\n👤 ' + (shift.seller||sellerName) + '\n💵 ' + cf + ' ' + (cashBoxDiff>0?'+':'') + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\n📝 Со слов продавца: ' + s.cashNote);
           }
         }
         if (s.shiftStatus !== 'second_close') {
@@ -1859,11 +1893,34 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     const residual = lc.replace(/[\d\s\u00a0.,]/g, '').replace(/налич\w*|касс\w*|тенге|тг|штук/gi, '').trim();
     const isCashEntry = !prepayRef && digitsM && (cashKeyword || residual.length <= 3);
     const mentionsPrepay = /предоп|предапл|выкуп|аванс/i.test(lc);
-    if (prepayRef || isCashEntry || (!mentionsPrepay && !isQuestion && text.length >= 6)) {
+    // Подтверждение «авансы приняты сегодня» (объяснение ИЗЛИШКА) — это причина по картам, а не запрос списка
+    const isAvansConfirm = /аванс|предоплат/i.test(lc) && /принят|принял|приним|приняли|взял|за сегодня|сегодня/i.test(lc);
+    // Раздельные замки: причина ПО КАССЕ vs ПО КАРТАМ
+    const cashReasonKw = /касс|сдач|размен|не хват|нехват|из кассы|своих|мои деньги|мелоч/i.test(lc);
+    const cardReasonKw = /\bкарт|терминал|перепутал|kaspi|halyk|каспи|халык/i.test(lc) || isAvansConfirm;
+    const pc = pendingClose[userKey] || {};
+    if (prepayRef || isCashEntry || isAvansConfirm || cashReasonKw || (!mentionsPrepay && !isQuestion && text.length >= 6)) {
       const s2 = Object.assign({}, pendingClose[userKey]);
       if (prepayRef) s2.prepayApplied = [...(Array.isArray(pendingClose[userKey].prepayApplied) ? pendingClose[userKey].prepayApplied : []), { ref: prepayRef }];
       else if (isCashEntry) { s2.cashActual = Number(digitsM[0]); } // пересчёт кассы — без пометки, просто перепроверяем
-      else s2.notes = ((s2.notes ? s2.notes + '; ' : '') + text);
+      else {
+        // Куда отнести причину — касса или карты (не даём картами закрыть кассу и наоборот)
+        let tgt;
+        if (cashReasonKw && !cardReasonKw) tgt = 'cash';
+        else if (cardReasonKw && !cashReasonKw) tgt = 'card';
+        else if (pc._cashOpen && !pc._cardsOpen) tgt = 'cash';
+        else if (pc._cardsOpen && !pc._cashOpen) tgt = 'card';
+        else tgt = 'ask';
+        if (tgt === 'ask') {
+          conversations[userKey] = conversations[userKey] || [];
+          conversations[userKey].push({ role: 'user', content: messageText });
+          conversations[userKey].push({ role: 'assistant', content: '[Уточняю: причина по кассе или по картам]' });
+          await sendTelegram(userId, 'Это причина по КАССЕ или по КАРТАМ? Напиши «касса: …» или «карты: …» — закрою нужный пункт.');
+          return;
+        }
+        if (tgt === 'cash') s2.cashNote = ((s2.cashNote ? s2.cashNote + '; ' : '') + text);
+        else s2.notes = ((s2.notes ? s2.notes + '; ' : '') + text);
+      }
       conversations[userKey] = conversations[userKey] || [];
       conversations[userKey].push({ role: 'user', content: messageText });
       const syntheticClose = 'SHIFT_CLOSE:' + JSON.stringify(s2);
