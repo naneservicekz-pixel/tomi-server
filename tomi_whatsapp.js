@@ -2273,16 +2273,13 @@ function SellerPage(){
   const loadShiftCashOpen=async(seller)=>{
     if(!seller) return;
     try {
-      const today=todayStr();
+      const today=todayStr(); // YYYY-MM-DD
       const encoded=encodeURIComponent(seller);
-      const data=await sbFetch("open_shifts","GET",null,\`?seller=eq.\${encoded}&order=start_time.desc&limit=1\`);
+      // Ищем смену продавца открытую СЕГОДНЯ
+      const data=await sbFetch("open_shifts","GET",null,
+        \`?seller=eq.\${encoded}&start_time=gte.\${today}T00:00:00&order=start_time.desc&limit=1\`);
       if(data&&data.length>0&&data[0].cash_open!=null){
         upd("cashOpen",String(data[0].cash_open));
-      } else {
-        // Попробуем через phone поиск
-        const data2=await sbFetch("open_shifts","GET",null,\`?order=start_time.desc&limit=10\`);
-        const match=data2&&data2.find(r=>r.seller===seller&&r.cash_open!=null);
-        if(match) upd("cashOpen",String(match.cash_open));
       }
     } catch(e){console.warn("loadShiftCashOpen:",e.message);}
   };
@@ -2322,7 +2319,7 @@ function SellerPage(){
     if(!remove&&prep.id){
       try {
         await sbFetch("prepayments","PATCH",
-          {status:"🟢 Закрыта",notes:"Выкуплено при закрытии смены "+todayStr()},
+          {status:"🟢 Выдан",notes:"Товар выдан · Закрыто при сверке смены "+todayStr()},
           \`?id=eq.\${prep.id}\`
         );
       } catch(e){console.warn("closePrepay:",e.message);}
@@ -2332,7 +2329,7 @@ function SellerPage(){
   const loadOpenPrepays=async()=>{
     setLoadingPrepays(true);
     try {
-      const data=await sbFetch("prepayments","GET",null,"?status=neq.🟢 Закрыта&order=prep_date.asc");
+      const data=await sbFetch("prepayments","GET",null,"?status=eq.🟡 Открыта&order=prep_date.asc");
       setOpenPrepays(data||[]);
     } catch(e){console.error(e);}
     setLoadingPrepays(false);
