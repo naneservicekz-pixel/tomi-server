@@ -2566,14 +2566,24 @@ function SellerPage(){
           onAttachPrepay={(p,r)=>attachPrepay("cash",p,r)}
         />
 
-        {/* Итог сверки */}
-        <div style={{background:isOk?"rgba(74,222,128,0.1)":"rgba(251,113,113,0.08)",border:"1px solid "+(isOk?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),borderRadius:"12px",padding:"16px",marginBottom:"16px",textAlign:"center"}}>
-          <div style={{fontSize:"12px",color:"#555",marginBottom:"4px"}}>ROSTA: {fmt(rostaTotal)} ₸ · ФАКТ: {fmt(factTotal)} ₸</div>
-          <div style={{fontSize:"22px",fontWeight:"700",color:isOk?"#22c55e":"#fb7171"}}>
-            {isOk?"✅ Всё сходится":\`\${totalDiff>0?"+":""}\${fmt(totalDiff)} ₸\`}
-          </div>
-          {!isOk&&<div style={{fontSize:"12px",color:"#fb7171",marginTop:"4px"}}>Объясни расхождение выше</div>}
-        </div>
+        {/* Итог сверки — учитываем все прикреплённые предоплаты */}
+        {(()=>{
+          const totalPrepayAdj=Object.values(attachedIncoming).reduce((s,list)=>s+list.reduce((ss,p)=>ss+parse(p.amount),0),0);
+          const adjDiff=totalDiff<0?totalDiff+totalPrepayAdj:totalDiff-totalPrepayAdj;
+          const adjOk=Math.abs(adjDiff)<500;
+          const prepayExplained=totalPrepayAdj>0&&adjOk&&!isOk;
+          return <div style={{background:adjOk?"rgba(74,222,128,0.1)":"rgba(251,113,113,0.08)",
+            border:"1px solid "+(adjOk?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),
+            borderRadius:"12px",padding:"16px",marginBottom:"16px",textAlign:"center"}}>
+            <div style={{fontSize:"12px",color:"#555",marginBottom:"4px"}}>ROSTA: {fmt(rostaTotal)} ₸ · ФАКТ: {fmt(factTotal)} ₸</div>
+            {totalPrepayAdj>0&&<div style={{fontSize:"12px",color:"#2E6B5E",marginBottom:"4px"}}>Предоплата: +{fmt(totalPrepayAdj)} ₸</div>}
+            <div style={{fontSize:"22px",fontWeight:"700",color:adjOk?"#22c55e":"#fb7171"}}>
+              {adjOk?"✅ Всё сходится":\`\${adjDiff>0?"+":""}\${fmt(adjDiff)} ₸\`}
+            </div>
+            {prepayExplained&&<div style={{fontSize:"12px",color:"#2E6B5E",marginTop:"4px",fontWeight:"600"}}>💡 Расхождение объяснено предоплатой</div>}
+            {!adjOk&&<div style={{fontSize:"12px",color:"#fb7171",marginTop:"4px"}}>Объясни расхождение выше</div>}
+          </div>;
+        })()}
       </>}
 
       {/* Примечания */}
@@ -2720,22 +2730,59 @@ function SellerPage(){
           </div>)}
         </div>
 
-        {/* Итог */}
-        <div style={{background:isOk?"rgba(74,222,128,0.1)":"rgba(251,113,113,0.08)",border:"1px solid "+(isOk?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),borderRadius:"12px",padding:"16px 18px",marginBottom:"16px"}}>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
-            <div style={{textAlign:"center"}}>
-              <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"3px"}}>ROSTA</div>
-              <div style={{fontSize:"16px",fontWeight:"700"}}>{fmt(rostaTotal)} ₸</div>
+        {/* Итог с учётом предоплат */}
+        {(()=>{
+          const totalPrepayAdj=Object.values(attachedIncoming).reduce((s,list)=>s+list.reduce((ss,p)=>ss+parse(p.amount),0),0);
+          const adjDiff=totalDiff<0?totalDiff+totalPrepayAdj:totalDiff-totalPrepayAdj;
+          const adjOk=Math.abs(adjDiff)<500;
+          const prepayExplained=totalPrepayAdj>0&&adjOk&&!isOk;
+          return <div style={{background:adjOk?"rgba(74,222,128,0.1)":"rgba(251,113,113,0.08)",
+            border:"1px solid "+(adjOk?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),
+            borderRadius:"12px",padding:"16px 18px",marginBottom:"16px"}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"3px"}}>ROSTA</div>
+                <div style={{fontSize:"16px",fontWeight:"700"}}>{fmt(rostaTotal)} ₸</div>
+              </div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"3px"}}>Факт</div>
+                <div style={{fontSize:"16px",fontWeight:"700"}}>{fmt(factTotal)} ₸</div>
+              </div>
             </div>
-            <div style={{textAlign:"center"}}>
-              <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"3px"}}>Факт</div>
-              <div style={{fontSize:"16px",fontWeight:"700"}}>{fmt(factTotal)} ₸</div>
+            {totalPrepayAdj>0&&<div style={{textAlign:"center",fontSize:"13px",color:"#2E6B5E",fontWeight:"600",marginBottom:"8px"}}>
+              💳 Предоплата: +{fmt(totalPrepayAdj)} ₸
+            </div>}
+            <div style={{textAlign:"center",fontSize:"16px",fontWeight:"700",color:adjOk?"#22c55e":"#fb7171"}}>
+              {adjOk?"✅ Всё сходится":prepayExplained?"✅ Объяснено предоплатой":\`⚠️ Разница: \${adjDiff>0?"+":""}\${fmt(adjDiff)} ₸\`}
             </div>
-          </div>
-          <div style={{textAlign:"center",fontSize:"16px",fontWeight:"700",color:isOk?"#22c55e":"#fb7171"}}>
-            {isOk?"✅ Всё сходится":\`⚠️ Разница: \${totalDiff>0?"+":""}\${fmt(totalDiff)} ₸\`}
-          </div>
-        </div>
+            {prepayExplained&&<div style={{textAlign:"center",fontSize:"12px",color:"#2E6B5E",marginTop:"4px"}}>
+              Расхождение {fmt(Math.abs(totalDiff))} ₸ закрыто предоплатой клиента
+            </div>}
+          </div>;
+        })()}
+
+        {/* Предоплаты клиентов */}
+        {Object.values(attachedIncoming).flat().length>0&&<div style={{background:"#fff",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",border:"1px solid rgba(0,0,0,0.08)"}}>
+          <div style={{fontSize:"10px",letterSpacing:"0.12em",textTransform:"uppercase",color:"#888",marginBottom:"12px"}}>Предоплаты клиентов</div>
+          {Object.entries(attachedIncoming).map(([channel,list])=>list.map((p,i)=><div key={channel+i} style={{borderLeft:"3px solid #2E6B5E",paddingLeft:"12px",marginBottom:"12px"}}>
+            <div style={{fontWeight:"700",fontSize:"14px",color:"#1a1a1a",marginBottom:"2px"}}>{p.client_name||"Клиент"}</div>
+            {p.phone&&<div style={{fontSize:"12px",color:"#888",marginBottom:"4px"}}>📱 {p.phone}</div>}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px",marginTop:"6px"}}>
+              <div style={{background:"rgba(0,0,0,0.03)",borderRadius:"6px",padding:"6px 8px"}}>
+                <div style={{fontSize:"9px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em"}}>Предоплата</div>
+                <div style={{fontSize:"14px",fontWeight:"700",color:"#2E6B5E",marginTop:"1px"}}>{fmt(parse(p.amount))} ₸</div>
+              </div>
+              {parse(p.balance||0)>0&&<div style={{background:"rgba(198,40,40,0.05)",borderRadius:"6px",padding:"6px 8px"}}>
+                <div style={{fontSize:"9px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em"}}>Остаток</div>
+                <div style={{fontSize:"14px",fontWeight:"700",color:"#c62828",marginTop:"1px"}}>{fmt(parse(p.balance))} ₸</div>
+              </div>}
+            </div>
+            {p.item&&<div style={{fontSize:"12px",color:"#555",marginTop:"6px"}}>👗 {p.item}</div>}
+            {p.channel&&<div style={{fontSize:"11px",color:"#888",marginTop:"2px"}}>💳 {p.channel}</div>}
+            {p.prep_date&&<div style={{fontSize:"11px",color:"#888",marginTop:"2px"}}>📅 Внесено: {p.prep_date}</div>}
+            {p.prep_id&&<div style={{fontSize:"11px",color:"#bbb",marginTop:"2px"}}>{p.prep_id}</div>}
+          </div>))}
+        </div>}
 
         {shift.notes&&<div style={{background:"rgba(0,0,0,0.04)",borderRadius:"10px",padding:"12px 14px",marginBottom:"14px",fontSize:"13px",color:"#555"}}>
           📝 {shift.notes}
