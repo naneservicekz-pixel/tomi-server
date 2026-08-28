@@ -2053,6 +2053,22 @@ app.post('/webhook', async (req, res) => {
 
 app.get('/', (req, res) => res.json({ status: 'ok', service: 'TOMI NANE PARIS Telegram', version: '4.4' }));
 
+// Утилита: удалить запись из open_shifts по phone (через GET для совместимости)
+app.get('/api/clear-shift/:phone', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    const phone = req.params.phone;
+    const url = `${SUPABASE_URL}/rest/v1/open_shifts?phone=eq.${encodeURIComponent(phone)}`;
+    await fetch(url, {
+      method: 'DELETE',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+    });
+    res.json({ ok: true, deleted: phone });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Веб-форма продавца/владельца ────────────────────────────────────
 app.get('/tomi', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
