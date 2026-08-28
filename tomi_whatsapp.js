@@ -1727,50 +1727,109 @@ app.post('/api/shift-report', async (req, res) => {
     const cashActual = parse(s.cashActual);
     const cashOpen   = parse(s.cashOpen);
     const inkasso    = parse(s.inkasso);
-    const cashSales  = cashActual>0 ? cashActual-cashOpen+parse(s.cashPayouts)+inkasso+parse(s.rRetCash) : Math.max(0,parse(s.rCash));
-    const factTotal  = kaspiNet+halykNet+cashSales+parse(s.tPersonal)+parse(s.rBonus);
+    const cashSales  = parse(s.rCash)>0 ? parse(s.rCash)-parse(s.rRetCash) : Math.max(0, cashActual>0 ? cashActual-cashOpen+parse(s.cashPayouts)+inkasso : 0);
+    const personalFact = parse(s.tPersonal)>0 ? parse(s.tPersonal) : parse(s.rPersonal)||0;
+    const factTotal  = kaspiNet+halykNet+cashSales+personalFact+parse(s.rBonus);
     const diff       = factTotal-rostaTotal;
     const isOk       = Math.abs(diff)<500;
     const date       = s.date||new Date().toISOString().slice(0,10);
     const d          = date.slice(8,10)+'.'+date.slice(5,7)+'.'+date.slice(0,4);
     const diffSign   = diff>0?'+':'';
 
-    let msg = '📋 *NANE PARIS — Закрытие смены*\n';
-    msg += `📅 ${d} | 👤 ${s.seller||'?'}\n`;
-    msg += '─'.repeat(28)+'\n\n';
-    msg += `📊 *ROSTA:* ${fmt(rostaTotal)} ₸\n`;
-    if(parse(s.rKaspi))    msg += `  Kaspi QR: ${fmt(parse(s.rKaspi))} ₸\n`;
-    if(parse(s.rOnline))   msg += `  Онлайн Kaspi: ${fmt(parse(s.rOnline))} ₸\n`;
-    if(parse(s.rHalyk))    msg += `  Halyk QR: ${fmt(parse(s.rHalyk))} ₸\n`;
-    if(parse(s.rHalykOnline)) msg += `  Онлайн Halyk: ${fmt(parse(s.rHalykOnline))} ₸\n`;
-    if(parse(s.rCash))     msg += `  Наличные: ${fmt(parse(s.rCash))} ₸\n`;
-    if(parse(s.rPersonal)) msg += `  Личная карта: ${fmt(parse(s.rPersonal))} ₸\n`;
-    if(parse(s.rBonus))    msg += `  Бонусы: ${fmt(parse(s.rBonus))} ₸\n`;
-    if(parse(s.rRetKaspi)) msg += `  Возврат Kaspi: -${fmt(parse(s.rRetKaspi))} ₸\n`;
-    if(parse(s.rRetHalyk)) msg += `  Возврат Halyk: -${fmt(parse(s.rRetHalyk))} ₸\n`;
-    msg += '\n';
-    msg += `💳 *Терминалы (ФАКТ):*\n`;
-    msg += `  Kaspi: ${fmt(kaspiNet)} ₸${parse(s.tKaspiRet)?' (возврат -'+fmt(parse(s.tKaspiRet))+' ₸)':''}\n`;
-    msg += `  Halyk: ${fmt(halykNet)} ₸${parse(s.tHalykRet)?' (возврат -'+fmt(parse(s.tHalykRet))+' ₸)':''}\n`;
-    if(parse(s.tPersonal)) msg += `  Личная карта: ${fmt(parse(s.tPersonal))} ₸\n`;
-    msg += '\n';
-    msg += `💵 *Касса:*\n`;
-    msg += `  Открытие: ${fmt(cashOpen)} ₸\n`;
-    if(cashActual) msg += `  Закрытие: ${fmt(cashActual)} ₸\n`;
-    if(inkasso)    msg += `  Инкассация: ${fmt(inkasso)} ₸\n`;
-    msg += '\n';
-    msg += `📊 *ИТОГ:*\n`;
-    msg += `  ROSTA: ${fmt(rostaTotal)} ₸\n`;
-    msg += `  ФАКТ:  ${fmt(factTotal)} ₸\n`;
-    msg += isOk ? '  ✅ Сходится\n' : `  ⚠️ Расхождение: ${diffSign}${fmt(diff)} ₸\n`;
-    if(s.reasonKaspi)  msg += `\n💬 Kaspi: ${s.reasonKaspi}\n`;
-    if(s.reasonHalyk)  msg += `💬 Halyk: ${s.reasonHalyk}\n`;
-    if(s.reasonCash)   msg += `💬 Нал: ${s.reasonCash}\n`;
-    if(s.notes)        msg += `\n📝 ${s.notes}\n`;
-    msg += '\n_Отправлено из веб-формы_';
+    // Генерируем красивый HTML отчёт для отправки в Telegram
+    const prepayAdj = s.prepayTotal || 0;
+    const adjDiff = diff < 0 ? diff + prepayAdj : diff - prepayAdj;
+    const adjOk = Math.abs(adjDiff) < 500;
+    const prepayExplained = prepayAdj > 0 && adjOk && !isOk;
+
+    const htmlReport = `<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5eb;padding:16px;color:#1a1a1a}
+.card{background:#fff;border-radius:12px;padding:14px 16px;margin-bottom:10px;border:1px solid rgba(0,0,0,0.08)}
+.header{background:#1a1a1a;border-radius:12px;padding:16px 18px;margin-bottom:10px;color:#fff}
+.label{font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:#888;margin-bottom:8px}
+.big{font-size:22px;font-weight:700;margin-bottom:10px}
+.row{display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px}
+.muted{color:#555}.bold{font-weight:700}
+.red{color:#c62828}.green{color:#22c55e}
+.result{border-radius:12px;padding:14px 16px;margin-bottom:10px;text-align:center}
+.result.ok{background:rgba(74,222,128,0.1);border:1px solid rgba(74,222,128,0.3)}
+.result.fail{background:rgba(251,113,113,0.08);border:1px solid rgba(251,113,113,0.25)}
+.prepay-card{border-left:3px solid #1D9E75;padding-left:12px;margin-top:8px}
+.prepay-name{font-weight:700;font-size:14px}
+.prepay-amount{font-size:16px;font-weight:700;color:#0F6E56;margin:4px 0}
+.meta{font-size:11px;color:#888;margin-top:2px}
+</style></head><body>
+<div class="header">
+  <div style="font-size:10px;opacity:0.45;letter-spacing:0.14em;text-transform:uppercase;margin-bottom:4px">NANE PARIS · Отчёт смены</div>
+  <div style="font-size:18px;font-weight:700">${s.seller||'?'}</div>
+  <div style="font-size:13px;opacity:0.5;margin-top:2px">${d}</div>
+</div>
+
+<div class="card">
+  <div class="label">ROSTA</div>
+  <div class="big">${fmt(rostaTotal)} ₸</div>
+  ${parse(s.rKaspi)?`<div class="row"><span class="muted">Kaspi QR</span><span class="bold">${fmt(parse(s.rKaspi))} ₸</span></div>`:''}
+  ${parse(s.rOnline)?`<div class="row"><span class="muted">Онлайн Kaspi</span><span class="bold">${fmt(parse(s.rOnline))} ₸</span></div>`:''}
+  ${parse(s.rHalyk)?`<div class="row"><span class="muted">Halyk QR</span><span class="bold">${fmt(parse(s.rHalyk))} ₸</span></div>`:''}
+  ${parse(s.rHalykOnline)?`<div class="row"><span class="muted">Онлайн Halyk</span><span class="bold">${fmt(parse(s.rHalykOnline))} ₸</span></div>`:''}
+  ${parse(s.rCash)?`<div class="row"><span class="muted">Наличные</span><span class="bold">${fmt(parse(s.rCash))} ₸</span></div>`:''}
+  ${parse(s.rPersonal)?`<div class="row"><span class="muted">Личная карта</span><span class="bold">${fmt(parse(s.rPersonal))} ₸</span></div>`:''}
+  ${parse(s.rBonus)?`<div class="row"><span class="muted">Бонусы</span><span class="bold">${fmt(parse(s.rBonus))} ₸</span></div>`:''}
+  ${parse(s.rRetKaspi)?`<div class="row"><span class="red">Возврат Kaspi</span><span class="red bold">−${fmt(parse(s.rRetKaspi))} ₸</span></div>`:''}
+  ${parse(s.rRetHalyk)?`<div class="row"><span class="red">Возврат Halyk</span><span class="red bold">−${fmt(parse(s.rRetHalyk))} ₸</span></div>`:''}
+</div>
+
+<div class="card">
+  <div class="label">Терминалы (факт)</div>
+  ${kaspiNet?`<div class="row"><span class="muted">Kaspi</span><span class="bold">${fmt(kaspiNet)} ₸</span></div>`:''}
+  ${halykNet?`<div class="row"><span class="muted">Halyk</span><span class="bold">${fmt(halykNet)} ₸</span></div>`:''}
+  ${personalFact?`<div class="row"><span class="muted">Личная карта</span><span class="bold">${fmt(personalFact)} ₸</span></div>`:''}
+</div>
+
+${(cashOpen||cashActual)?`<div class="card">
+  <div class="label">Касса</div>
+  ${cashOpen?`<div class="row"><span class="muted">Открытие</span><span class="bold">${fmt(cashOpen)} ₸</span></div>`:''}
+  ${cashActual?`<div class="row"><span class="muted">Закрытие</span><span class="bold">${fmt(cashActual)} ₸</span></div>`:''}
+  ${inkasso?`<div class="row"><span class="muted">Инкассация</span><span class="red bold">−${fmt(inkasso)} ₸</span></div>`:''}
+</div>`:''}
+
+${prepayAdj>0?`<div class="card">
+  <div class="label">Предоплаты клиентов</div>
+  <div class="prepay-card">
+    <div class="prepay-amount">${fmt(prepayAdj)} ₸</div>
+    <div class="meta">Подтянуто при закрытии смены</div>
+  </div>
+</div>`:''}
+
+<div class="result ${adjOk?'ok':'fail'}">
+  <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+    <div style="text-align:center;flex:1"><div style="font-size:10px;color:#888;text-transform:uppercase;margin-bottom:2px">ROSTA</div><div style="font-size:16px;font-weight:700">${fmt(rostaTotal)} ₸</div></div>
+    <div style="text-align:center;flex:1"><div style="font-size:10px;color:#888;text-transform:uppercase;margin-bottom:2px">Факт</div><div style="font-size:16px;font-weight:700">${fmt(factTotal)} ₸</div></div>
+  </div>
+  ${prepayAdj>0?`<div style="font-size:13px;color:#0F6E56;font-weight:700;margin-bottom:6px;text-align:center">💳 Предоплата: +${fmt(prepayAdj)} ₸</div>`:''}
+  <div style="font-size:18px;font-weight:700;color:${adjOk?'#22c55e':'#fb7171'};text-align:center">
+    ${adjOk?'✅ Всё сходится':prepayExplained?'✅ Объяснено предоплатой':`⚠️ Расхождение: ${diffSign}${fmt(Math.abs(adjDiff))} ₸`}
+  </div>
+  ${prepayExplained?`<div style="font-size:12px;color:#0F6E56;text-align:center;margin-top:4px">Расхождение ${fmt(Math.abs(diff))} ₸ закрыто предоплатой</div>`:''}
+</div>
+
+${s.reasonKaspi||s.reasonHalyk||s.reasonCash?`<div class="card"><div class="label">Пояснения</div>
+  ${s.reasonKaspi?`<div class="row"><span class="muted">Kaspi</span><span>${s.reasonKaspi}</span></div>`:''}
+  ${s.reasonHalyk?`<div class="row"><span class="muted">Halyk</span><span>${s.reasonHalyk}</span></div>`:''}
+  ${s.reasonCash?`<div class="row"><span class="muted">Нал</span><span>${s.reasonCash}</span></div>`:''}
+</div>`:''}
+
+${s.notes?`<div class="card"><div class="label">Примечания</div><div style="font-size:13px">${s.notes}</div></div>`:''}
+
+<div style="font-size:11px;color:#aaa;text-align:center;margin-top:8px">Отправлено из веб-формы · ${d}</div>
+</body></html>`;
 
     for (const ownerId of OWNER_IDS) {
-      await sendTelegram(ownerId, msg);
+      await sendTelegramDocument(ownerId, `shift_${s.seller||'report'}_${date}.html`, htmlReport, `📋 Закрытие смены — ${s.seller||'?'} · ${d}`);
     }
     res.json({ ok: true });
   } catch(e) {
@@ -2370,13 +2429,17 @@ function SellerPage(){
 
       // 2. Отправляем отчёт владельцу в Telegram
       try {
-        await fetch(API_URL+"/api/shift-report",{
+        const prepayTotal=Object.values(attachedIncoming).reduce((s,list)=>s+list.reduce((ss,p)=>ss+parse(p.amount||0),0),0);
+          await fetch(API_URL+"/api/shift-report",{
           method:"POST",
           headers:{"Content-Type":"application/json"},
           body:JSON.stringify({
             ...shift,
             rostaTotal,factTotal,totalDiff,isOk,
-            cashSalesFact
+            cashSalesFact,prepayTotal,
+            prepayClients:Object.values(attachedIncoming).flat().map(p=>({
+              name:p.client_name,phone:p.phone,amount:p.amount,item:p.item,channel:p.channel,id:p.prep_id
+            }))
           })
         });
       } catch(e){ console.warn("Telegram notify:", e.message); }
@@ -4188,3 +4251,4 @@ app.listen(PORT, async () => {
   const body = JSON.stringify({ url: webhookUrl });
   https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/setWebhook', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => console.log('Webhook установлен:', data)); }).end(body);
 });
+    
