@@ -2084,7 +2084,13 @@ function SecTitle({children,icon}){
 // ── DiffRow — сверка по каналу ────────────────────────────────────────
 function DiffRow({label,rosta,fact,reason,onReasonChange,incomingPrepays,onLoadPrepays,loadingPrepays,attachedPrepays,onAttachPrepay}){
   const attachedSum=(attachedPrepays||[]).reduce((s,p)=>s+parse(p.amount),0);
-  const diff=(fact-rosta)-attachedSum;
+  // Предоплата объясняет расхождение с любой стороны:
+  // Если факт < ROSTA (недостача) — предоплата была раньше, прибавляем к факту
+  // Если факт > ROSTA (излишек) — деньги получены по предоплате, прибавляем к ROSTA
+  const rawDiff = fact - rosta;
+  const diff = rawDiff < 0
+    ? rawDiff + attachedSum   // недостача: предоплата закрывает разрыв
+    : rawDiff - attachedSum;  // излишек: предоплата объясняет лишние деньги
   const ok=Math.abs(diff)<500;
   const [showList,setShowList]=useState(false);
 
