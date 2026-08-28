@@ -1,4 +1,3 @@
-
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
 // Версия 4.4 — исправлено сохранение фото по порядку
@@ -1615,7 +1614,7 @@ async function loadPrepays(type) {
 app.options('/api/db/:table', (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
   res.sendStatus(200);
 });
 
