@@ -1797,7 +1797,18 @@ ${(cashOpen||cashActual)?`<div class="card">
   ${inkasso?`<div class="row"><span class="muted">Инкассация</span><span class="red bold">−${fmt(inkasso)} ₸</span></div>`:''}
 </div>`:''}
 
-${prepayAdj>0?`<div class="card">
+${prepayAdj>0&&s.prepayClients&&s.prepayClients.length>0?`<div class="card">
+  <div class="label">Предоплаты клиентов</div>
+  ${s.prepayClients.map(c=>`
+  <div class="prepay-card" style="margin-bottom:10px">
+    <div class="prepay-name">${c.name||'Клиент'}</div>
+    ${c.phone?`<div class="meta">📱 ${c.phone}</div>`:''}
+    <div class="prepay-amount">${fmt(parse(c.amount))} ₸</div>
+    ${c.item?`<div class="meta">👗 ${c.item}</div>`:''}
+    ${c.channel?`<div class="meta">💳 ${c.channel}</div>`:''}
+    ${c.id?`<div class="meta" style="color:#ccc">${c.id}</div>`:''}
+  </div>`).join('')}
+</div>`:prepayAdj>0?`<div class="card">
   <div class="label">Предоплаты клиентов</div>
   <div class="prepay-card">
     <div class="prepay-amount">${fmt(prepayAdj)} ₸</div>
@@ -2258,6 +2269,7 @@ function SellerPage(){
   const [attachedIncoming,setAttachedIncoming]=useState({kaspi:[],halyk:[],cash:[],personal:[]});
   const [openPrepays,setOpenPrepays]=useState([]);
   const [loadingPrepays,setLoadingPrepays]=useState(false);
+  const [prepayListTab,setPrepayListTab]=useState("open");
   const [prepayForm,setPrepayForm]=useState({client:"",phone:"+7",channel:"Kaspi",amount:"",balance:"",item:"",notes:""});
   const [saving,setSaving]=useState(false);
   const [saved,setSaved]=useState(false);
@@ -2326,10 +2338,14 @@ function SellerPage(){
     }
   };
 
-  const loadOpenPrepays=async()=>{
+  const loadOpenPrepays=async(tab)=>{
     setLoadingPrepays(true);
+    const t=tab||prepayListTab||"open";
     try {
-      const data=await sbFetch("prepayments","GET",null,"?status=eq.🟡 Открыта&order=prep_date.asc");
+      const filter=t==="open"
+        ?"?status=eq.🟡 Открыта&order=prep_date.asc"
+        :"?status=in.(🟢 Выдан,🟢 Закрыта)&order=prep_date.desc&limit=50";
+      const data=await sbFetch("prepayments","GET",null,filter);
       setOpenPrepays(data||[]);
     } catch(e){console.error(e);}
     setLoadingPrepays(false);
@@ -2557,7 +2573,7 @@ function SellerPage(){
 
       <div style={{marginBottom:"14px"}}>
         <label style={LS}>Продавец</label>
-        <select style={{...FS}} value={shift.seller} onChange={e=>{upd("seller",e.target.value);loadShiftCashOpen(e.target.value);}}>
+        <select style={{...FS}} value={shift.seller} onChange={e=>{upd("seller",e.target.value);upd("cashOpen","");loadShiftCashOpen(e.target.value);}}>
           <option value="">Выбери продавца</option>
           {SELLERS.map(s=><option key={s}>{s}</option>)}
         </select>
@@ -2748,12 +2764,18 @@ function SellerPage(){
       <button onClick={handleSavePrepay} style={BTN}>💳 Сохранить предоплату</button>
 
       {/* Список предоплат */}
-      <SecTitle icon="📋">Открытые предоплаты</SecTitle>
-      <button onClick={loadOpenPrepays} disabled={loadingPrepays}
+      <SecTitle icon="📋">Предоплаты</SecTitle>
+      <div style={{display:"flex",gap:"8px",marginBottom:"12px"}}>
+        <button onClick={()=>{setPrepayListTab("open");loadOpenPrepays("open");}} style={{flex:1,padding:"8px",borderRadius:"8px",border:"1.5px solid #1a1a1a",background:prepayListTab==="open"?"#1a1a1a":"transparent",color:prepayListTab==="open"?"#FFFFF0":"#1a1a1a",fontSize:"12px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>🟡 Открытые</button>
+        <button onClick={()=>{setPrepayListTab("closed");loadOpenPrepays("closed");}} style={{flex:1,padding:"8px",borderRadius:"8px",border:"1.5px solid #1a1a1a",background:prepayListTab==="closed"?"#1a1a1a":"transparent",color:prepayListTab==="closed"?"#FFFFF0":"#1a1a1a",fontSize:"12px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>🟢 Выданные</button>
+      </div>
+      <button onClick={()=>loadOpenPrepays(prepayListTab)} disabled={loadingPrepays}
         style={{...BTN,background:"transparent",border:"1px solid #1a1a1a",color:"#1a1a1a",marginBottom:"14px",opacity:loadingPrepays?0.5:1}}>
         {loadingPrepays?"⏳ Загрузка...":"🔄 Загрузить список"}
       </button>
-      {openPrepays.map((p,i)=><div key={i} style={{border:"1.5px solid #e6a817",borderRadius:"8px",padding:"12px",marginBottom:"10px",background:"rgba(255,248,220,0.6)"}}>
+      {openPrepays.map((p,i)=>{
+        const isClosed=p.status&&(p.status.includes('Выдан')||p.status.includes('Закрыта'));
+        return <div key={i} style={{border:\`1.5px solid \${isClosed?'#4caf50':'#e6a817'}\`,borderRadius:"8px",padding:"12px",marginBottom:"10px",background:isClosed?"rgba(232,245,233,0.6)":"rgba(255,248,220,0.6)"}}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:"6px"}}>
           <div>
             <div style={{fontWeight:"700",fontSize:"14px"}}>{p.client_name}</div>
@@ -2765,7 +2787,9 @@ function SellerPage(){
           </div>
         </div>
         {p.item&&<div style={{fontSize:"12px",color:"#555"}}>👗 {p.item}</div>}
-      </div>)}
+        {isClosed&&<div style={{fontSize:"11px",color:"#4caf50",marginTop:"4px",fontWeight:"600"}}>{p.status} · {p.notes||""}</div>}
+      </div>;
+      })}
     </div>}
 
     </div>
