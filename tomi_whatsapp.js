@@ -12,7 +12,9 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 app.use(express.json());
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://ushpahkehvrfcqnbnpmu.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const TELEGRAM_TOKEN    = process.env.TELEGRAM_BOT_TOKEN;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
