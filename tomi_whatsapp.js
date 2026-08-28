@@ -2285,25 +2285,29 @@ function SellerPage(){
   const loadShiftCashOpen=async(seller)=>{
     if(!seller) return;
     try {
-      const today=todayStr();
       const encoded=encodeURIComponent(seller);
-      // 1. Ищем по имени за сегодня
-      let data=await sbFetch("open_shifts","GET",null,
-        \`?seller=eq.\${encoded}&start_time=gte.\${today}T00:00:00&order=start_time.desc&limit=1\`);
-      if(data&&data.length>0&&data[0].cash_open!=null){
-        upd("cashOpen",String(data[0].cash_open)); return;
+      // Ищем за последние 20 часов в UTC (покрывает сегодняшний день Астана UTC+5)
+      const since=new Date(Date.now()-20*60*60*1000).toISOString();
+      // 1. По имени продавца за последние 20 часов
+      const data=await sbFetch("open_shifts","GET",null,
+        \`?seller=eq.\${encoded}&start_time=gte.\${since}&order=start_time.desc&limit=5\`);
+      if(data&&data.length>0){
+        // Берём запись с наибольшим cash_open который введён сегодня
+        const todayStr2=todayStr(); // Астана дата
+        const todayRecord=data.find(r=>r.cash_open!=null&&r.start_time&&
+          (new Date(r.start_time).toLocaleDateString('ru-RU',{timeZone:'Asia/Almaty'}).split('.').reverse().join('-')===todayStr2||
+           r.start_time.slice(0,10)===todayStr2));
+        if(todayRecord){upd("cashOpen",String(todayRecord.cash_open));return;}
+        // Берём первый с cash_open
+        const anyRecord=data.find(r=>r.cash_open!=null);
+        if(anyRecord){upd("cashOpen",String(anyRecord.cash_open));return;}
       }
-      // 2. Все сегодняшние смены — ищем имя продавца
+      // 2. Все смены за последние 20 часов — ищем по имени
       const all=await sbFetch("open_shifts","GET",null,
-        \`?start_time=gte.\${today}T00:00:00&order=start_time.desc&limit=30\`);
+        \`?start_time=gte.\${since}&order=start_time.desc&limit=50\`);
       const match=all&&all.find(r=>String(r.seller||"").trim()===String(seller).trim()&&r.cash_open!=null);
-      if(match){upd("cashOpen",String(match.cash_open)); return;}
-      // 3. Последняя запись продавца за любой день
-      const last=await sbFetch("open_shifts","GET",null,
-        \`?seller=eq.\${encoded}&order=start_time.desc&limit=1\`);
-      if(last&&last.length>0&&last[0].cash_open!=null){
-        upd("cashOpen",String(last[0].cash_open));
-      }
+      if(match){upd("cashOpen",String(match.cash_open));}
+      // Если ничего не нашли — поле остаётся пустым, продавец вводит сам
     } catch(e){console.warn("loadShiftCashOpen:",e.message);}
   };
 
