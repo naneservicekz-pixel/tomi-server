@@ -1,3 +1,4 @@
+
 // ══════════════════════════════════════════════════════════════════════
 // ТОМИ — Telegram AI Управляющий NANE PARIS
 // Версия 4.4 — исправлено сохранение фото по порядку
@@ -2515,6 +2516,9 @@ function SellerPage(){
     if(!openForm.seller||!openForm.cashOpen){alert("Заполни продавца и кассу");return;}
     setOpenSaving(true);
     try {
+      // Сначала удаляем старую запись этого продавца
+      await sbFetch("open_shifts","DELETE",null,\`?phone=eq.web_\${encodeURIComponent(openForm.seller)}\`);
+      // Создаём новую с актуальной кассой
       await sbFetch("open_shifts","POST",{
         phone:"web_"+openForm.seller,seller:openForm.seller,shop:"NANE PARIS",
         cash_open:parse(openForm.cashOpen),start_time:new Date().toISOString(),is_second:false
