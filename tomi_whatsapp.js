@@ -10,7 +10,8 @@ const https = require('https');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://ushpahkehvrfcqnbnpmu.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
