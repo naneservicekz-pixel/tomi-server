@@ -2211,12 +2211,21 @@ function SellerPage(){
   // Расчёты
   const p=shift;
   const cashActualFilled=parse(p.cashActual)>0||p.cashActual!=="";
-  const cashSalesFact=cashActualFilled
-    ?(parse(p.cashActual)-parse(p.cashOpen)+parse(p.cashPayouts)+parse(p.inkasso)+parse(p.rRetCash))
-    :Math.max(0,parse(p.rCash));
+  // cashSalesFact: используем rCash из ROSTA как источник истины для продаж
+  // cashActual нужен только для сверки физической кассы
+  const cashSalesFact = parse(p.rCash) > 0
+    ? parse(p.rCash) - parse(p.rRetCash)  // ROSTA наличные (источник истины)
+    : Math.max(0, cashActualFilled        // если в ROSTA 0 — берём из факта
+        ? parse(p.cashActual)-parse(p.cashOpen)+parse(p.cashPayouts)+parse(p.inkasso)
+        : 0);
+  // Сверка кассы: ожидалось vs факт (отдельно от продаж)
+  const cashExpected = parse(p.cashOpen) + parse(p.rCash) - parse(p.rRetCash) - parse(p.inkasso);
+  const cashBoxDiff = cashActualFilled ? parse(p.cashActual) - cashExpected : 0;
   const totalReturns=parse(p.rRetKaspi)+parse(p.rRetHalyk)+parse(p.rRetCash);
   const rostaTotal=parse(p.rKaspi)+parse(p.rOnline)+parse(p.rHalyk)+parse(p.rHalykOnline)+parse(p.rCash)+parse(p.rPersonal)+parse(p.rBonus)-totalReturns;
-  const factTotal=(parse(p.tKaspi)-parse(p.tKaspiRet))+(parse(p.tHalyk)-parse(p.tHalykRet))+cashSalesFact+parse(p.tPersonal)+parse(p.rBonus);
+  // Личная карта: если факт не введён — берём из ROSTA
+  const personalFact = parse(p.tPersonal)>0 ? parse(p.tPersonal) : parse(p.rPersonal);
+  const factTotal=(parse(p.tKaspi)-parse(p.tKaspiRet))+(parse(p.tHalyk)-parse(p.tHalykRet))+cashSalesFact+personalFact+parse(p.rBonus);
   const totalDiff=factTotal-rostaTotal;
   const isOk=Math.abs(totalDiff)<500;
 
@@ -2525,7 +2534,18 @@ function SellerPage(){
       <SecTitle icon="💵">Касса</SecTitle>
       <MoneyField label="Открытие (начало смены)" value={shift.cashOpen} onChange={v=>upd("cashOpen",v)}/>
       <MoneyField label="Закрытие (конец смены — пересчитай)" value={shift.cashActual} onChange={v=>upd("cashActual",v)}
-        hint={"Ожидалось: "+fmt(parse(shift.cashOpen)+parse(shift.rCash)-parse(shift.inkasso))+" ₸"}/>
+        hint={"Ожидалось в кассе: "+fmt(parse(shift.cashOpen)+Math.max(0,parse(shift.rCash))-parse(shift.inkasso))+" ₸"}/>
+      {cashActualFilled&&Math.abs(cashBoxDiff)>500&&<div style={{
+        background:cashBoxDiff>0?"rgba(74,222,128,0.08)":"rgba(251,113,113,0.08)",
+        border:"1px solid "+(cashBoxDiff>0?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),
+        borderRadius:"8px",padding:"10px 12px",marginBottom:"8px",fontSize:"13px",
+        color:cashBoxDiff>0?"#22c55e":"#fb7171",fontWeight:"600"
+      }}>
+        {cashBoxDiff>0?"💚 Излишек в кассе":"❌ Недостача в кассе"}: {cashBoxDiff>0?"+":""}{fmt(cashBoxDiff)} ₸
+        <div style={{fontSize:"11px",fontWeight:"400",marginTop:"2px",opacity:0.8}}>
+          Ожидалось {fmt(cashExpected)} ₸ · Факт {fmt(parse(shift.cashActual))} ₸
+        </div>
+      </div>}
       <MoneyField label="Инкассация" value={shift.inkasso} onChange={v=>upd("inkasso",v)}/>
       <MoneyField label="Выплаты из кассы" value={shift.cashPayouts} onChange={v=>upd("cashPayouts",v)}/>
 
