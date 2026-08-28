@@ -2120,7 +2120,7 @@ function DiffRow({label,rosta,fact,reason,onReasonChange,incomingPrepays,onLoadP
       <button onClick={()=>onAttachPrepay(p,true)} style={{background:"none",border:"none",color:"#b71c1c",cursor:"pointer"}}>✕</button>
     </div>)}
     {/* Кнопка подтянуть предоплату */}
-    {!ok&&diff>500&&<button onClick={()=>{setShowList(v=>!v);if(!showList&&onLoadPrepays)onLoadPrepays();}}
+    {!ok&&<button onClick={()=>{setShowList(v=>!v);if(!showList&&onLoadPrepays)onLoadPrepays();}}
       style={{width:"100%",padding:"8px 12px",borderRadius:"6px",border:"1.5px dashed #2E6B5E",
         background:"rgba(46,107,94,0.05)",color:"#2E6B5E",fontSize:"12px",fontWeight:"600",
         cursor:"pointer",fontFamily:"inherit",marginBottom:"8px"}}>
@@ -2646,17 +2646,98 @@ function SellerPage(){
     {/* Модалка отчёт */}
     {showResult&&<div onClick={e=>{if(e.target===e.currentTarget)setShowResult(false)}}
       style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"flex-end",zIndex:100,backdropFilter:"blur(4px)"}}>
-      <div style={{background:"#F5F5E8",borderRadius:"20px 20px 0 0",padding:"24px 20px 50px",width:"100%",maxWidth:"480px",margin:"0 auto"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"16px"}}>
-          <span style={{fontFamily:"'Cormorant Garamond',serif",fontStyle:"italic",fontSize:"20px",color:"#6B4F2E"}}>Отчёт смены</span>
-          <button onClick={()=>setShowResult(false)} style={{background:"none",border:"none",fontSize:"20px",cursor:"pointer"}}>×</button>
+      <div style={{background:"#F5F5E8",borderRadius:"20px 20px 0 0",padding:"24px 20px 50px",width:"100%",maxWidth:"480px",margin:"0 auto",maxHeight:"90vh",overflowY:"auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"20px"}}>
+          <span style={{fontFamily:"'Cormorant Garamond',serif",fontStyle:"italic",fontSize:"22px",color:"#6B4F2E"}}>Отчёт смены</span>
+          <button onClick={()=>setShowResult(false)} style={{background:"none",border:"none",fontSize:"22px",cursor:"pointer",color:"#888"}}>×</button>
         </div>
-        <pre style={{background:"rgba(0,0,0,0.04)",border:"1px solid rgba(0,0,0,0.1)",borderRadius:"10px",padding:"14px",
-          fontSize:"11px",lineHeight:"1.9",whiteSpace:"pre-wrap",color:"#1a1a1a",fontFamily:"monospace",
-          maxHeight:"40vh",overflowY:"auto",marginBottom:"14px"}}>{buildReport()}</pre>
+
+        {/* Шапка */}
+        <div style={{background:"#1a1a1a",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",color:"#FFFFF0"}}>
+          <div style={{fontSize:"11px",opacity:0.5,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:"4px"}}>NANE PARIS · Отчёт смены</div>
+          <div style={{fontSize:"17px",fontWeight:"700"}}>{shift.seller}</div>
+          <div style={{fontSize:"13px",opacity:0.6,marginTop:"2px"}}>{fmtDate(shift.date)}</div>
+        </div>
+
+        {/* ROSTA */}
+        <div style={{background:"#fff",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",border:"1px solid rgba(0,0,0,0.08)"}}>
+          <div style={{fontSize:"10px",letterSpacing:"0.12em",textTransform:"uppercase",color:"#888",marginBottom:"10px"}}>ROSTA</div>
+          <div style={{fontSize:"22px",fontWeight:"700",marginBottom:"12px",color:"#1a1a1a"}}>{fmt(rostaTotal)} ₸</div>
+          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+            {[
+              ["Kaspi QR", shift.rKaspi],
+              ["Онлайн Kaspi", shift.rOnline],
+              ["Halyk QR", shift.rHalyk],
+              ["Онлайн Halyk", shift.rHalykOnline],
+              ["Наличные", shift.rCash],
+              ["Личная карта", shift.rPersonal],
+              ["Бонусы", shift.rBonus],
+            ].filter(([,v])=>parse(v)>0).map(([label,val])=><div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:"13px"}}>
+              <span style={{color:"#555"}}>{label}</span>
+              <span style={{fontWeight:"600"}}>{fmt(parse(val))} ₸</span>
+            </div>)}
+            {parse(shift.rRetKaspi)>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:"13px",color:"#c62828"}}>
+              <span>Возврат Kaspi</span><span>−{fmt(parse(shift.rRetKaspi))} ₸</span>
+            </div>}
+            {parse(shift.rRetHalyk)>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:"13px",color:"#c62828"}}>
+              <span>Возврат Halyk</span><span>−{fmt(parse(shift.rRetHalyk))} ₸</span>
+            </div>}
+          </div>
+        </div>
+
+        {/* Терминалы */}
+        <div style={{background:"#fff",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",border:"1px solid rgba(0,0,0,0.08)"}}>
+          <div style={{fontSize:"10px",letterSpacing:"0.12em",textTransform:"uppercase",color:"#888",marginBottom:"10px"}}>Терминалы (факт)</div>
+          {[
+            ["Kaspi", (parse(shift.tKaspi)-parse(shift.tKaspiRet)), parse(shift.tKaspiRet)],
+            ["Halyk", (parse(shift.tHalyk)-parse(shift.tHalykRet)), parse(shift.tHalykRet)],
+            ["Личная карта", parse(shift.tPersonal), 0],
+          ].filter(([,v])=>v>0).map(([label,net,ret])=><div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:"13px",marginBottom:"6px"}}>
+            <span style={{color:"#555"}}>{label}</span>
+            <div style={{textAlign:"right"}}>
+              <span style={{fontWeight:"600"}}>{fmt(net)} ₸</span>
+              {ret>0&&<span style={{fontSize:"11px",color:"#c62828",marginLeft:"6px"}}>−{fmt(ret)} возврат</span>}
+            </div>
+          </div>)}
+        </div>
+
+        {/* Касса */}
+        <div style={{background:"#fff",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",border:"1px solid rgba(0,0,0,0.08)"}}>
+          <div style={{fontSize:"10px",letterSpacing:"0.12em",textTransform:"uppercase",color:"#888",marginBottom:"10px"}}>Касса</div>
+          {[
+            ["Открытие", shift.cashOpen],
+            ["Закрытие", shift.cashActual],
+            ["Инкассация", shift.inkasso],
+          ].filter(([,v])=>parse(v)>0).map(([label,val])=><div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:"13px",marginBottom:"6px"}}>
+            <span style={{color:"#555"}}>{label}</span>
+            <span style={{fontWeight:"600"}}>{fmt(parse(val))} ₸</span>
+          </div>)}
+        </div>
+
+        {/* Итог */}
+        <div style={{background:isOk?"rgba(74,222,128,0.1)":"rgba(251,113,113,0.08)",border:"1px solid "+(isOk?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),borderRadius:"12px",padding:"16px 18px",marginBottom:"16px"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"3px"}}>ROSTA</div>
+              <div style={{fontSize:"16px",fontWeight:"700"}}>{fmt(rostaTotal)} ₸</div>
+            </div>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"3px"}}>Факт</div>
+              <div style={{fontSize:"16px",fontWeight:"700"}}>{fmt(factTotal)} ₸</div>
+            </div>
+          </div>
+          <div style={{textAlign:"center",fontSize:"16px",fontWeight:"700",color:isOk?"#22c55e":"#fb7171"}}>
+            {isOk?"✅ Всё сходится":\`⚠️ Разница: \${totalDiff>0?"+":""}\${fmt(totalDiff)} ₸\`}
+          </div>
+        </div>
+
+        {shift.notes&&<div style={{background:"rgba(0,0,0,0.04)",borderRadius:"10px",padding:"12px 14px",marginBottom:"14px",fontSize:"13px",color:"#555"}}>
+          📝 {shift.notes}
+        </div>}
+
         <button onClick={()=>{
           navigator.clipboard&&navigator.clipboard.writeText(buildReport()).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2500)});
-        }} style={{...BTN,background:copied?"rgba(74,222,128,0.2)":"#1a1a1a",color:copied?"#22c55e":"#FFFFF0"}}>
+        }} style={{...BTN,background:copied?"rgba(74,222,128,0.15)":"#1a1a1a",color:copied?"#22c55e":"#FFFFF0"}}>
           {copied?"✓ Скопировано!":"📋 Скопировать"}
         </button>
       </div>
