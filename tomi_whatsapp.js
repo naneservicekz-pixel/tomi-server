@@ -3185,6 +3185,9 @@ function EditorTab(){
   const [editData,setEditData]=useState({});
   const [saving,setSaving]=useState(false);
   const [msg,setMsg]=useState("");
+  const now=new Date();
+  const [filterMonth,setFilterMonth]=useState(now.getMonth()+1);
+  const [filterYear,setFilterYear]=useState(now.getFullYear());
 
   const tables=[
     {id:"daily_sales",label:"📅 Продажи по дням"},
@@ -3193,12 +3196,24 @@ function EditorTab(){
     {id:"expenses",label:"💸 Расходы"},
   ];
 
+  const monthNames=["","Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+
   const loadRows=async()=>{
     setLoading(true);
     setRows([]);
     setEditRow(null);
     try {
-      const data=await sbFetch(table,"GET",null,"?order=id.desc&limit=50");
+      let filter="?order=id.desc&limit=100";
+      if(table==="daily_sales"){
+        filter=\`?month=eq.\${filterMonth}&year=eq.\${filterYear}&order=sale_date.asc\`;
+      } else if(table==="prepayments"){
+        const m=String(filterMonth).padStart(2,"0");
+        filter=\`?prep_date=gte.\${filterYear}-\${m}-01&prep_date=lt.\${filterYear}-\${String(filterMonth===12?1:filterMonth+1).padStart(2,"0")}-01&order=prep_date.asc\`;
+      } else if(table==="expenses"){
+        const m=String(filterMonth).padStart(2,"0");
+        filter=\`?date=gte.\${filterYear}-\${m}-01&date=lt.\${filterYear}-\${String(filterMonth===12?1:filterMonth+1).padStart(2,"0")}-01&order=date.asc\`;
+      }
+      const data=await sbFetch(table,"GET",null,filter);
       setRows(data||[]);
     } catch(e){setMsg("Ошибка: "+e.message);}
     setLoading(false);
@@ -3236,7 +3251,7 @@ function EditorTab(){
 
   return <div>
     {/* Выбор таблицы */}
-    <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"16px"}}>
+    <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"12px"}}>
       {tables.map(t=><button key={t.id} onClick={()=>{setTable(t.id);setRows([]);setEditRow(null);}}
         style={{padding:"8px 14px",borderRadius:"8px",border:"1.5px solid "+(table===t.id?"#1a1a1a":"rgba(0,0,0,0.15)"),
           background:table===t.id?"#1a1a1a":"transparent",color:table===t.id?"#FFFFF0":"#1a1a1a",
@@ -3245,10 +3260,24 @@ function EditorTab(){
       </button>)}
     </div>
 
-    <button onClick={loadRows} disabled={loading}
-      style={{...BTN,maxWidth:"160px",marginBottom:"16px",opacity:loading?0.5:1}}>
-      {loading?"⏳ Загрузка...":"🔄 Загрузить"}
-    </button>
+    {/* Фильтр по месяцу */}
+    <div style={{display:"flex",gap:"8px",alignItems:"center",marginBottom:"12px",flexWrap:"wrap"}}>
+      <select style={{...FS,width:"auto",padding:"8px 12px",fontSize:"13px"}}
+        value={filterMonth} onChange={e=>setFilterMonth(Number(e.target.value))}>
+        {[1,2,3,4,5,6,7,8,9,10,11,12].map(m=><option key={m} value={m}>{monthNames[m]}</option>)}
+      </select>
+      <select style={{...FS,width:"auto",padding:"8px 12px",fontSize:"13px"}}
+        value={filterYear} onChange={e=>setFilterYear(Number(e.target.value))}>
+        {[2025,2026,2027].map(y=><option key={y}>{y}</option>)}
+      </select>
+      <button onClick={loadRows} disabled={loading}
+        style={{padding:"8px 16px",borderRadius:"8px",border:"1.5px solid #1a1a1a",
+          background:"#1a1a1a",color:"#FFFFF0",fontSize:"13px",fontWeight:"700",
+          cursor:"pointer",fontFamily:"inherit",opacity:loading?0.5:1}}>
+        {loading?"⏳":"🔄"} {loading?"Загрузка...":"Загрузить"}
+      </button>
+      {rows.length>0&&<span style={{fontSize:"12px",color:"#888"}}>{rows.length} записей</span>}
+    </div>
 
     {msg&&<div style={{padding:"10px 14px",borderRadius:"8px",background:"rgba(74,222,128,0.1)",
       border:"1px solid rgba(74,222,128,0.3)",marginBottom:"14px",fontSize:"13px",fontWeight:"600"}}>
@@ -3265,15 +3294,22 @@ function EditorTab(){
 
         {/* Шапка */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
-          <div style={{fontSize:"12px",color:"#555"}}>
-            <span style={{fontWeight:"700",color:"#1a1a1a"}}>#{row.id}</span>
-            {row.sale_date&&<span style={{marginLeft:"8px"}}>{row.sale_date}</span>}
-            {row.prep_date&&<span style={{marginLeft:"8px"}}>{row.prep_date}</span>}
-            {row.seller&&<span style={{marginLeft:"8px"}}>👤 {row.seller}</span>}
-            {row.seller1&&<span style={{marginLeft:"8px"}}>👤 {row.seller1}</span>}
-            {row.client_name&&<span style={{marginLeft:"8px"}}>👤 {row.client_name}</span>}
-            {row.revenue&&<span style={{marginLeft:"8px",fontWeight:"700",color:"#2E6B5E"}}>{fmt(row.revenue)} ₸</span>}
-            {row.amount&&<span style={{marginLeft:"8px",fontWeight:"700",color:"#2E6B5E"}}>{fmt(row.amount)} ₸</span>}
+          <div style={{display:"flex",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
+            {/* Номер дня или порядковый */}
+            {row.sale_date&&<span style={{background:"#1a1a1a",color:"#FFFFF0",borderRadius:"6px",
+              padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>
+              {row.sale_date.slice(8,10)}.{row.sale_date.slice(5,7)}
+            </span>}
+            {row.prep_date&&<span style={{background:"#e6a817",color:"#fff",borderRadius:"6px",
+              padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>
+              {row.prep_date.slice(8,10)}.{row.prep_date.slice(5,7)}
+            </span>}
+            {(row.seller1||row.seller)&&<span style={{fontSize:"13px",color:"#555"}}>
+              👤 {row.seller1||row.seller}{row.seller2?" + "+row.seller2:""}
+            </span>}
+            {row.client_name&&<span style={{fontSize:"13px",fontWeight:"600"}}>👤 {row.client_name}</span>}
+            {row.revenue>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#2E6B5E",marginLeft:"auto"}}>{fmt(row.revenue)} ₸</span>}
+            {row.amount>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#2E6B5E",marginLeft:"auto"}}>{fmt(row.amount)} ₸</span>}
           </div>
           <div style={{display:"flex",gap:"6px"}}>
             {!isEdit&&<button onClick={()=>startEdit(row)}
