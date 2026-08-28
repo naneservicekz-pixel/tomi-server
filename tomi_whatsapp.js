@@ -2285,13 +2285,24 @@ function SellerPage(){
   const loadShiftCashOpen=async(seller)=>{
     if(!seller) return;
     try {
-      const today=todayStr(); // YYYY-MM-DD
+      const today=todayStr();
       const encoded=encodeURIComponent(seller);
-      // Ищем смену продавца открытую СЕГОДНЯ
-      const data=await sbFetch("open_shifts","GET",null,
+      // 1. Ищем по имени за сегодня
+      let data=await sbFetch("open_shifts","GET",null,
         \`?seller=eq.\${encoded}&start_time=gte.\${today}T00:00:00&order=start_time.desc&limit=1\`);
       if(data&&data.length>0&&data[0].cash_open!=null){
-        upd("cashOpen",String(data[0].cash_open));
+        upd("cashOpen",String(data[0].cash_open)); return;
+      }
+      // 2. Все сегодняшние смены — ищем имя продавца
+      const all=await sbFetch("open_shifts","GET",null,
+        \`?start_time=gte.\${today}T00:00:00&order=start_time.desc&limit=30\`);
+      const match=all&&all.find(r=>String(r.seller||"").trim()===String(seller).trim()&&r.cash_open!=null);
+      if(match){upd("cashOpen",String(match.cash_open)); return;}
+      // 3. Последняя запись продавца за любой день
+      const last=await sbFetch("open_shifts","GET",null,
+        \`?seller=eq.\${encoded}&order=start_time.desc&limit=1\`);
+      if(last&&last.length>0&&last[0].cash_open!=null){
+        upd("cashOpen",String(last[0].cash_open));
       }
     } catch(e){console.warn("loadShiftCashOpen:",e.message);}
   };
