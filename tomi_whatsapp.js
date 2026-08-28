@@ -2135,16 +2135,18 @@ function DiffRow({label,rosta,fact,reason,onReasonChange,incomingPrepays,onLoadP
     {showList&&<div style={{border:"1.5px solid #2E6B5E",borderRadius:"8px",marginBottom:"8px",overflow:"hidden"}}>
       {loadingPrepays&&<div style={{padding:"10px",textAlign:"center",fontSize:"12px"}}>⏳ Загрузка...</div>}
       {!loadingPrepays&&(incomingPrepays||[]).length===0&&<div style={{padding:"10px",textAlign:"center",fontSize:"12px",color:"#555"}}>Нет открытых предоплат</div>}
-      {(incomingPrepays||[]).map((p,i)=>{
-        const al=(attachedPrepays||[]).some(a=>a.id===p.id);
-        return <div key={i} onClick={()=>{if(!al){onAttachPrepay(p,false);setShowList(false);}}}
-          style={{padding:"10px 12px",borderBottom:"1px solid rgba(0,0,0,0.08)",cursor:al?"default":"pointer",
-            background:al?"rgba(0,0,0,0.04)":"#fff",display:"flex",justifyContent:"space-between"}}>
+      {(incomingPrepays||[]).filter(p=>!(attachedPrepays||[]).some(a=>a.id===p.id)).map((p,i)=>{
+        return <div key={i} onClick={()=>{onAttachPrepay(p,false);setShowList(false);}}
+          style={{padding:"10px 12px",borderBottom:"1px solid rgba(0,0,0,0.08)",cursor:"pointer",
+            background:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
             <div style={{fontSize:"13px",fontWeight:"700"}}>{p.client_name}</div>
-            <div style={{fontSize:"11px",color:"#555"}}>{p.channel}</div>
+            <div style={{fontSize:"11px",color:"#555"}}>{p.channel} · {p.prep_id}</div>
           </div>
-          <div style={{fontSize:"14px",fontWeight:"700",color:"#2E6B5E"}}>{fmt(p.amount)} ₸</div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:"14px",fontWeight:"700",color:"#2E6B5E"}}>{fmt(p.amount)} ₸</div>
+            <div style={{fontSize:"10px",color:"#aaa"}}>выбрать</div>
+          </div>
         </div>;
       })}
     </div>}
@@ -2207,6 +2209,18 @@ function SellerPage(){
   const [openForm,setOpenForm]=useState({seller:"",cashOpen:"",date:todayStr()});
   const [openSaved,setOpenSaved]=useState(false);
   const [openSaving,setOpenSaving]=useState(false);
+
+  // Автозагрузка cashOpen из открытой смены при выборе продавца
+  const loadShiftCashOpen=async(seller)=>{
+    if(!seller) return;
+    try {
+      const today=todayStr();
+      const data=await sbFetch("open_shifts","GET",null,\`?seller=eq.\${encodeURIComponent(seller)}&order=start_time.desc&limit=1\`);
+      if(data&&data.length>0&&data[0].cash_open){
+        upd("cashOpen",String(data[0].cash_open));
+      }
+    } catch(e){console.warn("loadShiftCashOpen:",e.message);}
+  };
 
   // Расчёты
   const p=shift;
@@ -2468,7 +2482,7 @@ function SellerPage(){
 
       <div style={{marginBottom:"14px"}}>
         <label style={LS}>Продавец</label>
-        <select style={{...FS}} value={shift.seller} onChange={e=>upd("seller",e.target.value)}>
+        <select style={{...FS}} value={shift.seller} onChange={e=>{upd("seller",e.target.value);loadShiftCashOpen(e.target.value);}}>
           <option value="">Выбери продавца</option>
           {SELLERS.map(s=><option key={s}>{s}</option>)}
         </select>
@@ -2528,11 +2542,13 @@ function SellerPage(){
       </div>
       <MoneyField label="Halyk — продажи (терминал)" value={shift.tHalyk} onChange={v=>upd("tHalyk",v)}/>
       <MoneyField label="Halyk — возврат (терминал)" value={shift.tHalykRet} onChange={v=>upd("tHalykRet",v)}/>
-      <MoneyField label="Личная карта (факт)" value={shift.tPersonal} onChange={v=>upd("tPersonal",v)}/>
+      <MoneyField label="Личная карта (факт)" value={shift.tPersonal||shift.rPersonal} onChange={v=>upd("tPersonal",v)}
+        hint={!shift.tPersonal&&shift.rPersonal?"✅ Берётся из ROSTA: "+fmt(parse(shift.rPersonal))+" ₸":""}/>
 
       {/* Касса */}
       <SecTitle icon="💵">Касса</SecTitle>
-      <MoneyField label="Открытие (начало смены)" value={shift.cashOpen} onChange={v=>upd("cashOpen",v)}/>
+      <MoneyField label="Открытие (начало смены)" value={shift.cashOpen} onChange={v=>upd("cashOpen",v)}
+        hint={shift.cashOpen&&parse(shift.cashOpen)>0?"✅ Загружено автоматически из открытия смены":"Загружается автоматически при выборе продавца"}/>
       <MoneyField label="Закрытие (конец смены — пересчитай)" value={shift.cashActual} onChange={v=>upd("cashActual",v)}
         hint={"Ожидалось в кассе: "+fmt(parse(shift.cashOpen)+Math.max(0,parse(shift.rCash))-parse(shift.inkasso))+" ₸"}/>
       {cashActualFilled&&Math.abs(cashBoxDiff)>500&&<div style={{
