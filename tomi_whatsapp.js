@@ -43,13 +43,7 @@ const lastShiftReports = {};
 const pendingResendApprovals = {};
 const pendingPrepayDelete = {};
 const shiftPhotos = {};
-const shiftOCR = {}; // Структурные данные OCR по фото: { userKey: { zreport:{...}, kaspi:{...}, halyk:{...} } }
-const userLocks = {}; // Сериализация сообщений одного пользователя (защита от гонок)
-const PLAN_TOTAL = 27000000; // план магазина/мес
-const SELLER_PLANS = {'Асель':8550000,'Зарина':10350000,'Луиза':8100000}; // личные планы
 const pendingExpense = {};
-const pendingDayReset = {}; // Подтверждение сброса дня владельцем
-const pendingClose = {}; // Закрытие, заблокированное расхождением — ждём предоплату/причину от продавца
 const firstCloseDone = {}; // Ключ: дата, значение: true если первый уже закрыл
 
 function detectCategory(description) {
@@ -303,44 +297,11 @@ function calcDistance(lat1, lon1, lat2, lon2) {
   return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
 }
 
-// Извлекает JSON после тега по БАЛАНСУ скобок (работает с вложенными {}, напр. prepayApplied:[{...}])
-function extractTagJSON(text, tag) {
-  const key = tag + ':{';
-  const i = text.indexOf(key);
-  if (i < 0) return null;
-  const start = i + tag.length + 1;
-  let depth = 0, end = -1;
-  for (let j = start; j < text.length; j++) {
-    if (text[j] === '{') depth++;
-    else if (text[j] === '}') { depth--; if (depth === 0) { end = j + 1; break; } }
-  }
-  if (end < 0) return null;
-  return { json: text.slice(start, end), from: i, to: end };
-}
-function stripTag(text, tag) {
-  const r = extractTagJSON(text, tag);
-  if (!r) return (text || '').trim();
-  return (text.slice(0, r.from) + text.slice(r.to)).trim();
-}
-
-// Чистит массив сообщений для Anthropic: без пустых, начинается с user (иначе API 400)
-function sanitizeMessages(msgs) {
-  let arr = (msgs || []).filter(m => {
-    if (!m || !m.role) return false;
-    const c = m.content;
-    if (typeof c === 'string') return c.trim() !== '';
-    if (Array.isArray(c)) return c.length > 0 && c.some(b => (b && b.text && String(b.text).trim() !== '') || (b && b.type === 'image'));
-    return false;
-  });
-  while (arr.length && arr[0].role !== 'user') arr.shift();
-  return arr;
-}
-
 async function loadConversation(userId) {
   try {
-    const { data } = await supabase.from('conversations').select('role, content, created_at').eq('phone', String(userId)).order('created_at', { ascending: false }).limit(40);
+    const { data } = await supabase.from('conversations').select('role, content').eq('phone', String(userId)).order('created_at', { ascending: true }).limit(40);
     if (!data || data.length === 0) return [];
-    return data.reverse().map(r => ({ role: r.role, content: r.content }));
+    return data.map(r => ({ role: r.role, content: r.content }));
   } catch(e) { return []; }
 }
 
@@ -519,21 +480,8 @@ async function downloadTelegramFile(fileId) {
 }
 
 async function readPhotoWithClaude(base64Image, photoType) {
-  let prompt;
-  if (photoType === 'auto' || !photoType) {
-    prompt = 'Это фото финансового отчёта магазина одежды NANE. СНАЧАЛА определи ТИП документа по визуальным признакам:\n'
-      + '• zreport — ИТОГОВЫЙ ОТЧЕТ кассовой программы ROSTA: заголовок «ИТОГОВЫЙ ОТЧЕТ» или «Смена», таблица «Отчёт по видам оплат» со СПИСКОМ из нескольких каналов (Halyk QR, Kaspi QR, Онлайн Каспи, Наличные и т.д.) и строка «Итого». Обычно ч/б распечатка или скрин с компьютера.\n'
-      + '• kaspi_terminal — экран терминала Kaspi: КРАСНЫЙ интерфейс, логотип Kaspi.kz, надпись Smart POS или «Через Smart POS», строки «N продаж», «N возврата», «Итого за период». ОДИН канал.\n'
-      + '• halyk_terminal — экран терминала Halyk: ЗЕЛЁНЫЙ интерфейс, «Отчёт по продажам», строки «Оплата (N)», «Возврат (N)», «Отмена (N)», «Итого». ОДИН канал.\n'
-      + 'ГЛАВНЫЙ ПРИЗНАК: в Z-отчёте НЕСКОЛЬКО видов оплат списком и слова «видам оплат»; у терминала — итог по ОДНОМУ каналу. Kaspi красный, Halyk зелёный.\n\n'
-      + 'ЗАТЕМ верни ТОЛЬКО JSON, без пояснений и markdown.\n'
-      + 'Если терминал:\n{"type":"kaspi_terminal","gross":0,"returns":0,"net":0}\nили\n{"type":"halyk_terminal","gross":0,"returns":0,"net":0}\n(gross = сумма оплат/продаж, returns = сумма возвратов положительным числом, net = итог).\n\n'
-      + 'Если Z-отчёт ROSTA:\n{"type":"zreport","kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi_qr":0,"ret_online_kaspi":0,"ret_halyk_qr":0,"ret_online_halyk":0,"ret_cash":0,"ret_personal":0,"itogo":0}\n'
-      + 'Сопоставление (продажи): Kaspi QR→kaspi_qr; Онлайн Каспи/Онлайн Kaspi→online_kaspi; Halyk QR→halyk_qr; Онлайн Халык/Онлайн Halyk→online_halyk; Наличные→cash; Личная карта/Личная карточка (с любым именем)→personal; Бонусы→bonus.\n'
-      + 'Возвраты (строки со словом Возврат): Kaspi QR (Возврат)→ret_kaspi_qr; Онлайн Каспи (Возврат)→ret_online_kaspi; Halyk QR (Возврат)→ret_halyk_qr; Онлайн Халык (Возврат)→ret_online_halyk; Наличные (Возврат)→ret_cash; Личная карта (Возврат)→ret_personal. itogo = число в строке «Итого:».\n'
-      + 'Все значения ПОЛОЖИТЕЛЬНЫЕ. Нет строки — 0. Игнорируй префиксы «1.», «5.». ПРОВЕРКА zreport: сумма продаж − сумма возвратов = itogo.';
-  } else prompt = photoType === 'zreport'
-    ? 'Это Z-отчет (Итоговый отчёт) из ROSTA. В блоке «Отчёт по видам оплат» строки могут иметь номера-префиксы (например «1.Halyk QR», «5.Онлайн Каспи»). Игнорируй номер, читай название и сумму. Верни ТОЛЬКО JSON без пояснений:\n{"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi_qr":0,"ret_online_kaspi":0,"ret_halyk_qr":0,"ret_online_halyk":0,"ret_cash":0,"ret_personal":0,"itogo":0}\nСООТВЕТСТВИЕ НАЗВАНИЙ (продажи):\n- "Kaspi QR" → kaspi_qr\n- "Онлайн Каспи" / "Онлайн Kaspi" → online_kaspi\n- "Halyk QR" → halyk_qr\n- "Онлайн Халык" / "Онлайн Halyk" → online_halyk\n- "Наличные" → cash\n- "Личная карта" / "Личная карточка" (с любым именем, напр. «Личная карточка Айнуша») → personal\n- "Бонусы" → bonus\nВОЗВРАТЫ (строки со словом «Возврат», обычно с минусом):\n- "Kaspi QR (Возврат)" → ret_kaspi_qr\n- "Онлайн Каспи (Возврат)" → ret_online_kaspi\n- "Halyk QR (Возврат)" → ret_halyk_qr\n- "Онлайн Халык (Возврат)" → ret_online_halyk\n- "Наличные (Возврат)" → ret_cash\n- "Личная карта (Возврат)" → ret_personal\n- itogo = число в строке "Итого:" внизу блока видов оплат\nПРАВИЛА:\n- Все значения ПОЛОЖИТЕЛЬНЫЕ (минус НЕ ставить, в т.ч. для возвратов).\n- Если строки нет — ставь 0.\n- ПРОВЕРКА: (kaspi_qr+online_kaspi+halyk_qr+online_halyk+cash+personal+bonus) − (все ret_*) должно равняться itogo. Если не сходится — перечитай суммы внимательнее.'
+  let prompt = photoType === 'zreport'
+    ? 'Это Z-отчет из ROSTA. Верни ТОЛЬКО JSON без пояснений:\n{"kaspi_qr":0,"online_kaspi":0,"halyk_qr":0,"online_halyk":0,"cash":0,"personal":0,"bonus":0,"ret_kaspi_qr":0,"ret_online_kaspi":0,"ret_halyk_qr":0,"ret_online_halyk":0,"ret_cash":0,"ret_personal":0}\nВАЖНО:\n- ret_kaspi_qr = возврат "Kaspi QR (Возврат)"\n- ret_online_kaspi = возврат "Онлайн Каспи (Возврат)"\n- ret_halyk_qr = возврат "Halyk QR (Возврат)"\n- ret_online_halyk = возврат "Онлайн Халык (Возврат)"\n- ret_cash = возврат "Наличные (Возврат)"\n- ret_personal = возврат "Личная карта (Возврат)"\n- Все значения ПОЛОЖИТЕЛЬНЫЕ (знак минус НЕ ставить). Проверь: сумма продаж минус все возвраты должна совпасть с ИТОГО Z-отчёта.'
     : photoType === 'kaspi_terminal' ? 'Это отчет Kaspi терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
     : photoType === 'halyk_terminal' ? 'Это отчет Halyk терминала. Верни ТОЛЬКО JSON: {"gross":0,"returns":0,"net":0}'
     : 'Опиши документ. Извлеки все числовые данные по продажам.';
@@ -544,8 +492,7 @@ async function readPhotoWithClaude(base64Image, photoType) {
       { type: 'text', text: prompt }
     ]}]
   });
-  const block = (response.content || []).find(b => b.type === 'text' && b.text);
-  return block ? block.text : '{}';
+  return response.content[0].text;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -555,41 +502,32 @@ async function readPhotoWithClaude(base64Image, photoType) {
 // Фото 3 = Halyk терминал
 // ══════════════════════════════════════════════════════════════════════
 
-// (устаревшие savePhotoByOrder/getPhotoTypeByOrder удалены — тип определяется по содержимому)
-
-// Персист OCR в таблицу conversations (переживает редеплой, без новых колонок)
-async function persistOCR(userId, type, obj) {
-  try { await supabase.from('conversations').insert([{ phone:String(userId), role:'user', content:'[OCR:'+type+']'+JSON.stringify(obj) }]); } catch(e) {}
-}
-// Восстановление shiftOCR из истории (после рестарта), если память сброшена
-function rebuildShiftOCR(userKey) {
-  const conv = conversations[userKey] || [];
-  if (!shiftOCR[userKey]) shiftOCR[userKey] = {};
-  for (const msg of conv) {
-    const txt = typeof msg.content === 'string' ? msg.content
-      : (Array.isArray(msg.content) ? msg.content.map(c => (c && c.text) || '').join(' ') : '');
-    const re = /\[OCR:(zreport|kaspi_terminal|halyk_terminal)\](\{[\s\S]*?\})/g;
-    let mt;
-    while ((mt = re.exec(txt))) {
-      try {
-        const obj = JSON.parse(mt[2]);
-        if (mt[1] === 'zreport') shiftOCR[userKey].zreport = obj;
-        else if (mt[1] === 'kaspi_terminal') shiftOCR[userKey].kaspi = obj;
-        else if (mt[1] === 'halyk_terminal') shiftOCR[userKey].halyk = obj;
-      } catch(e) {}
-    }
-  }
-  return shiftOCR[userKey];
-}
-
-// Сохранение фото по РАСПОЗНАННОМУ типу (не по порядку)
-function savePhotoByType(userId, type, photoFileId) {
+function savePhotoByOrder(userId, photoFileId) {
   if (!shiftPhotos[String(userId)]) shiftPhotos[String(userId)] = {};
   const photos = shiftPhotos[String(userId)];
-  if (type === 'zreport') photos.zreport = photoFileId;
-  else if (type === 'kaspi_terminal') photos.kaspi = photoFileId;
-  else if (type === 'halyk_terminal') photos.halyk = photoFileId;
-  console.log('Photo saved by type:', type, '| shiftPhotos:', JSON.stringify(photos));
+  let savedAs = '';
+  if (!photos.zreport) {
+    photos.zreport = photoFileId;
+    savedAs = 'zreport (фото 1)';
+  } else if (!photos.kaspi) {
+    photos.kaspi = photoFileId;
+    savedAs = 'kaspi (фото 2)';
+  } else if (!photos.halyk) {
+    photos.halyk = photoFileId;
+    savedAs = 'halyk (фото 3)';
+  } else {
+    photos.extra = photoFileId;
+    savedAs = 'extra (фото 4+)';
+  }
+  console.log('Photo saved as:', savedAs, 'for user:', userId, '| shiftPhotos:', JSON.stringify(photos));
+  return savedAs;
+}
+
+function getPhotoTypeByOrder(userId) {
+  const photos = shiftPhotos[String(userId)] || {};
+  if (!photos.zreport) return 'zreport';
+  if (!photos.kaspi) return 'kaspi_terminal';
+  return 'halyk_terminal';
 }
 
 function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, firstSellerName) {
@@ -633,20 +571,28 @@ function getSellerPrompt(sellerName, shopName, hasOpenShift, isSecondSeller, fir
     'ШАГ 3 — ТЕРМИНАЛЫ. ШАГ 4 — ЗАЛ. ШАГ 5 — ПРИМЕРОЧНЫЕ. ШАГ 6 — ГОСТЕВАЯ. ШАГ 7 — УПАКОВКА. ШАГ 8 — ТЕЛЕФОН.\n' +
     'ШАГ 9 — ROSTA: после "да" выдай SHIFT_OPEN с реальной суммой кассы.\n' +
     '=> SHIFT_OPEN:{"seller":"' + sellerName + '","shop":"' + shopName + '","cashOpen":СУММА,"time":"' + now + '"}\n\n' +
-    'ЗАКРЫТИЕ СМЕНЫ:\n' +
-    'КРИТИЧЕСКИ ВАЖНО ПРО ФОТО: фото Z-отчёта ROSTA, Kaspi и Halyk терминалов принимает и распознаёт СИСТЕМА автоматически — она сама подтверждает приём каждого фото и пишет "Все 3 отчёта собраны". Тебе НЕ нужно просить эти фото, НЕ повторяй шаги с фото, НЕ говори "пришли фото". Если в истории уже есть "приняты системой" — фото готовы, сразу веди опрос по кассе.\n' +
-    'КРИТИЧЕСКИ ВАЖНО ПРО КАССУ: НЕ считай сам ожидаемую наличность, расхождения, излишки и недостачи и не называй эти цифры — всю сверку (касса, каналы, план/факт) делает СИСТЕМА автоматически после SHIFT_CLOSE. Твоя задача — собрать ответы и выдать SHIFT_CLOSE. Если продавец спорит о цифрах — не пересчитывай, скажи, что сверку сделает система.\n\n' +
-    'Опрос по кассе (СТРОГО по одному вопросу за сообщение):\n' +
-    'НАЛИЧНЫЕ — "Пересчитай ВСЮ наличность в кассе прямо сейчас (на момент закрытия) и напиши итоговую сумму одним числом." Это всё, что физически лежит в кассе СЕЙЧАС, включая продажи, сделанные ПОСЛЕ инкассации. (запомни как cashActual)\n' +
-    'ВАЖНО про кассу: НЕ спрашивай "сколько осталось после инкассации" — инкассацию система вычтет сама из ожидаемой суммы. Тебе нужен только ИТОГОВЫЙ пересчёт всей наличности в кассе на момент закрытия (после инкассации касса могла снова пополниться продажами — считаем финальный остаток).\n' +
-    'ЛИЧНАЯ КАРТА — были ли продажи через личную карту?\n' +
-    'ИНКАССАЦИЯ — была ли инкассация сегодня? на какую сумму? (inkasso)\n' +
-    'ЗАЛ — всё убрано, товар на местах?\n' +
-    'ГОСТЕВАЯ — всё в порядке, убрано?\n' +
-    'ГЕОЛОКАЦИЯ — "Пришли геолокацию через скрепку." После геолокации выдай SHIFT_CLOSE.\n' +
-    'ЕСЛИ ПОСЛЕ ЗАКРЫТИЯ СИСТЕМА ПОКАЗАЛА РАСХОЖДЕНИЕ ПО КАНАЛУ (Kaspi/Halyk):\n' +
-    '— если продавец говорит, что это из-за предоплаты (сегодня выкуп товара по предоплате): спроси «Какая предоплата? Назови имя клиента или ID» (можешь показать PREPAY_LIST:открытые). Когда назовут — выдай SHIFT_CLOSE заново с тем же набором цифр и добавь поле prepayApplied, напр.: "prepayApplied":[{"channel":"Kaspi","ref":"Жулдыз"}] (ref — имя клиента или ID предоплаты). Система сама привяжет предоплату и закроет смену.\n' +
-    '— если причина другая: впиши её в notes и выдай SHIFT_CLOSE заново. Сама расхождения НЕ считай.\n' +
+    'ЗАКРЫТИЕ СМЕНЫ — СТРОГИЙ ПОРЯДОК ФОТО (КРИТИЧЕСКИ ВАЖНО):\n' +
+    'Фото запрашивай СТРОГО по одному, в этом порядке:\n\n' +
+    'ШАГ 1 — Z-ОТЧЕТ ROSTA:\nСкажи: "Пришли фото Z-отчёта ROSTA (первое фото)."\n' +
+    'ЖДИ фото. Когда получила — читай данные:\n' +
+    '- "Kaspi QR" → rKaspi, "Онлайн Каспи" → rOnline\n' +
+    '- "Halyk QR" → rHalyk, "Онлайн Халык" → rHalykOnline\n' +
+    '- "Наличные" → rCash\n' +
+    '- Возвраты: "Kaspi QR" → rRetKaspi, "Онлайн Каспи" → rRetOnlineKaspi\n' +
+    '- Возвраты: "Halyk QR" → rRetHalyk, "Онлайн Халык" → rRetHalykOnline\n' +
+    '- Возвраты: "Наличные" → rRetCash, "Личная карта" → rRetPersonal\n' +
+    '- rostaCheck = строка ИТОГО из Z-отчёта\n\n' +
+    'ШАГ 2 — KASPI ТЕРМИНАЛ:\nСкажи: "Теперь пришли фото отчёта Kaspi терминала (второе фото)."\n' +
+    'ЖДИ фото. Когда получила — сравни с ROSTA. Расхождение >500 тг — СТОП, спроси причину.\n\n' +
+    'ШАГ 3 — HALYK ТЕРМИНАЛ:\nСкажи: "Теперь пришли фото отчёта Halyk терминала (третье фото)."\n' +
+    'ЖДИ фото. Когда получила — сравни с ROSTA. Расхождение >500 тг — СТОП, спроси причину.\n\n' +
+    'ВАЖНО: НЕ проси два фото сразу. Каждое фото — отдельным сообщением после получения предыдущего.\n' +
+    'ВАЖНО: НЕ называй фото "второе фото Halyk" или "ещё одно фото" — только Z-отчёт, Kaspi, Halyk.\n\n' +
+    'ШАГ 4 — НАЛИЧНЫЕ: спроси "Сколько наличных в кассе сейчас? Пересчитай." Запомни как cashActual.\n' +
+    '  (Томи сравнит с: открытие + продажи нал из ROSTA − инкассация)\n' +
+    'ШАГ 5 — ЛИЧНАЯ КАРТА. ШАГ 6 — ИНКАССАЦИЯ.\n' +
+    'ШАГ 7 — ЗАЛ. ШАГ 8 — ГОСТЕВАЯ.\n' +
+    'ШАГ 9 — ГЕОЛОКАЦИЯ: после геолокации выдай SHIFT_CLOSE.\n' +
     '=> SHIFT_CLOSE:{"rKaspi":0,"rOnline":0,"rHalyk":0,"rHalykOnline":0,"rCash":0,"rPersonal":0,"rBonus":0,"rRetKaspi":0,"rRetOnlineKaspi":0,"rRetHalyk":0,"rRetHalykOnline":0,"rRetCash":0,"rRetPersonal":0,"rostaCheck":0,"tKaspi":0,"tKaspiRet":0,"tHalyk":0,"tHalykRet":0,"tPersonal":0,"cashOpen":0,"cashActual":0,"cashPayouts":0,"inkasso":0,"prepayIn":0,"prepayOut":0,"shiftStatus":"","notes":""}';
 }
 
@@ -675,72 +621,8 @@ function getOwnerPrompt(ownerName, data) {
     'По-русски. Прямо, с цифрами.';
 }
 
-// Сброс дня: чистит БД и память по указанным продавцам (для тестов закрытия)
-async function resetDayForSellers(ids, wipeSales, wipeAllShifts) {
-  const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
-  const dateKey = today.split('.').reverse().join('-'); // ГГГГ-ММ-ДД
-  let count = 0;
-  for (const id of ids) {
-    const sid = String(id);
-    try { await supabase.from('open_shifts').delete().eq('phone', sid); } catch(e) {}
-    try { await supabase.from('conversations').delete().eq('phone', sid); } catch(e) {}
-    try { await supabase.from('last_reports').delete().eq('user_id', sid); } catch(e) {}
-    delete shiftOCR[sid]; delete shiftPhotos[sid]; delete pendingGeoAction[sid]; delete pendingClose[sid];
-    delete lastShiftReports[sid]; delete conversations[sid]; delete openShifts[sid];
-    count++;
-  }
-  if (wipeAllShifts) {
-    // сносим ВСЕ открытые смены, включая осиротевшие (от удалённых тест-аккаунтов/заблокированных закрытий)
-    try { await supabase.from('open_shifts').delete().neq('phone', ''); } catch(e) {}
-    for (const k of Object.keys(openShifts)) delete openShifts[k];
-    for (const k of Object.keys(shiftOCR)) delete shiftOCR[k];
-    for (const k of Object.keys(shiftPhotos)) delete shiftPhotos[k];
-    for (const k of Object.keys(pendingGeoAction)) delete pendingGeoAction[k];
-    for (const k of Object.keys(pendingClose)) delete pendingClose[k];
-  }
-  if (wipeSales) { try { await supabase.from('daily_sales').delete().eq('sale_date', dateKey); } catch(e) {} }
-  delete firstCloseDone[today];
-  console.log('resetDayForSellers:', JSON.stringify({ ids, wipeSales, wipeAllShifts, dateKey, count }));
-  return { dateKey, count };
-}
-
 async function handleSystemCommands(reply, userId, sellerName, messageText) {
   let cleanReply = reply;
-
-  // ── Команда владельца: СБРОС ДНЯ (с подтверждением) ──
-  if (OWNER_IDS.includes(String(userId)) && messageText) {
-    const cmd = messageText.toLowerCase().trim();
-    if (pendingDayReset[String(userId)]) {
-      if (cmd === 'да' || cmd === 'yes') {
-        const tgt = pendingDayReset[String(userId)];
-        delete pendingDayReset[String(userId)];
-        const r = await resetDayForSellers(tgt.ids, tgt.wipeSales, tgt.wipeAllShifts);
-        await sendTelegram(userId, '✅ Сброс выполнен.\nПродавцов очищено: ' + r.count + (tgt.wipeSales ? '\nПродажи дня ' + r.dateKey + ' удалены.' : '') + '\nОткрытые смены, история и фото обнулены. Можно открывать смену заново.');
-        return '';
-      } else if (cmd === 'нет' || cmd === 'no') {
-        delete pendingDayReset[String(userId)];
-        await sendTelegram(userId, '❌ Сброс отменён.');
-        return '';
-      }
-    }
-    if (cmd === 'сброс' || cmd === 'сброс дня' || cmd === 'сброс смены' || cmd.startsWith('сброс ')) {
-      const sellerIds = Object.keys(ALLOWED_MAP).filter(id => !OWNER_IDS.includes(id));
-      let ids = sellerIds, label = 'ВСЕХ продавцов', wipeSales = true;
-      const isAll = (cmd === 'сброс' || cmd === 'сброс дня' || cmd === 'сброс смены');
-      if (!isAll) {
-        const arg = cmd.replace(/^сброс\s+/, '').trim();
-        const match = sellerIds.filter(id => String(id) === arg || (ALLOWED_MAP[id] || '').toLowerCase() === arg);
-        if (match.length) { ids = match; label = ALLOWED_MAP[match[0]] + ' (id ' + match[0] + ')'; }
-        else { await sendTelegram(userId, '❌ Не нашла продавца «' + arg + '».\nДоступные: ' + (sellerIds.map(id => ALLOWED_MAP[id]).join(', ') || 'нет') + '.\nИли напиши «СБРОС ДНЯ» — сбросить всех.'); return ''; }
-      }
-      if (ids.length === 0) { await sendTelegram(userId, '❌ Нет продавцов для сброса.'); return ''; }
-      pendingDayReset[String(userId)] = { ids, wipeSales, wipeAllShifts: isAll };
-      const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
-      await sendTelegram(userId, '⚠️ СБРОС за ' + today + ' для: ' + label + '\n\nУдалю НЕОБРАТИМО:\n• ' + (isAll ? 'ВСЕ открытые смены (вкл. осиротевшие)' : 'открытую смену') + '\n• историю чатов и распознанные фото\n• сохранённые отчёты' + (wipeSales ? '\n• продажи дня ' + today : '') + '\n\nОтветь ДА — сбросить, НЕТ — отмена.');
-      return '';
-    }
-  }
-
 
   if (reply.includes('REMINDER_SAVE:')) {
     try {
@@ -946,7 +828,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
   if (reply.includes('SHIFT_OPEN:')) {
     try {
-      const jsonStr = (extractTagJSON(reply, 'SHIFT_OPEN')||{}).json;
+      const jsonStr = reply.match(/SHIFT_OPEN:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
         const lastCash = await loadLastCash();
@@ -982,63 +864,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
 
   if (reply.includes('SHIFT_CLOSE:')) {
     try {
-      const jsonStr = (extractTagJSON(reply, 'SHIFT_CLOSE')||{}).json;
+      const jsonStr = reply.match(/SHIFT_CLOSE:(\{.*?\})/s)?.[1];
       if (jsonStr) {
         const s = JSON.parse(jsonStr);
-        // ═══════════════════════════════════════════════════════════════
-        // ИСТОЧНИК ИСТИНЫ — структурный OCR, а НЕ цифры из чата.
-        // Чат-модель теряет цифры за время чек-листа → берём прямо из OCR.
-        // ═══════════════════════════════════════════════════════════════
-        if (!shiftOCR[String(userId)] || !shiftOCR[String(userId)].zreport) rebuildShiftOCR(String(userId));
-        const ocr = shiftOCR[String(userId)] || {};
-        if (ocr.zreport) {
-          const z = ocr.zreport;
-          const pick = (a, b) => (a !== undefined && a !== null) ? Number(a) : (Number(b) || 0);
-          s.rKaspi        = pick(z.kaspi_qr,        s.rKaspi);
-          s.rOnline       = pick(z.online_kaspi,    s.rOnline);
-          s.rHalyk        = pick(z.halyk_qr,        s.rHalyk);
-          s.rHalykOnline  = pick(z.online_halyk,    s.rHalykOnline);
-          s.rCash         = pick(z.cash,            s.rCash);
-          s.rPersonal     = pick(z.personal,        s.rPersonal);
-          s.rBonus        = pick(z.bonus,           s.rBonus);
-          s.rRetKaspi       = pick(z.ret_kaspi_qr,    s.rRetKaspi);
-          s.rRetOnlineKaspi = pick(z.ret_online_kaspi, s.rRetOnlineKaspi);
-          s.rRetHalyk       = pick(z.ret_halyk_qr,    s.rRetHalyk);
-          s.rRetHalykOnline = pick(z.ret_online_halyk, s.rRetHalykOnline);
-          s.rRetCash        = pick(z.ret_cash,        s.rRetCash);
-          s.rRetPersonal    = pick(z.ret_personal,    s.rRetPersonal);
-          // rostaCheck = сумма по видам − все возвраты (контрольная сумма из самого Z-отчёта)
-          s.rostaCheck = (s.rKaspi+s.rOnline+s.rHalyk+s.rHalykOnline+s.rCash+s.rPersonal+s.rBonus)
-            - (s.rRetKaspi+s.rRetOnlineKaspi+s.rRetHalyk+s.rRetHalykOnline+s.rRetCash+s.rRetPersonal);
-        }
-        if (ocr.kaspi) { s.tKaspi = Number(ocr.kaspi.gross)||0; s.tKaspiRet = Number(ocr.kaspi.returns)||0; }
-        if (ocr.halyk) { s.tHalyk = Number(ocr.halyk.gross)||0; s.tHalykRet = Number(ocr.halyk.returns)||0; }
-        // ВАЛИДАЦИЯ: если Z-отчёт не распознан (нет ни одного канала продаж) — не строим кривой отчёт
-        if (ocr.zreport) {
-          const channelsSum = (s.rKaspi||0)+(s.rOnline||0)+(s.rHalyk||0)+(s.rHalykOnline||0)+(s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0);
-          if (channelsSum <= 0) {
-            await sendTelegram(userId, '⚠️ Z-отчёт распознан некорректно (нулевые продажи по всем каналам). Перешли фото Z-отчёта чётче — без бликов, весь блок «Отчёт по видам оплат» в кадре.');
-            cleanReply = stripTag(reply, 'SHIFT_CLOSE');
-            { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
-          }
-          // Контрольная сумма: распознанные виды оплат должны сойтись с печатным "Итого:"
-          const itogo = Number(ocr.zreport.itogo) || 0;
-          if (itogo > 0 && Math.abs(s.rostaCheck - itogo) > 1000) {
-            await sendTelegram(userId, '⚠️ Z-отчёт распознан с ошибкой: сумма по видам оплат (' + s.rostaCheck.toLocaleString('ru-RU') + ' ₸) не сходится с «Итого» в чеке (' + itogo.toLocaleString('ru-RU') + ' ₸). Перешли фото Z-отчёта чётче.');
-            for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ ' + (sellerName) + ': Z-отчёт не сошёлся при распознавании (' + s.rostaCheck.toLocaleString('ru-RU') + ' ≠ ' + itogo.toLocaleString('ru-RU') + '). Смена не закрыта.');
-            cleanReply = stripTag(reply, 'SHIFT_CLOSE');
-            { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
-          }
-        }
         const shift = openShifts[String(userId)] || await loadOpenShift(userId) || {};
-        // Защита от повторного/«призрачного» закрытия: если открытой смены нет — не закрываем (иначе считается по нулям)
-        if (!openShifts[String(userId)] && !shift.seller && !shift.start_time) {
-          delete pendingClose[String(userId)];
-          await sendTelegram(userId, 'Смена уже закрыта или ещё не открыта. Чтобы начать новую — напиши «Начала смену».');
-          return stripTag(reply, 'SHIFT_CLOSE');
-        }
-        // ИСТОЧНИК ИСТИНЫ по кассе открытия — сохранённая смена (введено на ШАГ 2 открытия), а не память чат-модели
-        if (shift && shift.cash_open != null) s.cashOpen = Number(shift.cash_open) || 0;
         const today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
         const closeTime = getTime();
         // Все 6 типов возвратов из Z-отчёта
@@ -1050,28 +879,22 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         if (finalRevenue <= 0 && rostaCheck <= 0) { finalRevenue = 0; console.warn('SHIFT_CLOSE: finalRevenue=0, проверь данные'); }
         const kaspiNet = (s.tKaspi||0)-(s.tKaspiRet||0);
         const halykNet = (s.tHalyk||0)-(s.tHalykRet||0);
-        // Продажи наличными: ГРОСС (строка «Наличные» из Z-отчёта) — для физической кассы и показа продавцу
-        const cashSalesGross = (s.rCash||0);
-        // NET (за вычетом возвратов наличными) — для сверки выручки план/факт
+        // cashSales = продажи наличными из ROSTA (источник истины)
         const cashSales = (s.rCash||0) - (s.rRetCash||0);
-
-        // ФИЗИЧЕСКАЯ КАССА: ожидаемая наличность = открытие + продажи наличными − инкассация − выплаты из кассы
-        // (возвраты наличными НЕ вычитаем — по правилу учёта NANE: «начало смены + продажи»)
-        const cashExpected = (s.cashOpen||0) + cashSalesGross - (s.inkasso||0) - (s.cashPayouts||0);
+        
+        // СВЕРКА КАССЫ: cashOpen + rCash = ожидаемый остаток в кассе
+        // cashActual = сколько продавец физически пересчитал
+        // Если есть инкассация — вычитаем её из ожидаемого
+        const cashExpected = (s.cashOpen||0) + (s.rCash||0) - (s.rRetCash||0) - (s.inkasso||0);
         const cashActualVal = s.cashActual || 0;
         const cashBoxDiff = cashActualVal - cashExpected;
-        // Отдельный касса-алерт — ТОЛЬКО для мелкого расхождения (500–1000 ₸), которое не блокирует смену.
-        // При значимом расхождении (>1000) касса показывается один раз внутри блока «Смена не закрыта» — без дублей.
-        if (Math.abs(cashBoxDiff) > 500 && Math.abs(cashBoxDiff) <= 1000) {
+        if (Math.abs(cashBoxDiff) > 500) {
           const sign = cashBoxDiff > 0 ? '+' : '';
           const dir = cashBoxDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
-          const payoutStr = (s.cashPayouts||0) > 0 ? ' − выплаты ' + Number(s.cashPayouts||0).toLocaleString() : '';
           for (const ownerId of OWNER_IDS) {
-            await sendTelegram(ownerId, '💰 РАСХОЖДЕНИЕ КАССЫ при закрытии!\n👤 ' + (shift.seller||sellerName) + '\n💰 Ожидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\n   (открытие ' + Number(s.cashOpen||0).toLocaleString() + ' + продажи наличными ' + Number(cashSalesGross).toLocaleString() + ' − инкассация ' + Number(s.inkasso||0).toLocaleString() + payoutStr + ')\n💰 Факт в кассе: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг\n❌ ' + dir + ': ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг');
+            await sendTelegram(ownerId, '💰 РАСХОЖДЕНИЕ КАССЫ при закрытии!\n👤 ' + (shift.seller||sellerName) + '\n💰 Ожидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\n   (открытие ' + Number(s.cashOpen||0).toLocaleString() + ' + продажи ' + Number(cashSales).toLocaleString() + ' − инкассация ' + Number(s.inkasso||0).toLocaleString() + ')\n💰 Факт в кассе: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг\n❌ ' + dir + ': ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг');
           }
-          const inkStr = (s.inkasso||0) > 0 ? ' − инкассация ' + Number(s.inkasso||0).toLocaleString('ru-RU') : '';
-          const payStr2 = (s.cashPayouts||0) > 0 ? ' − выплаты ' + Number(s.cashPayouts||0).toLocaleString('ru-RU') : '';
-          await sendTelegram(userId, '⚠️ Расхождение кассы: ' + dir + ' ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\nОжидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг (открытие ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString('ru-RU') + inkStr + payStr2 + ')\nФакт: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг');
+          await sendTelegram(userId, '⚠️ Расхождение кассы: ' + dir + ' ' + sign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\nОжидалось: ' + Number(cashExpected).toLocaleString('ru-RU') + ' тг\nФакт: ' + Number(cashActualVal).toLocaleString('ru-RU') + ' тг');
         }
         const factTotal = kaspiNet + halykNet + cashSales + (s.rPersonal||0) + (s.rBonus||0);
         const diff = factTotal - rostaTotal;
@@ -1085,9 +908,10 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         const halykROSTANet = (s.rHalyk||0) + (s.rHalykOnline||0) - (s.rRetHalyk||0) - (s.rRetHalykOnline||0); // ROSTA чистые
         const kaspiDiff = kaspiFactNet - kaspiROSTANet;
         const halykDiff = halykFactNet - halykROSTANet;
+        const cashDiff = cashSales - (s.rCash||0);
         if (Math.abs(kaspiDiff) > 500) channelDiffs.push({ channel: 'Kaspi', diff: kaspiDiff });
         if (Math.abs(halykDiff) > 500) channelDiffs.push({ channel: 'Halyk', diff: halykDiff });
-        // Наличные НЕ сверяем как «канал терминала»: для них нет терминала, проверка — физический пересчёт кассы (cashBoxDiff выше)
+        if (Math.abs(cashDiff) > 500) channelDiffs.push({ channel: 'Наличные', diff: cashDiff });
         const allPrepaysRaw = await dbGetPrepays('all');
         // Учитываем ВСЕ предоплаты — и закрытые и открытые
         // Открытая предоплата тоже может объяснить расхождение (товар выдан сегодня)
@@ -1095,195 +919,34 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           .map(p => ({ id: String(p.prep_id||''), client: String(p.client_name||''), amount: Number(p.amount||0), channel: String(p.channel||''), status: String(p.status||'') }));
         const prepayExplanations = [];
         const explainedDiffs = new Set();
-        const coveredByChannel = {}; // сколько расхождения канала покрыто предоплатами (в тенге)
-        const chMatchFor = (channel) => (p => (channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
-                (channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
-                (channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash'))));
-        // Перепутанный терминал: Kaspi и Halyk разошлись одинаково и противоположно
-        // (одну сумму пробили не на тот банк). Итог по картам сходится → это НЕ выкуп и НЕ пропажа денег, а ошибка канала.
-        let terminalSwap = null;
-        {
-          const kd = channelDiffs.find(c => c.channel === 'Kaspi');
-          const hd = channelDiffs.find(c => c.channel === 'Halyk');
-          if (kd && hd && (kd.diff > 0) !== (hd.diff > 0) && Math.abs(kd.diff + hd.diff) < 2000 && Math.min(Math.abs(kd.diff), Math.abs(hd.diff)) > 500) {
-            terminalSwap = { amount: Math.round((Math.abs(kd.diff) + Math.abs(hd.diff)) / 2), channels: ['Kaspi', 'Halyk'] };
-          }
-        }
-        // ПОДСКАЗКИ (не авто-привязка!): ищем предоплаты, похожие по сумме на расхождение, и ПРЕДЛАГАЕМ продавцу подтвердить.
-        // Сами НЕ закрываем и НЕ привязываем — иначе можно молча закрыть чужую карточку (вариант Б).
-        const prepaySuggestions = {}; // channel -> [предоплаты-кандидаты]
         channelDiffs.forEach(cd => {
-          if (terminalSwap) return;        // перепутанный терминал — предоплату не предлагаем
-          if (cd.diff >= 0) return;        // выкуп предоплаты даёт НЕДОСТАЧУ на терминале, излишек он не объясняет
-          const TOL = 1000; // допуск сходимости по сумме
-          const channelPrepays = todayClosedPrepays.filter(chMatchFor(cd.channel));
-          const single = channelPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
-          const byAmountAnyChannel = todayClosedPrepays.filter(p => Math.abs(p.amount - Math.abs(cd.diff)) < TOL);
-          let cand = [];
-          if (single.length > 0) cand = single;
-          else if (byAmountAnyChannel.length > 0) cand = byAmountAnyChannel;
-          if (cand.length > 0) prepaySuggestions[cd.channel] = cand.slice(0, 5);
-        });
-        // РУЧНОЕ применение: продавец назвал предоплату (ID или имя), которой объясняется расхождение по каналу.
-        // Доверяем владельцу/продавцу: сумма может не совпадать в точности (аванс частичный) — фиксируем как объяснение.
-        const applied = Array.isArray(s.prepayApplied) ? s.prepayApplied : [];
-        applied.forEach(ap => {
-          const ref = String(ap.ref || ap.id || ap.client || '').trim().toLowerCase();
-          if (!ref) return;
-          const found = todayClosedPrepays.find(p => p.id.toLowerCase() === ref || (p.client && p.client.toLowerCase().includes(ref)));
-          if (!found) return;
-          // канал: явно указан в ap.channel, иначе берём из самой предоплаты
-          let ch = ap.channel || '';
-          if (!ch) { const lc = found.channel.toLowerCase(); ch = (lc.includes('kaspi')||lc.includes('каспи'))?'Kaspi':(lc.includes('halyk')||lc.includes('халык'))?'Halyk':(lc.includes('нал')||lc.includes('cash'))?'Наличные':''; }
-          // привязываем к расхождению этого канала (если оно есть), иначе к любому необъяснённому
-          let target = channelDiffs.find(cd => cd.channel === ch && !explainedDiffs.has(cd.channel));
-          if (!target) target = channelDiffs.find(cd => !explainedDiffs.has(cd.channel));
-          if (target) {
-            prepayExplanations.push({ channel: target.channel, diff: target.diff, prepays: [found], manual: true });
-            coveredByChannel[target.channel] = (coveredByChannel[target.channel]||0) + (Number(found.amount)||0);
+          if (cd.diff > 0) {
+            const matching = todayClosedPrepays.filter(p => {
+              const chMatch = (cd.channel === 'Kaspi' && (p.channel.toLowerCase().includes('kaspi')||p.channel.toLowerCase().includes('каспи'))) ||
+                (cd.channel === 'Halyk' && (p.channel.toLowerCase().includes('halyk')||p.channel.toLowerCase().includes('халык'))) ||
+                (cd.channel === 'Наличные' && (p.channel.toLowerCase().includes('нал')||p.channel.toLowerCase().includes('cash')));
+              return chMatch || Math.abs(p.amount - Math.abs(cd.diff)) < 1000;
+            });
+            if (matching.length > 0) { prepayExplanations.push({ channel: cd.channel, diff: cd.diff, prepays: matching }); explainedDiffs.add(cd.channel); }
           }
         });
-        // Канал считается объяснённым, только если предоплаты покрыли расхождение ПОЛНОСТЬЮ (с допуском).
-        // Иначе остаётся НЕПОКРЫТЫЙ остаток — он блокирует закрытие, чтобы продавец объяснил разницу.
-        const TOL_COVER = 1000;
-        const unexplainedDiffs = [];
-        channelDiffs.forEach(cd => {
-          if (explainedDiffs.has(cd.channel)) return; // авто-сопоставление закрыло точно по сумме
-          const covered = coveredByChannel[cd.channel] || 0;
-          const residual = Math.abs(cd.diff) - covered;
-          if (residual > TOL_COVER) unexplainedDiffs.push({ channel: cd.channel, diff: cd.diff, residual, covered });
-          else if (covered > 0) explainedDiffs.add(cd.channel); // предоплаты покрыли полностью
-        });
-        const cardNote = s.notes && s.notes.trim().length > 10;      // причина ПО КАРТАМ
-        const cashNote = s.cashNote && s.cashNote.trim().length > 3;  // причина ПО КАССЕ (отдельно!)
-        const cashProblem = Math.abs(cashBoxDiff) > 1000;             // порог значимости кассы
-        const cashResolved = !cashProblem || cashNote;               // касса: сошлась ИЛИ объяснена своей причиной
-        const cardsResolved = unexplainedDiffs.length === 0 || cardNote; // карты: сошлись ИЛИ объяснены
-        if (!(cashResolved && cardsResolved)) {
-          let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — расхождения!\n\n';
-          if (cashProblem && !cashNote) {
-            const csign = cashBoxDiff > 0 ? '+' : '';
-            const cdir = cashBoxDiff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
-            blockMsg += '💵 КАССА: ' + cdir + ' ' + csign + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\n';
-            blockMsg += '   ожидалось ' + Number(cashExpected).toLocaleString('ru-RU') + ' (открытие ' + Number(s.cashOpen||0).toLocaleString('ru-RU') + ' + наличные продажи ' + Number(cashSalesGross).toLocaleString('ru-RU') + ((s.inkasso||0)>0 ? ' − инкассация ' + Number(s.inkasso||0).toLocaleString('ru-RU') : '') + ((s.cashPayouts||0)>0 ? ' − выплаты ' + Number(s.cashPayouts||0).toLocaleString('ru-RU') : '') + '), ты указал ' + Number(cashActualVal).toLocaleString('ru-RU') + '\n';
-            // Частая ошибка: назвали остаток БЕЗ учёта наличных продаж (напр. остаток сразу после инкассации).
-            // Признак — недостача ≈ сумме наличных продаж.
-            if (cashBoxDiff < 0 && cashSalesGross > 0 && Math.abs(Math.abs(cashBoxDiff) - cashSalesGross) < 2000) {
-              blockMsg += '   ⚠️ Недостача совпадает с наличными продажами (' + Number(cashSalesGross).toLocaleString('ru-RU') + '). Похоже, ты назвал остаток БЕЗ учёта продаж — например, сразу после инкассации.\n';
-              blockMsg += '   ⮕ пересчитай ВСЮ наличность в кассе сейчас (включая продажи после инкассации) — должно быть ≈ ' + Number(cashExpected).toLocaleString('ru-RU') + '. Если продажи уже сдал/инкассировал — укажи полную сумму инкассации. Если денег правда не хватает — напиши «касса: причина».\n\n';
-            } else {
-              blockMsg += '   ⮕ пересчитай кассу (пришли точную сумму одним числом). Если денег правда не хватает — напиши «касса: причина», закрою с пометкой руководителю.\n\n';
-            }
-          }
-          if (!cardNote && terminalSwap) {
-            const kd2 = channelDiffs.find(c => c.channel === 'Kaspi'), hd2 = channelDiffs.find(c => c.channel === 'Halyk');
-            blockMsg += '🔁 Похоже, ПЕРЕПУТАН ТЕРМИНАЛ: одну сумму ~' + terminalSwap.amount.toLocaleString('ru-RU') + ' ₸ пробили не на тот банк.\n';
-            if (kd2) blockMsg += '   • Kaspi: ' + (kd2.diff>0?'+':'') + Number(kd2.diff).toLocaleString('ru-RU') + ' тг\n';
-            if (hd2) blockMsg += '   • Halyk: ' + (hd2.diff>0?'+':'') + Number(hd2.diff).toLocaleString('ru-RU') + ' тг\n';
-            blockMsg += '   итог по картам сходится — деньги на месте, перепутан только банк.\n';
-            blockMsg += '   ⮕ если так — напиши «перепутал терминал», закрою с пометкой. Если другая причина — напиши её.\n';
-          }
+        const unexplainedDiffs = channelDiffs.filter(cd => !explainedDiffs.has(cd.channel));
+        const hasNotes = s.notes && s.notes.trim().length > 10;
+        if (unexplainedDiffs.length > 0 && !hasNotes && prepayExplanations.length === 0) {
+          let blockMsg = '🚫 СМЕНА НЕ ЗАКРЫТА — необъяснённые расхождения!\n\n';
           unexplainedDiffs.forEach(cd => {
-            if (cardNote) return; // карты уже объяснены причиной
-            if (terminalSwap && (cd.channel === 'Kaspi' || cd.channel === 'Halyk')) return; // объяснено перепутанным терминалом
             const sign = cd.diff > 0 ? '+' : '';
             const dir = cd.diff > 0 ? 'ИЗЛИШЕК' : 'НЕДОСТАЧА';
-            blockMsg += '❌ ' + cd.channel + ': ' + dir + ' ' + sign + Number(cd.diff).toLocaleString('ru-RU') + ' тг\n';
-            if (cd.covered > 0) {
-              blockMsg += '   предоплата покрыла ' + Number(cd.covered).toLocaleString('ru-RU') + ' из ' + Math.abs(cd.diff).toLocaleString('ru-RU') + ' → ОСТАЛОСЬ ' + Number(cd.residual).toLocaleString('ru-RU') + ' тг\n';
-              blockMsg += '   ⮕ объясни остаток: ещё предоплата или причина.\n';
-            } else if (cd.channel === 'Kaspi') {
-              const rostaK = (s.rKaspi||0)+(s.rOnline||0)-(s.rRetKaspi||0)-(s.rRetOnlineKaspi||0);
-              blockMsg += '   ROSTA ' + rostaK.toLocaleString('ru-RU') + ' (QR ' + (s.rKaspi||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rOnline||0).toLocaleString('ru-RU') + ((s.rRetKaspi||0)+(s.rRetOnlineKaspi||0)>0?' − возвраты '+((s.rRetKaspi||0)+(s.rRetOnlineKaspi||0)).toLocaleString('ru-RU'):'') + ') vs терминал ' + ((s.tKaspi||0)-(s.tKaspiRet||0)).toLocaleString('ru-RU') + '\n';
-            } else if (cd.channel === 'Halyk') {
-              const rostaH = (s.rHalyk||0)+(s.rHalykOnline||0)-(s.rRetHalyk||0)-(s.rRetHalykOnline||0);
-              blockMsg += '   ROSTA ' + rostaH.toLocaleString('ru-RU') + ' (QR ' + (s.rHalyk||0).toLocaleString('ru-RU') + ' + онлайн ' + (s.rHalykOnline||0).toLocaleString('ru-RU') + ') vs терминал ' + ((s.tHalyk||0)-(s.tHalykRet||0)).toLocaleString('ru-RU') + '\n';
-            }
-            // ПОДСКАЗКА (только предложение — не привязываем сами)
-            if (!(cd.covered > 0)) {
-              if (cd.diff > 0) {
-                // ИЗЛИШЕК: терминал собрал больше, чем продано в ROSTA → похоже, СЕГОДНЯ приняли авансы (предоплаты).
-                // Товар не выдан → карточки предоплат НЕ закрываем, они остаются открытыми.
-                blockMsg += '   💡 Похоже, сегодня приняли авансы (предоплаты) на эту сумму — деньги на терминале, товар ещё не выдан.\n';
-                blockMsg += '   ⮕ если так — напиши «авансы приняты», закрою с пометкой (предоплаты останутся открытыми). Если другая причина — напиши её.\n';
-              } else {
-                const sug = prepaySuggestions[cd.channel];
-                if (sug && sug.length === 1) {
-                  blockMsg += '   💡 Возможно, это выкуп предоплаты: ' + sug[0].client + ' (' + Number(sug[0].amount).toLocaleString('ru-RU') + ' ₸' + (sug[0].id ? ', ' + sug[0].id : '') + ')\n';
-                  blockMsg += '   ⮕ если да — напиши имя клиента или ID для подтверждения; если нет — причину.\n';
-                } else if (sug && sug.length > 1) {
-                  blockMsg += '   💡 Похоже на выкуп одной из предоплат (подтверди, какой именно):\n';
-                  sug.forEach(p => { blockMsg += '      • ' + p.client + ' (' + Number(p.amount).toLocaleString('ru-RU') + ' ₸' + (p.id ? ', ' + p.id : '') + ')\n'; });
-                  blockMsg += '   ⮕ напиши имя клиента или ID нужной; если не выкуп — причину.\n';
-                }
-              }
-            }
+            blockMsg += '❌ ' + cd.channel + ': ' + dir + ' ' + sign + Number(cd.diff).toLocaleString() + ' тг\n';
           });
-          const realCardUnexpl = cardNote ? [] : unexplainedDiffs.filter(cd => !(terminalSwap && (cd.channel === 'Kaspi' || cd.channel === 'Halyk')));
-          if (realCardUnexpl.length > 0) blockMsg += '\nПо картам: если из-за предоплаты — напиши «предоплата <имя клиента или ID>» (можно несколько). Если причина другая — напиши «карты: причина».';
-          if ((cashProblem && !cashNote) && realCardUnexpl.length > 0) blockMsg += '\n(Касса и карты объясняются отдельно — смена закроется, когда закрыты обе.)';
+          blockMsg += '\nОбъясни причину и закрой смену снова.';
           await sendTelegram(userId, blockMsg);
-          // Владельцу — полный HTML-отчёт для контроля, даже если смена не закрыта
-          const sellerForBlock = s.shiftStatus === 'second_close' ? (s.seller2 || sellerName) : (shift.seller || sellerName);
-          try {
-            const htmlBlock = generateShiftHTML({ sellerName: sellerForBlock, date: today, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations });
-            const fnBlock = 'otchet_NE_ZAKRYTA_' + today.replace(/\./g,'_') + '_' + sellerForBlock + '.html';
-            for (const ownerId of OWNER_IDS) {
-              await sendTelegram(ownerId, '⚠️ Расхождение при закрытии — смена НЕ закрыта!\n👤 ' + sellerForBlock + '\nПродавец должен объяснить причину. Полный отчёт с аналитикой ниже 👇');
-              await sendTelegramDocument(ownerId, fnBlock, htmlBlock, '📊 Отчёт (СМЕНА НЕ ЗАКРЫТА) — ' + sellerForBlock + ' · ' + today + ' · ' + closeTime);
-            }
-          } catch(e) {
-            console.error('block report error:', e.message);
-            for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + sellerForBlock);
-          }
-          cleanReply = stripTag(reply, 'SHIFT_CLOSE');
-          s._cashOpen = (cashProblem && !cashNote);            // касса ещё требует объяснения
-          s._cardsOpen = (realCardUnexpl.length > 0);          // карты ещё требуют объяснения
-          pendingClose[String(userId)] = s; // запоминаем закрытие — продавец назовёт предоплату/причину и код достроит закрытие
-          { const _ck = String(userId); if (conversations[_ck] && conversations[_ck].length) conversations[_ck][conversations[_ck].length-1].content = '[Смена НЕ закрыта — расхождение/ошибка, требуется объяснение причины]'; return ''; }
+          for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '⚠️ Расхождение при закрытии!\n👤 ' + (shift.seller || sellerName));
+          cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
+          return cleanReply || '';
         }
-        delete pendingClose[String(userId)]; // закрытие прошло — снимаем отложенное состояние
-        // ВЫКУП: привязанные предоплаты закрываются (товар выдан, клиент доплатил) — больше не висят в открытых
-        const closedPrepays = [];
-        try {
-          const seenPrep = new Set();
-          const namedRefs = (Array.isArray(s.prepayApplied) ? s.prepayApplied : []).map(a => String(a.ref || a.id || a.client || '').trim().toLowerCase()).filter(Boolean);
-          for (const e of prepayExplanations) {
-            if (e.diff >= 0) continue; // ИЗЛИШЕК = аванс принят сегодня, товар НЕ выдан → карточку не закрываем
-            for (const pp of (e.prepays || [])) {
-              const pid = String(pp.id || pp.prep_id || '').trim();
-              const pname = String(pp.client || pp.client_name || '').trim();
-              const lid = pid.toLowerCase(), lname = pname.toLowerCase();
-              const named = namedRefs.some(r => (lid && lid === r) || (lname && (lname.includes(r) || r.includes(lname))));
-              if (!(e.manual || named || e.exact)) continue; // закрываем: названные продавцом, вручную, или точно совпавшие по сумме — не рыхлые авто
-              const key = (pid || pname).toLowerCase();
-              if (!key || seenPrep.has(key)) continue;
-              seenPrep.add(key);
-              if (pid) await supabase.from('prepayments').update({ status: '🟢 Закрыта', notes: 'Выкуп — товар выдан, смена ' + today }).eq('prep_id', pid);
-              else await supabase.from('prepayments').update({ status: '🟢 Закрыта', notes: 'Выкуп — товар выдан, смена ' + today }).eq('client_name', pname);
-              closedPrepays.push(pname + (pp.amount ? ' (' + Number(pp.amount).toLocaleString('ru-RU') + ' ₸)' : ''));
-            }
-          }
-        } catch(e) { console.error('close prepay on shift-close error:', e.message); }
         // Записываем что первое закрытие состоялось — следующий будет вторым
         const todayKeyClose = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty', day:'2-digit', month:'2-digit', year:'numeric'});
-        // Закрытие НЕ заблокировано (есть заметка/предоплата), но если расхождение по терминалу осталось необъяснённым предоплатой — не прячем, шлём владельцу
-        // Расхождение по КАРТАМ, закрытое причиной — владельцу
-        if (unexplainedDiffs.length > 0 && s.notes && s.notes.trim().length > 0) {
-          for (const ownerId of OWNER_IDS) {
-            let warn = '⚠️ Смена закрыта С РАСХОЖДЕНИЕМ ПО КАРТАМ\n👤 ' + (shift.seller||sellerName) + '\n';
-            unexplainedDiffs.forEach(cd => { const sg = cd.diff>0?'+':''; const dr = cd.diff>0?'излишек':'недостача'; warn += '• ' + cd.channel + ': ' + dr + ' ' + sg + Number(cd.diff).toLocaleString('ru-RU') + ' тг'; if (cd.covered > 0) warn += ' (предоплата покрыла ' + Number(cd.covered).toLocaleString('ru-RU') + ', остаток ' + Number(cd.residual).toLocaleString('ru-RU') + ')'; warn += '\n'; });
-            warn += '📝 Причина (карты): ' + s.notes;
-            await sendTelegram(ownerId, warn);
-          }
-        }
-        // КАССА закрыта ПРИЧИНОЙ (а не пересчётом) — красный флаг: возможна реальная недостача/излишек
-        if (s.cashNote && s.cashNote.trim().length > 0 && Math.abs(cashBoxDiff) > 1000) {
-          const cf = cashBoxDiff < 0 ? 'НЕДОСТАЧА' : 'ИЗЛИШЕК';
-          for (const ownerId of OWNER_IDS) {
-            await sendTelegram(ownerId, '🔴 КАССА закрыта ПРИЧИНОЙ (не пересчётом) — ПРОВЕРЬ!\n👤 ' + (shift.seller||sellerName) + '\n💵 ' + cf + ' ' + (cashBoxDiff>0?'+':'') + Number(cashBoxDiff).toLocaleString('ru-RU') + ' тг\n📝 Со слов продавца: ' + s.cashNote);
-          }
-        }
         if (s.shiftStatus !== 'second_close') {
           firstCloseDone[todayKeyClose] = true;
         }
@@ -1324,18 +987,11 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
           }
         }
         delete shiftPhotos[String(userId)];
-        delete shiftOCR[String(userId)];
-        delete pendingClose[String(userId)];
         for (const [sellerId] of Object.entries(ALLOWED_MAP)) {
           if (!OWNER_IDS.includes(sellerId)) {
             await sendTelegramDocument(sellerId, 'den_' + today.replace(/\./g,'_') + '.html', htmlReport, '📊 Итоги дня ' + today);
           }
         }
-        // Чёткое подтверждение продавцу (+ какая предоплата привязана)
-        const prepInfo = prepayExplanations.length ? ('\n📌 Расхождение по ' + prepayExplanations.map(e => e.channel).join(', ') + ' отнесено к предоплате: ' + prepayExplanations.map(e => e.prepays.map(p => p.client + (p.amount ? ' (' + Number(p.amount).toLocaleString('ru-RU') + ' ₸)' : '')).join(', ')).join('; ')) : '';
-        const closedInfo = closedPrepays.length ? ('\n📦 Предоплата закрыта (товар выдан): ' + closedPrepays.join(', ') + ' — больше не в списке открытых.') : '';
-        const noteInfo = (s.notes && s.notes.trim().length > 10) ? ('\n📝 Причина: ' + s.notes.trim()) : '';
-        await sendTelegram(userId, '✅ Смена закрыта.' + prepInfo + closedInfo + noteInfo + '\nОтчёт отправлен. Хорошей работы!');
         delete openShifts[String(userId)];
         await deleteOpenShift(userId);
         if (s.shiftStatus === 'second_close') {
@@ -1343,7 +999,7 @@ async function handleSystemCommands(reply, userId, sellerName, messageText) {
         }
       }
     } catch(e) { console.error('SHIFT_CLOSE error:', e.message); }
-    cleanReply = stripTag(reply, 'SHIFT_CLOSE');
+    cleanReply = reply.replace(/SHIFT_CLOSE:\{.*?\}/s, '').trim();
   }
 
   if (reply.includes('CASH_ALERT:')) {
@@ -1614,7 +1270,7 @@ async function sendWeeklySalesReport() {
     const weekTotal = weekSales.reduce((sum,s) => sum+Number(s.revenue||0), 0);
     const avgDay = weekSales.length > 0 ? Math.round(weekTotal/weekSales.length) : 0;
     const monthTotal = sales.reduce((sum,s) => sum+Number(s.revenue||0), 0);
-    const plan = PLAN_TOTAL;
+    const plan = 27000000;
     const pct = Math.round(monthTotal/plan*100);
     const remains = Math.max(0, plan-monthTotal);
     const daysLeft = new Date(year,month,0).getDate()-nowA.getDate();
@@ -1632,16 +1288,7 @@ async function sendWeeklySalesReport() {
   } catch(e) { console.error('sendWeeklySalesReport error:', e.message); }
 }
 
-// Обёртка: сообщения одного userId обрабатываются строго по очереди (без гонок за общим состоянием)
-function handleMessage(userId, messageText, photoFileId) {
-  const key = String(userId);
-  const prev = userLocks[key] || Promise.resolve();
-  const run = prev.catch(() => {}).then(() => _handleMessageInner(userId, messageText, photoFileId));
-  userLocks[key] = run.catch(() => {});
-  return run;
-}
-
-async function _handleMessageInner(userId, messageText, photoFileId) {
+async function handleMessage(userId, messageText, photoFileId) {
   const senderName = ALLOWED_MAP[String(userId)];
   if (!senderName) { await sendTelegram(userId, '🔒 Доступ закрыт.'); return; }
   const isOwner = OWNER_IDS.includes(String(userId));
@@ -1766,7 +1413,7 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
         const { error } = await supabase.from('daily_sales').update({ rosta_profit: profitAmount }).eq('sale_date', profitDate);
         if (!error) { await sendTelegram(userId, '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг'); }
         else {
-          await supabase.from('daily_sales').upsert({ sale_date: profitDate, revenue: 0, rosta_profit: profitAmount, month: parseInt(profitDate.split('-')[1]), year: parseInt(profitDate.split('-')[0]) }, { onConflict: 'sale_date' });
+          await supabase.from('daily_sales').insert([{ sale_date: profitDate, revenue: 0, rosta_profit: profitAmount, month: parseInt(profitDate.split('-')[1]), year: parseInt(profitDate.split('-')[0]) }]);
           await sendTelegram(userId, '✅ Прибыль записана\n📅 ' + profitDate + '\n💰 ' + profitAmount.toLocaleString('ru-RU') + ' тг');
         }
         return;
@@ -1810,8 +1457,8 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     }
   }
 
-  // Предоплаты для продавцов (но НЕ когда закрытие ждёт объяснения — тогда обрабатывает перехват ниже)
-  if (!isOwner && messageText && !pendingClose[userKey]) {
+  // Предоплаты для продавцов
+  if (!isOwner && messageText) {
     const msgLP = messageText.toLowerCase().trim();
     if (/предоплат|prepay/.test(msgLP) && !/новая|создать|добавить|внести/.test(msgLP)) {
       const list = await loadPrepays('open');
@@ -1835,7 +1482,6 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
   }
 
   if (!conversations[userKey]) conversations[userKey] = await loadConversation(userId);
-  conversations[userKey] = sanitizeMessages(conversations[userKey]);
   if (!openShifts[userKey]) { const dbShift = await loadOpenShift(userId); if (dbShift) openShifts[userKey] = dbShift; }
 
   // Проверка устаревшей смены
@@ -1856,101 +1502,15 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
   let isSecondSeller = isSecondSellerFromShift;
   let firstSellerName = '';
   if (!isOwner && !hasOpenShift) {
-    const _today = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty',day:'2-digit',month:'2-digit',year:'numeric'});
-    const _isToday = st => st && new Date(st).toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty',day:'2-digit',month:'2-digit',year:'numeric'}) === _today;
     for (const [otherId, shiftData] of Object.entries(openShifts)) {
-      if (otherId !== userKey && shiftData && shiftData.seller && _isToday(shiftData.start_time)) { isSecondSeller = true; firstSellerName = shiftData.seller; break; }
+      if (otherId !== userKey && shiftData && shiftData.seller) { isSecondSeller = true; firstSellerName = shiftData.seller; break; }
     }
     if (!isSecondSeller) {
       try {
         const { data: allShifts } = await supabase.from('open_shifts').select('*').neq('phone', userKey);
-        const todays = (allShifts || []).filter(sh => _isToday(sh.start_time));
-        if (todays.length > 0) { isSecondSeller = true; firstSellerName = todays[0].seller || ''; }
+        if (allShifts && allShifts.length > 0) { isSecondSeller = true; firstSellerName = allShifts[0].seller || ''; }
       } catch(e) {}
     }
-  }
-
-  // ── Детерминированное завершение закрытия после расхождения ──
-  // Если закрытие ждёт объяснения (pendingClose) и пришёл текст — код сам достраивает SHIFT_CLOSE,
-  // НЕ полагаясь на то, что модель выдаст большой тег (она часто вместо этого просто «рассказывает»).
-  if (pendingClose[userKey] && messageText && !photoFileId) {
-    const text = messageText.trim();
-    const lc = text.toLowerCase();
-    const isQuestion = /\?\s*$/.test(text) || /^(дальше|что дальше|а что|как|почему|зачем|когда|куда)\b/i.test(lc);
-    let prepayRef = null;
-    try {
-      const prepays = await dbGetPrepays('all');
-      const m = (prepays || []).find(p => {
-        const id = String(p.prep_id||'').toLowerCase();
-        const cl = String(p.client_name||'').toLowerCase();
-        return (id && lc.includes(id)) || (cl && cl.length > 2 && lc.includes(cl));
-      });
-      if (m) prepayRef = String(m.prep_id || m.client_name);
-    } catch(e) {}
-    // Пересчёт кассы: продавец прислал сумму (число), возможно с «наличные/касса». Это НЕ причина — это поправка cashActual.
-    const digitsM = text.replace(/[\s\u00a0]/g, '').match(/\d{4,}/);
-    const cashKeyword = /налич|касс|\bнал\b/i.test(lc);
-    const residual = lc.replace(/[\d\s\u00a0.,]/g, '').replace(/налич\w*|касс\w*|тенге|тг|штук/gi, '').trim();
-    const isCashEntry = !prepayRef && digitsM && (cashKeyword || residual.length <= 3);
-    const mentionsPrepay = /предоп|предапл|выкуп|аванс/i.test(lc);
-    // Подтверждение «авансы приняты сегодня» (объяснение ИЗЛИШКА) — это причина по картам, а не запрос списка
-    const isAvansConfirm = /аванс|предоплат/i.test(lc) && /принят|принял|приним|приняли|взял|за сегодня|сегодня/i.test(lc);
-    // Раздельные замки: причина ПО КАССЕ vs ПО КАРТАМ
-    const cashReasonKw = /касс|сдач|размен|не хват|нехват|из кассы|своих|мои деньги|мелоч/i.test(lc);
-    const cardReasonKw = /\bкарт|терминал|перепутал|kaspi|halyk|каспи|халык/i.test(lc) || isAvansConfirm;
-    const pc = pendingClose[userKey] || {};
-    if (prepayRef || isCashEntry || isAvansConfirm || cashReasonKw || (!mentionsPrepay && !isQuestion && text.length >= 6)) {
-      const s2 = Object.assign({}, pendingClose[userKey]);
-      if (prepayRef) s2.prepayApplied = [...(Array.isArray(pendingClose[userKey].prepayApplied) ? pendingClose[userKey].prepayApplied : []), { ref: prepayRef }];
-      else if (isCashEntry) { s2.cashActual = Number(digitsM[0]); } // пересчёт кассы — без пометки, просто перепроверяем
-      else {
-        // Куда отнести причину — касса или карты (не даём картами закрыть кассу и наоборот)
-        let tgt;
-        if (cashReasonKw && !cardReasonKw) tgt = 'cash';
-        else if (cardReasonKw && !cashReasonKw) tgt = 'card';
-        else if (pc._cashOpen && !pc._cardsOpen) tgt = 'cash';
-        else if (pc._cardsOpen && !pc._cashOpen) tgt = 'card';
-        else tgt = 'ask';
-        if (tgt === 'ask') {
-          conversations[userKey] = conversations[userKey] || [];
-          conversations[userKey].push({ role: 'user', content: messageText });
-          conversations[userKey].push({ role: 'assistant', content: '[Уточняю: причина по кассе или по картам]' });
-          await sendTelegram(userId, 'Это причина по КАССЕ или по КАРТАМ? Напиши «касса: …» или «карты: …» — закрою нужный пункт.');
-          return;
-        }
-        if (tgt === 'cash') s2.cashNote = ((s2.cashNote ? s2.cashNote + '; ' : '') + text);
-        else s2.notes = ((s2.notes ? s2.notes + '; ' : '') + text);
-      }
-      conversations[userKey] = conversations[userKey] || [];
-      conversations[userKey].push({ role: 'user', content: messageText });
-      const syntheticClose = 'SHIFT_CLOSE:' + JSON.stringify(s2);
-      const cr = await handleSystemCommands(syntheticClose, userId, senderName, messageText);
-      conversations[userKey].push({ role: 'assistant', content: cr && cr.trim() ? cr : 'Принято.' });
-      if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
-      if (cr && cr.trim()) await sendTelegram(userId, cr);
-      return;
-    }
-    if (mentionsPrepay && !prepayRef) {
-      // показываем ПОЛНЫЙ список открытых предоплат (с товаром) + красивый HTML — как в обычной команде «Предоплаты»
-      try {
-        const list = await loadPrepays('open');
-        if (!list.length) {
-          await sendTelegram(userId, 'Открытых предоплат нет. Если расхождение по другой причине — напиши её одной фразой, закрою с пометкой для руководителя.');
-        } else {
-          let msg = '📋 Открытые предоплаты (' + list.length + ').\nНапиши имя клиента или ID, чтобы привязать к расхождению:\n\n';
-          list.forEach((p, i) => { msg += '🟡 №'+(i+1)+' '+p.client+'\n'+(p.id?'🆔 '+p.id+'\n':'')+(p.items&&p.items.length?'👗 '+p.items.join(', ')+'\n':'')+'💰 Аванс: '+Number(p.amount).toLocaleString('ru-RU')+' тг\n\n'; });
-          await sendTelegram(userId, msg);
-          const htmlContent = generatePrepaysHTML(list, 'open');
-          const filename = 'prepays_' + new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'}).replace(/\./g,'_') + '.html';
-          await sendTelegramDocument(userId, filename, htmlContent, '📋 Предоплаты — открой в браузере');
-        }
-      } catch(e) { await sendTelegram(userId, 'Напиши имя клиента или ID предоплаты (например: «Жулдыз» или «PREP-0106»).'); }
-      conversations[userKey] = conversations[userKey] || [];
-      conversations[userKey].push({ role: 'user', content: messageText });
-      conversations[userKey].push({ role: 'assistant', content: '[Показан список открытых предоплат — продавец выберет имя/ID]' });
-      return;
-    }
-    // иначе (вопрос / слишком короткое) — пусть модель ответит и подскажет, что писать
   }
 
   let userContent;
@@ -1966,76 +1526,16 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
       // ══════════════════════════════════════════════════════════════
       // ИСПРАВЛЕНО: определяем тип ДО сохранения, потом сохраняем
       // ══════════════════════════════════════════════════════════════
-      // Тип фото определяется ПО СОДЕРЖИМОМУ (надёжнее порядка прихода).
+      const photoType = getPhotoTypeByOrder(userId);  // сначала смотрим порядок
+      savePhotoByOrder(userId, photoFileId);           // потом сохраняем
+
       const base64 = await downloadTelegramFile(photoFileId);
-      const ocrResult = await readPhotoWithClaude(base64, 'auto');
-      let photoType = 'unknown', isReshoot = false;
-      try {
-        const m = ocrResult.match(/\{[\s\S]*\}/);
-        if (m) {
-          if (!shiftOCR[userKey]) shiftOCR[userKey] = {};
-          const parsed = JSON.parse(m[0]);
-          const t = parsed.type;
-          if (t === 'zreport') { photoType = 'zreport'; shiftOCR[userKey].zreport = parsed; }
-          else if (t === 'kaspi_terminal') { photoType = 'kaspi_terminal'; shiftOCR[userKey].kaspi = parsed; }
-          else if (t === 'halyk_terminal') { photoType = 'halyk_terminal'; shiftOCR[userKey].halyk = parsed; }
-          if (photoType !== 'unknown') {
-            const sp0 = shiftPhotos[userKey] || {};
-            isReshoot = (photoType==='zreport'&&!!sp0.zreport)||(photoType==='kaspi_terminal'&&!!sp0.kaspi)||(photoType==='halyk_terminal'&&!!sp0.halyk);
-            savePhotoByType(userId, photoType, photoFileId);
-            await persistOCR(userId, photoType, parsed);
-          }
-          console.log('OCR тип по содержимому:', photoType, JSON.stringify(parsed));
-        }
-      } catch (e) { console.error('OCR parse error:', e.message, '| raw:', ocrResult); }
-      // ── Пошаговый приём с подтверждением (детерминированно, без угадывания модели) ──
-      const isClosing = !isOwner && (hasOpenShift || pendingGeoAction[userId] === 'close_shift');
-      if (isClosing) {
-        const LBL = { zreport:'Z-отчёт ROSTA', kaspi_terminal:'Kaspi терминал', halyk_terminal:'Halyk терминал' };
-        const money = n => Number(n||0).toLocaleString('ru-RU') + ' \u20b8';
-        if (photoType === 'unknown') {
-          await sendTelegram(userId, '\u2753 Не пойму, что на фото. Это Z-отчёт ROSTA, Kaspi или Halyk терминал?\nПереснимите чётко: целиком, без бликов. Z-отчёт \u2014 со списком «Отчёт по видам оплат».');
-          return;
-        }
-        const oc = shiftOCR[userKey] || {};
-        let nums = '';
-        if (photoType === 'zreport' && oc.zreport) {
-          const d = oc.zreport;
-          const sales = (d.kaspi_qr||0)+(d.online_kaspi||0)+(d.halyk_qr||0)+(d.online_halyk||0)+(d.cash||0)+(d.personal||0)+(d.bonus||0);
-          const rets = (d.ret_kaspi_qr||0)+(d.ret_online_kaspi||0)+(d.ret_halyk_qr||0)+(d.ret_online_halyk||0)+(d.ret_cash||0)+(d.ret_personal||0);
-          nums = 'продажи ' + money(sales) + ', возвраты ' + money(rets) + ', Итого ' + money(d.itogo || (sales-rets));
-        } else {
-          const d = photoType === 'kaspi_terminal' ? oc.kaspi : oc.halyk;
-          if (d) nums = 'оплаты ' + money(d.gross) + ', возвраты ' + money(d.returns) + ', нетто ' + money(d.net != null ? d.net : (d.gross||0)-(d.returns||0));
-        }
-        const sp = shiftPhotos[userKey] || {};
-        const have = [], miss = [];
-        for (const [k, slot] of [['zreport','zreport'],['kaspi_terminal','kaspi'],['halyk_terminal','halyk']]) {
-          (sp[slot] ? have : miss).push(LBL[k]);
-        }
-        let msg = (isReshoot ? '\ud83d\udd04 Обновила «' : '\u2705 Принято как «') + LBL[photoType] + '».\nРаспознала: ' + nums + '.\nЕсли цифры неверны \u2014 переснимите это фото.';
-        msg += '\n\n\ud83d\udccb Собрано: ' + (have.length ? have.join(', ') : '\u2014');
-        if (miss.length) {
-          msg += '\n\u23f3 Жду: ' + miss.join(', ') + '.\nПришлите следующее фото.';
-          await sendTelegram(userId, msg);
-          conversations[userKey].push({ role:'user', content:'[Системно: принято фото «'+LBL[photoType]+'» ('+nums+'). Собрано: '+have.join(', ')+'. Жду: '+miss.join(', ')+'. НЕ проси уже принятые фото.]' });
-          if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
-          return;
-        }
-        const cashQ = 'Шаг — Наличные. Сколько наличных в кассе сейчас? Пересчитай и напиши сумму.';
-        msg += '\n\n\u2705 Все 3 отчёта собраны. Перехожу к закрытию.\n\n' + cashQ;
-        await sendTelegram(userId, msg);
-        // Фиксируем в истории, что фото уже приняты и задан вопрос по кассе — чтобы модель НЕ переспрашивала фото
-        conversations[userKey].push({ role: 'assistant', content: 'Все 3 отчёта (Z-отчёт, Kaspi, Halyk) приняты системой. ' + cashQ });
-        if (conversations[userKey].length > 40) conversations[userKey] = conversations[userKey].slice(-40);
-        return;
-      } else {
-        const contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
-          : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
-          : photoType === 'halyk_terminal' ? 'Прочитала Halyk терминал:\n' + ocrResult
-          : 'Прочитала фото:\n' + ocrResult;
-        userContent = [{ type: 'text', text: messageText || 'Прочитай данные с фото.' }, { type: 'text', text: contextText }];
-      }
+      const ocrResult = await readPhotoWithClaude(base64, photoType);
+      const contextText = photoType === 'zreport' ? 'Прочитала Z-отчет ROSTA:\n' + ocrResult
+        : photoType === 'kaspi_terminal' ? 'Прочитала Kaspi терминал:\n' + ocrResult
+        : photoType === 'halyk_terminal' ? 'Прочитала Halyk терминал:\n' + ocrResult
+        : 'Прочитала фото:\n' + ocrResult;
+      userContent = [{ type: 'text', text: messageText || 'Прочитай данные с фото.' }, { type: 'text', text: contextText }];
     } catch(e) { userContent = messageText || 'Не удалось прочитать фото.'; }
   } else {
     userContent = messageText;
@@ -2073,11 +1573,9 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
       const isSecondForPrompt = (!hasOpenShift && isSecondSeller) || isJustArrived || isSecondClosing;
       systemPrompt = getSellerPrompt(senderName, 'NANE PARIS Астана', hasOpenShift, isSecondForPrompt, firstSellerName);
     }
-    let msgsForApi = sanitizeMessages(conversations[userKey]);
-    if (msgsForApi.length === 0) msgsForApi = [{ role: 'user', content: messageText || 'Продолжай.' }];
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-6', max_tokens: 2000,
-      system: systemPrompt, messages: msgsForApi
+      system: systemPrompt, messages: conversations[userKey]
     });
     const reply = response.content.filter(b => b.type === 'text' && b.text).map(b => b.text.trim()).filter(t => t.length > 0).join('\n').trim();
     if (!reply) { await sendTelegram(userId, 'Произошла ошибка. Попробуй еще раз.'); return; }
@@ -2086,9 +1584,8 @@ async function _handleMessageInner(userId, messageText, photoFileId) {
     const cleanReply = await handleSystemCommands(reply, userId, senderName, messageText);
     if (cleanReply && cleanReply.trim()) await sendTelegram(userId, cleanReply);
   } catch(e) {
-    console.error('Claude error:', e.message, e.status || '', JSON.stringify(e.error || {}).slice(0, 300));
+    console.error('Claude error:', e.message);
     await sendTelegram(userId, 'Произошла ошибка. Попробуй еще раз.');
-    try { for (const ownerId of OWNER_IDS) await sendTelegram(ownerId, '\u26a0\ufe0f Диагностика Томи: ' + (e.message || 'неизвестно') + (e.status ? ' [' + e.status + ']' : '')); } catch(_) {}
   }
 }
 
@@ -2110,6 +1607,189 @@ async function loadPrepays(type) {
   return list;
 }
 
+// ── Proxy endpoints для веб-формы (без anon ключа в HTML) ──────────
+app.options('/api/db/:table', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
+  res.sendStatus(200);
+});
+
+app.get('/api/db/:table', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    const { table } = req.params;
+    const query = new URLSearchParams(req.query).toString();
+    const url = `${SUPABASE_URL}/rest/v1/${table}${query?'?'+query:''}`;
+    const r = await fetch(url, {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    const data = await r.json();
+    res.json(data);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/db/:table', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    const { table } = req.params;
+    const query = new URLSearchParams(req.query).toString();
+    const url = `${SUPABASE_URL}/rest/v1/${table}${query?'?'+query:''}`;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(req.body)
+    });
+    const data = await r.json();
+    res.json(data);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.patch('/api/db/:table', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    const { table } = req.params;
+    const query = new URLSearchParams(req.query).toString();
+    const url = `${SUPABASE_URL}/rest/v1/${table}${query?'?'+query:''}`;
+    const r = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify(req.body)
+    });
+    const data = await r.json();
+    res.json(data);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── API для веб-формы продавца ─────────────────────────────────────
+app.options('/api/shift-report', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.sendStatus(200);
+});
+
+app.post('/api/shift-report', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    const s = req.body;
+    const fmt = n => Math.round(n||0).toLocaleString('ru-RU');
+    const parse = v => { const n=parseFloat(String(v||'').replace(/\s/g,'').replace(',','.')); return isNaN(n)?0:n; };
+
+    const rostaTotal = parse(s.rKaspi)+parse(s.rOnline)+parse(s.rHalyk)+parse(s.rHalykOnline)+
+                       parse(s.rCash)+parse(s.rPersonal)+parse(s.rBonus)-
+                       parse(s.rRetKaspi)-parse(s.rRetHalyk)-parse(s.rRetCash);
+    const kaspiNet   = parse(s.tKaspi)-parse(s.tKaspiRet);
+    const halykNet   = parse(s.tHalyk)-parse(s.tHalykRet);
+    const cashActual = parse(s.cashActual);
+    const cashOpen   = parse(s.cashOpen);
+    const inkasso    = parse(s.inkasso);
+    const cashSales  = cashActual>0 ? cashActual-cashOpen+parse(s.cashPayouts)+inkasso+parse(s.rRetCash) : Math.max(0,parse(s.rCash));
+    const factTotal  = kaspiNet+halykNet+cashSales+parse(s.tPersonal)+parse(s.rBonus);
+    const diff       = factTotal-rostaTotal;
+    const isOk       = Math.abs(diff)<500;
+    const date       = s.date||new Date().toISOString().slice(0,10);
+    const d          = date.slice(8,10)+'.'+date.slice(5,7)+'.'+date.slice(0,4);
+    const diffSign   = diff>0?'+':'';
+
+    let msg = '📋 *NANE PARIS — Закрытие смены*\n';
+    msg += `📅 ${d} | 👤 ${s.seller||'?'}\n`;
+    msg += '─'.repeat(28)+'\n\n';
+    msg += `📊 *ROSTA:* ${fmt(rostaTotal)} ₸\n`;
+    if(parse(s.rKaspi))    msg += `  Kaspi QR: ${fmt(parse(s.rKaspi))} ₸\n`;
+    if(parse(s.rOnline))   msg += `  Онлайн Kaspi: ${fmt(parse(s.rOnline))} ₸\n`;
+    if(parse(s.rHalyk))    msg += `  Halyk QR: ${fmt(parse(s.rHalyk))} ₸\n`;
+    if(parse(s.rHalykOnline)) msg += `  Онлайн Halyk: ${fmt(parse(s.rHalykOnline))} ₸\n`;
+    if(parse(s.rCash))     msg += `  Наличные: ${fmt(parse(s.rCash))} ₸\n`;
+    if(parse(s.rPersonal)) msg += `  Личная карта: ${fmt(parse(s.rPersonal))} ₸\n`;
+    if(parse(s.rBonus))    msg += `  Бонусы: ${fmt(parse(s.rBonus))} ₸\n`;
+    if(parse(s.rRetKaspi)) msg += `  Возврат Kaspi: -${fmt(parse(s.rRetKaspi))} ₸\n`;
+    if(parse(s.rRetHalyk)) msg += `  Возврат Halyk: -${fmt(parse(s.rRetHalyk))} ₸\n`;
+    msg += '\n';
+    msg += `💳 *Терминалы (ФАКТ):*\n`;
+    msg += `  Kaspi: ${fmt(kaspiNet)} ₸${parse(s.tKaspiRet)?' (возврат -'+fmt(parse(s.tKaspiRet))+' ₸)':''}\n`;
+    msg += `  Halyk: ${fmt(halykNet)} ₸${parse(s.tHalykRet)?' (возврат -'+fmt(parse(s.tHalykRet))+' ₸)':''}\n`;
+    if(parse(s.tPersonal)) msg += `  Личная карта: ${fmt(parse(s.tPersonal))} ₸\n`;
+    msg += '\n';
+    msg += `💵 *Касса:*\n`;
+    msg += `  Открытие: ${fmt(cashOpen)} ₸\n`;
+    if(cashActual) msg += `  Закрытие: ${fmt(cashActual)} ₸\n`;
+    if(inkasso)    msg += `  Инкассация: ${fmt(inkasso)} ₸\n`;
+    msg += '\n';
+    msg += `📊 *ИТОГ:*\n`;
+    msg += `  ROSTA: ${fmt(rostaTotal)} ₸\n`;
+    msg += `  ФАКТ:  ${fmt(factTotal)} ₸\n`;
+    msg += isOk ? '  ✅ Сходится\n' : `  ⚠️ Расхождение: ${diffSign}${fmt(diff)} ₸\n`;
+    if(s.reasonKaspi)  msg += `\n💬 Kaspi: ${s.reasonKaspi}\n`;
+    if(s.reasonHalyk)  msg += `💬 Halyk: ${s.reasonHalyk}\n`;
+    if(s.reasonCash)   msg += `💬 Нал: ${s.reasonCash}\n`;
+    if(s.notes)        msg += `\n📝 ${s.notes}\n`;
+    msg += '\n_Отправлено из веб-формы_';
+
+    for (const ownerId of OWNER_IDS) {
+      await sendTelegram(ownerId, msg);
+    }
+    res.json({ ok: true });
+  } catch(e) {
+    console.error('/api/shift-report error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.options('/api/ocr', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.sendStatus(200);
+});
+
+app.post('/api/ocr', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    const { base64, mimeType, prompt } = req.body;
+    const response = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 500,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'image',
+          source: { type: 'base64', media_type: mimeType||'image/jpeg', data: base64 }
+        }, {
+          type: 'text',
+          text: prompt
+        }]
+      }]
+    });
+    const text = response.content[0].text;
+    res.json({ ok: true, text });
+  } catch(e) {
+    console.error('/api/ocr error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── Webhook Telegram ────────────────────────────────────────────────
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   try {
@@ -2226,7 +1906,6 @@ app.post('/webhook', async (req, res) => {
         try { await supabase.from('conversations').delete().eq('phone', String(userId)); } catch(e) {}
         // Сбрасываем фото предыдущей смены
         delete shiftPhotos[String(userId)];
-        delete shiftOCR[String(userId)];
         pendingGeoAction[userId] = 'open_shift';
         const sellerName = ALLOWED_MAP[String(userId)] || 'Продавец';
         startChecklistTimer(userId, sellerName, getTime());
@@ -2271,18 +1950,6 @@ app.post('/webhook', async (req, res) => {
         return;
       } else if (lower.includes('закрываю смену') || lower.includes('закрытие смены') || lower.includes('закрыть смену') || lower.includes('закрываю') || lower.includes('закрытие')) {
         pendingGeoAction[userId] = 'close_shift';
-        // Старт закрытия — детерминированно просим ПЕРВОЕ фото. Сбрасываем прошлый сбор, чтобы не «слетало» в короткий чек-лист.
-        const _uk = String(userId);
-        delete shiftPhotos[_uk]; delete shiftOCR[_uk]; delete pendingClose[_uk];
-        const startMsg = 'Начинаем закрытие смены.\n\nШаг 1 — пришли фото Z-отчёта ROSTA (первое фото).';
-        if (!conversations[_uk]) conversations[_uk] = await loadConversation(userId);
-        conversations[_uk] = sanitizeMessages(conversations[_uk] || []);
-        conversations[_uk].push({ role: 'user', content: messageText });
-        conversations[_uk].push({ role: 'assistant', content: startMsg });
-        if (conversations[_uk].length > 40) conversations[_uk] = conversations[_uk].slice(-40);
-        await saveMessages(userId, messageText, startMsg);
-        await sendTelegram(userId, startMsg);
-        return;
       }
     }
 
@@ -2792,7 +2459,7 @@ async function sendMorningDigest() {
     const sales = await dbGetSales(month, year);
     const prepays = await dbGetPrepays('open');
     const monthTotal = (sales||[]).reduce((sum,s) => sum+Number(s.revenue||0), 0);
-    const plan = PLAN_TOTAL;
+    const plan = 27000000;
     const pct = Math.round(monthTotal/plan*100);
     const remains = Math.max(0, plan-monthTotal);
     const daysLeft = new Date(year,month,0).getDate()-nowA.getDate();
@@ -2836,27 +2503,12 @@ function generatePrepaysHTML(list, type) {
 
 function generateShiftHTML(data) {
   const { sellerName, date, closeTime, rostaTotal, factTotal, diff, s, kaspiNet, halykNet, cashSales, totalRet, channelDiffs, prepayExplanations } = data;
-  // Касса: продажи наличными ГРОСС («Наличные» из Z-отчёта), ожидаемая = открытие + наличные − инкассация − выплаты
-  const cashSalesGross = (s.rCash||0);
-  const cashExpectedHtml = (s.cashOpen||0) + cashSalesGross - (s.inkasso||0) - (s.cashPayouts||0);
-  // Каналы: показываем возвраты и чистый ROSTA, чтобы арифметика билась визуально
-  const kaspiRet = (s.rRetKaspi||0)+(s.rRetOnlineKaspi||0);
-  const kaspiRostaNet = (s.rKaspi||0)+(s.rOnline||0)-kaspiRet;
-  const kaspiDiffHtml = (kaspiNet||0) - kaspiRostaNet;
-  const halykRet = (s.rRetHalyk||0)+(s.rRetHalykOnline||0);
-  const halykRostaNet = (s.rHalyk||0)+(s.rHalykOnline||0)-halykRet;
-  const halykDiffHtml = (halykNet||0) - halykRostaNet;
-  const dColor = d => Math.abs(d)>500 ? '#E24B4A' : '#1D9E75';
-  const dSign = d => d>0 ? '+' : '';
-  const _explCh = new Set((prepayExplanations||[]).map(p => p.channel));
-  const _unexpl = (channelDiffs||[]).filter(cd => Math.abs(cd.diff) >= 500 && !_explCh.has(cd.channel));
-  const isOk = Math.abs(diff) < 500 || _unexpl.length === 0;
-  const _explainedNonzero = isOk && Math.abs(diff) >= 500;
-  const isDanger = !isOk;
+  const isOk = Math.abs(diff) < 500;
+  const isDanger = !isOk && Math.abs(diff) >= 500;
   const statusBg   = isOk ? '#eaf3de' : '#fcebeb';
   const statusBorder = isOk ? '#c0dd97' : '#F7C1C1';
   const statusDot  = isOk ? '#639922' : '#E24B4A';
-  const statusText = !isOk ? 'РАСХОЖДЕНИЕ — требует внимания' : (_explainedNonzero ? 'Расхождение объяснено предоплатой — смена закрыта' : 'Все каналы сходятся — смена закрыта корректно');
+  const statusText = isOk ? 'Все каналы сходятся — смена закрыта корректно' : 'РАСХОЖДЕНИЕ — требует внимания';
   const statusColor = isOk ? '#3B6D11' : '#A32D2D';
   const diffColor  = diff >= 0 ? '#1D9E75' : '#E24B4A';
   const diffSign   = diff >= 0 ? '+' : '';
@@ -2920,13 +2572,13 @@ function generateShiftHTML(data) {
 ${diffDetails}${prepaySection}${notesSection}
 <div class="sec">Каналы продаж</div>
 <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;">
-<div class="card"><div class="card-title"><div class="dot" style="background:#378ADD"></div>Kaspi</div><div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rKaspi)}</span></div><div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rOnline)}</span></div>${kaspiRet>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ROSTA)</span><span class="row-value" style="color:#E24B4A">-'+fmt(kaspiRet)+'</span></div>':''}<div class="row"><span class="row-label" style="font-weight:600">Чистый ROSTA</span><span class="row-value" style="font-weight:600">${fmt(kaspiRostaNet)}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tKaspi)}</span></div>${(s.tKaspiRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат терминал</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tKaspiRet)+'</span></div>':''}<div class="row-total"><span>Разница (ФАКТ − ROSTA)</span><span style="color:${dColor(kaspiDiffHtml)}">${dSign(kaspiDiffHtml)}${fmt(kaspiDiffHtml)}</span></div></div>
-<div class="card"><div class="card-title"><div class="dot" style="background:#7F77DD"></div>Halyk</div><div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rHalyk)}</span></div><div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rHalykOnline)}</span></div>${halykRet>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ROSTA)</span><span class="row-value" style="color:#E24B4A">-'+fmt(halykRet)+'</span></div>':''}<div class="row"><span class="row-label" style="font-weight:600">Чистый ROSTA</span><span class="row-value" style="font-weight:600">${fmt(halykRostaNet)}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tHalyk)}</span></div>${(s.tHalykRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат терминал</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tHalykRet)+'</span></div>':''}<div class="row-total"><span>Разница (ФАКТ − ROSTA)</span><span style="color:${dColor(halykDiffHtml)}">${dSign(halykDiffHtml)}${fmt(halykDiffHtml)}</span></div></div>
+<div class="card"><div class="card-title"><div class="dot" style="background:#378ADD"></div>Kaspi</div><div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rOnline)}</span></div><div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rKaspi)}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tKaspi)}</span></div>${(s.tKaspiRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tKaspiRet)+'</span></div>':''}<div class="row-total"><span>Итого (ФАКТ)</span><span>${fmt(kaspiNet)}</span></div></div>
+<div class="card"><div class="card-title"><div class="dot" style="background:#7F77DD"></div>Halyk</div><div class="row"><span class="row-label">Онлайн (ROSTA)</span><span class="row-value">${fmt(s.rHalykOnline)}</span></div><div class="row"><span class="row-label">QR (ROSTA)</span><span class="row-value">${fmt(s.rHalyk)}</span></div><div class="row"><span class="row-label">Терминал (ФАКТ)</span><span class="row-value">${fmt(s.tHalyk)}</span></div>${(s.tHalykRet||0)>0?'<div class="row"><span class="row-label" style="color:#E24B4A">Возврат (ФАКТ)</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.tHalykRet)+'</span></div>':''}<div class="row-total"><span>Итого (ФАКТ)</span><span>${fmt(halykNet)}</span></div></div>
 <div class="card"><div class="card-title"><div class="dot" style="background:#1D9E75"></div>Прочие</div><div class="row"><span class="row-label">Наличные</span><span class="row-value">${fmt(s.rCash)}</span></div>${(s.rPersonal||0)>0?'<div class="row"><span class="row-label">Личная карта</span><span class="row-value">'+fmt(s.rPersonal)+'</span></div>':''}<div class="row-total"><span>Итого</span><span>${fmt((s.rCash||0)+(s.rPersonal||0)+(s.rBonus||0))}</span></div></div>
 </div>
 <div class="sec">Касса и сверка</div>
 <div class="grid2">
-<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие (факт)</span><span class="row-value">${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал (ROSTA)</span><span class="row-value">${fmt(cashSalesGross)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}${(s.cashPayouts||0)>0?'<div class="row"><span class="row-label">Выплаты из кассы</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.cashPayouts)+'</span></div>':''}<div class="row"><span class="row-label">Ожидалось в кассе</span><span class="row-value">${fmt(cashExpectedHtml)}</span></div>${(s.cashActual||0)>0?'<div class="row"><span class="row-label">Факт в кассе</span><span class="row-value" style="color:'+( Math.abs((s.cashActual||0)-cashExpectedHtml)>500 ? "#E24B4A":"#1D9E75")+'">'+fmt(s.cashActual||0)+'</span></div>':''}<div class="row-total"><span>Расхождение кассы</span><span style="color:${Math.abs((s.cashActual||0)-cashExpectedHtml)>500?'#E24B4A':'#1D9E75'}">${((s.cashActual||0)-cashExpectedHtml)>0?'+':''}${fmt((s.cashActual||0)-cashExpectedHtml)}</span></div></div>
+<div class="card"><div class="card-title">💵 Касса</div><div class="row"><span class="row-label">Открытие</span><span class="row-value">${fmt(s.cashOpen)}</span></div><div class="row"><span class="row-label">Закрытие (факт)</span><span class="row-value">${fmt(s.cashActual)}</span></div><div class="row"><span class="row-label">Продажи нал (ROSTA)</span><span class="row-value">${fmt(cashSales)}</span></div>${(s.inkasso||0)>0?'<div class="row"><span class="row-label">Инкассация</span><span class="row-value" style="color:#E24B4A">-'+fmt(s.inkasso)+'</span></div>':''}<div class="row"><span class="row-label">Ожидалось в кассе</span><span class="row-value">${fmt((s.cashOpen||0)+cashSales-(s.inkasso||0))}</span></div>${(s.cashActual||0)>0?'<div class="row"><span class="row-label">Факт в кассе</span><span class="row-value" style="color:'+( Math.abs((s.cashActual||0)-((s.cashOpen||0)+cashSales-(s.inkasso||0)))>500 ? "#E24B4A":"#1D9E75")+'">'+fmt(s.cashActual||0)+'</span></div>':''}<div class="row-total"><span>Итого в кассе</span><span style="color:#1D9E75">${fmt((s.cashOpen||0)+(s.rCash||0))}</span></div></div>
 <div class="card"><div class="card-title">🔍 Сверка</div><div class="row"><span class="row-label">ROSTA</span><span class="row-value">${fmt(rostaTotal)}</span></div><div class="row"><span class="row-label">ФАКТ</span><span class="row-value">${fmt(factTotal)}</span></div><div class="row"><span class="row-label">Разница</span><span class="row-value" style="color:${diffColor};font-weight:600;">${diffSign}${fmt(diff)}</span></div></div>
 </div>
 <div class="grid3">${channelStatus}</div>
@@ -2948,7 +2600,7 @@ async function generateDashboardHTML() {
       const sellers = [s.seller1,s.seller2].filter(Boolean);
       if (sellers.length > 0) { const share = rev/sellers.length; sellers.forEach(name => { if (sellerSales[name]!==undefined) sellerSales[name]+=share; }); }
     });
-    const plan = PLAN_TOTAL;
+    const plan = 27000000;
     const personalPlans = { 'Асель':8550000, 'Зарина':10350000, 'Луиза':8100000 };
     const salaryCalc = await calcSalary(curMonth, curYear);
     const sc = salaryCalc ? salaryCalc.sellers : {};
@@ -2992,7 +2644,7 @@ async function generateFullReport(userId, month, year) {
 
     const KE=14000, TAX=0.03, BONUS_PLAN=30000, KPI_ONE=25000;
     const getPct = r => r>=1000000?0.027:r>=750000?0.022:r>=500000?0.017:0.012;
-    const plans = SELLER_PLANS;
+    const plans = {'Асель':8550000,'Зарина':10350000,'Луиза':8100000};
     const sellers = ['Асель','Зарина','Луиза'];
     const COLORS = {
       'Асель': {bg:'#fdf0ec',tx:'#a03020',hd:'#c87060',css:'ca'},
@@ -3053,7 +2705,7 @@ async function generateFullReport(userId, month, year) {
     const expTotal = expenses.reduce((s,e) => s + Number(e.amount||0), 0);
     const netProfit = totalProfit > 0 ? totalProfit - totalTax - totalFot : 0;
     const fotPct = totalRev > 0 ? (totalFot/totalRev*100).toFixed(1) : '0';
-    const planTotal = PLAN_TOTAL;
+    const planTotal = 27000000;
     const dt = new Date().toLocaleDateString('ru-RU', {timeZone:'Asia/Almaty'});
 
     // ── CSS ──
