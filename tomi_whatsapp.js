@@ -1658,6 +1658,26 @@ app.post('/api/db/:table', async (req, res) => {
   }
 });
 
+app.delete('/api/db/:table', async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    const { table } = req.params;
+    const query = new URLSearchParams(req.query).toString();
+    const url = `${SUPABASE_URL}/rest/v1/${table}${query?'?'+query:''}`;
+    const r = await fetch(url, {
+      method: 'DELETE',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.patch('/api/db/:table', async (req, res) => {
   res.header('Access-Control-Allow-Origin', '*');
   try {
