@@ -2274,9 +2274,15 @@ function SellerPage(){
     if(!seller) return;
     try {
       const today=todayStr();
-      const data=await sbFetch("open_shifts","GET",null,\`?seller=eq.\${encodeURIComponent(seller)}&order=start_time.desc&limit=1\`);
-      if(data&&data.length>0&&data[0].cash_open){
+      const encoded=encodeURIComponent(seller);
+      const data=await sbFetch("open_shifts","GET",null,\`?seller=eq.\${encoded}&order=start_time.desc&limit=1\`);
+      if(data&&data.length>0&&data[0].cash_open!=null){
         upd("cashOpen",String(data[0].cash_open));
+      } else {
+        // Попробуем через phone поиск
+        const data2=await sbFetch("open_shifts","GET",null,\`?order=start_time.desc&limit=10\`);
+        const match=data2&&data2.find(r=>r.seller===seller&&r.cash_open!=null);
+        if(match) upd("cashOpen",String(match.cash_open));
       }
     } catch(e){console.warn("loadShiftCashOpen:",e.message);}
   };
@@ -2306,12 +2312,21 @@ function SellerPage(){
   const diffHalyk=(parse(p.tHalyk)-parse(p.tHalykRet))-((parse(p.rHalyk)+parse(p.rHalykOnline))-parse(p.rRetHalyk));
   const diffCash=cashSalesFact-parse(p.rCash);
 
-  const attachPrepay=(channel,prep,remove)=>{
+  const attachPrepay=async(channel,prep,remove)=>{
     setAttachedIncoming(prev=>{
       const list=prev[channel]||[];
       const updated=remove?list.filter(x=>x.id!==prep.id):[...list,prep];
       return {...prev,[channel]:updated};
     });
+    // При прикреплении — помечаем предоплату как закрытую в Supabase
+    if(!remove&&prep.id){
+      try {
+        await sbFetch("prepayments","PATCH",
+          {status:"🟢 Закрыта",notes:"Выкуплено при закрытии смены "+todayStr()},
+          \`?id=eq.\${prep.id}\`
+        );
+      } catch(e){console.warn("closePrepay:",e.message);}
+    }
   };
 
   const loadOpenPrepays=async()=>{
@@ -2698,8 +2713,8 @@ function SellerPage(){
           style={{...BTN,background:"transparent",border:"1px solid #1a1a1a",color:"#1a1a1a",opacity:shift.seller?1:0.4}}>
           📋 Отчёт
         </button>
-        <button onClick={handleSaveShift} disabled={saving||!shift.seller}
-          style={{...BTN,opacity:saving||!shift.seller?0.5:1}}>
+        <button onClick={handleSaveShift} disabled={saving}
+          style={{...BTN,opacity:saving?0.5:1}}>
           {saving?"Сохранение...":saved?"✅ Сохранено":"💾 Сохранить"}
         </button>
       </div>
@@ -4251,4 +4266,3 @@ app.listen(PORT, async () => {
   const body = JSON.stringify({ url: webhookUrl });
   https.request({ hostname: 'api.telegram.org', path: '/bot' + TELEGRAM_TOKEN + '/setWebhook', method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => { let data = ''; res.on('data', d => data += d); res.on('end', () => console.log('Webhook установлен:', data)); }).end(body);
 });
-    
