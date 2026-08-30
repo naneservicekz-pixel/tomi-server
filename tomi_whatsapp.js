@@ -2169,7 +2169,15 @@ function SecTitle({children,icon}){
 
 // ── DiffRow — сверка по каналу ────────────────────────────────────────
 function DiffRow({label,rosta,fact,reason,onReasonChange,incomingPrepays,onLoadPrepays,loadingPrepays,attachedPrepays,onAttachPrepay}){
-  const attachedSum=(attachedPrepays||[]).reduce((s,p)=>s+parse(p.amount),0);
+  // День 1 (излишек): используем amount (сколько получили предоплату)
+  // День 2 (недостача): используем balance (сколько должен клиент)
+  const attachedSum=(attachedPrepays||[]).reduce((s,p)=>{
+    const bal=parse(p.balance||0);
+    const amt=parse(p.amount||0);
+    // Если есть долг (balance) и факт < ROSTA (недостача) — используем balance
+    // Если факт > ROSTA (излишек) — используем amount
+    return s+(rawDiff<0&&bal>0?bal:amt);
+  },0);
   // Предоплата объясняет расхождение с любой стороны:
   // Если факт < ROSTA (недостача) — предоплата была раньше, прибавляем к факту
   // Если факт > ROSTA (излишек) — деньги получены по предоплате, прибавляем к ROSTA
@@ -2206,11 +2214,17 @@ function DiffRow({label,rosta,fact,reason,onReasonChange,incomingPrepays,onLoadP
       </div>
     </div>
     {/* Прикреплённые предоплаты */}
-    {(attachedPrepays||[]).map((p,i)=><div key={i} style={{display:"flex",justifyContent:"space-between",
-      padding:"6px 10px",background:"rgba(46,107,94,0.08)",borderRadius:"6px",marginBottom:"4px",fontSize:"12px"}}>
-      <span style={{color:"#2E6B5E"}}><strong>{p.client_name}</strong> · {fmt(p.amount)} ₸</span>
-      <button onClick={()=>onAttachPrepay(p,true)} style={{background:"none",border:"none",color:"#b71c1c",cursor:"pointer"}}>✕</button>
-    </div>)}
+    {(attachedPrepays||[]).map((p,i)=>{
+      const bal=parse(p.balance||0);
+      const amt=parse(p.amount||0);
+      const showAmt=rawDiff<0&&bal>0?bal:amt;
+      const label=rawDiff<0&&bal>0?"долг":"предоплата";
+      return <div key={i} style={{display:"flex",justifyContent:"space-between",
+        padding:"6px 10px",background:"rgba(46,107,94,0.08)",borderRadius:"6px",marginBottom:"4px",fontSize:"12px"}}>
+        <span style={{color:"#2E6B5E"}}><strong>{p.client_name}</strong> · {label} {fmt(showAmt)} ₸</span>
+        <button onClick={()=>onAttachPrepay(p,true)} style={{background:"none",border:"none",color:"#b71c1c",cursor:"pointer"}}>✕</button>
+      </div>;
+    })}
     {/* Кнопка подтянуть предоплату */}
     {!ok&&<button onClick={()=>{setShowList(v=>!v);if(!showList&&onLoadPrepays)onLoadPrepays();}}
       style={{width:"100%",padding:"8px 12px",borderRadius:"6px",border:"1.5px dashed #2E6B5E",
@@ -2352,17 +2366,20 @@ function SellerPage(){
   const diffHalyk=(parse(p.tHalyk)-parse(p.tHalykRet))-((parse(p.rHalyk)+parse(p.rHalykOnline))-parse(p.rRetHalyk));
   const diffCash=cashSalesFact-parse(p.rCash);
 
-  const attachPrepay=async(channel,prep,remove)=>{
+  const attachPrepay=async(channel,prep,remove,isIssue)=>{
     setAttachedIncoming(prev=>{
       const list=prev[channel]||[];
       const updated=remove?list.filter(x=>x.id!==prep.id):[...list,prep];
       return {...prev,[channel]:updated};
     });
-    // При прикреплении — помечаем предоплату как закрытую в Supabase
-    if(!remove&&prep.id){
+    // Статус меняется ТОЛЬКО при явной выдаче товара (isIssue=true)
+    // При простом подтягивании для объяснения расхождения — статус не меняется
+    // Это позволяет: День 1 подтянуть, статус остаётся Открыта
+    //               День 2 (кнопка Выдать) → статус Выдан, balance=0
+    if(!remove&&prep.id&&isIssue){
       try {
         await sbFetch("prepayments","PATCH",
-          {status:"🟢 Выдан",notes:"Товар выдан · Закрыто при сверке смены "+todayStr()},
+          {status:"🟢 Выдан",balance:0,notes:"Товар выдан · "+todayStr()},
           \`?id=eq.\${prep.id}\`
         );
       } catch(e){console.warn("closePrepay:",e.message);}
@@ -2811,17 +2828,34 @@ function SellerPage(){
         const isClosed=p.status&&(p.status.includes('Выдан')||p.status.includes('Закрыта'));
         return <div key={i} style={{border:\`1.5px solid \${isClosed?'#4caf50':'#e6a817'}\`,borderRadius:"8px",padding:"12px",marginBottom:"10px",background:isClosed?"rgba(232,245,233,0.6)":"rgba(255,248,220,0.6)"}}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:"6px"}}>
-          <div>
+          <div style={{flex:1}}>
             <div style={{fontWeight:"700",fontSize:"14px"}}>{p.client_name}</div>
             <div style={{fontSize:"11px",color:"#555"}}>{p.prep_id} · {p.channel}</div>
+            {p.phone&&<div style={{fontSize:"11px",color:"#888"}}>📱 {p.phone}</div>}
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{fontSize:"16px",fontWeight:"700",color:"#2E6B5E"}}>{fmt(p.amount)} ₸</div>
-            {p.balance>0&&<div style={{fontSize:"11px",color:"#c62828"}}>Долг: {fmt(p.balance)} ₸</div>}
+            {p.balance>0&&!isClosed&&<div style={{fontSize:"12px",color:"#c62828",fontWeight:"700"}}>Долг: {fmt(p.balance)} ₸</div>}
           </div>
         </div>
-        {p.item&&<div style={{fontSize:"12px",color:"#555"}}>👗 {p.item}</div>}
-        {isClosed&&<div style={{fontSize:"11px",color:"#4caf50",marginTop:"4px",fontWeight:"600"}}>{p.status} · {p.notes||""}</div>}
+        {p.item&&<div style={{fontSize:"12px",color:"#555",marginBottom:"6px"}}>👗 {p.item}</div>}
+        {isClosed
+          ?<div style={{fontSize:"11px",color:"#4caf50",fontWeight:"600"}}>{p.status} · {p.notes||""}</div>
+          :<button onClick={async()=>{
+            if(!window.confirm(\`Подтвердить выдачу товара клиенту \${p.client_name}?\`)) return;
+            try {
+              await sbFetch("prepayments","PATCH",
+                {status:"🟢 Выдан",balance:0,notes:"Товар выдан · "+todayStr()},
+                \`?id=eq.\${p.id}\`
+              );
+              loadOpenPrepays(prepayListTab);
+            } catch(e){alert("Ошибка: "+e.message);}
+          }} style={{width:"100%",padding:"8px",borderRadius:"8px",border:"none",
+            background:"#2E6B5E",color:"#fff",fontSize:"13px",fontWeight:"700",
+            cursor:"pointer",fontFamily:"inherit",marginTop:"4px"}}>
+            ✅ Выдать товар клиенту
+          </button>
+        }
       </div>;
       })}
     </div>}
