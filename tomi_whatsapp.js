@@ -3245,7 +3245,7 @@ function EditorTab(){
         filter=\`?order=prep_date.desc&limit=100\`;
       } else if(table==="expenses"){
         // Расходы показываем все без фильтра по месяцу
-        filter=\`?order=id.desc&limit=100\`;
+        filter=\`?order=expense_date.desc&limit=100\`;
       }
       const data=await sbFetch(table,"GET",null,filter);
       setRows(data||[]);
@@ -3292,10 +3292,10 @@ function EditorTab(){
     setAddingExpense(true);
     try {
       await sbFetch("expenses","POST",{
-        date:expenseForm.date,
+        expense_date:expenseForm.date,
         category:expenseForm.category,
         description:expenseForm.description,
-        sum:parse(expenseForm.sum),
+        amount:parse(expenseForm.sum),
         month:parseInt(expenseForm.date.split("-")[1]),
         year:parseInt(expenseForm.date.split("-")[0])
       });
@@ -3402,6 +3402,7 @@ function EditorTab(){
             {row.sale_date&&<span style={{background:"#1a1a1a",color:"#FFFFF0",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{row.sale_date.slice(8,10)}.{row.sale_date.slice(5,7)}.{row.sale_date.slice(0,4)}</span>}
             {row.prep_date&&<span style={{background:"#e6a817",color:"#fff",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{row.prep_date.slice(8,10)}.{row.prep_date.slice(5,7)}.{row.prep_date.slice(0,4)}</span>}
             {row.date&&<span style={{background:"#555",color:"#fff",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{String(row.date).slice(8,10)}.{String(row.date).slice(5,7)}.{String(row.date).slice(0,4)}</span>}
+            {row.expense_date&&<span style={{background:"#555",color:"#fff",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{String(row.expense_date).slice(8,10)}.{String(row.expense_date).slice(5,7)}.{String(row.expense_date).slice(0,4)}</span>}
             {/* Продавец */}
             {(row.seller1||row.seller)&&<span style={{fontSize:"12px",color:"#555"}}>👤 {row.seller1||row.seller}{row.seller2?" + "+row.seller2:""}</span>}
             {row.client_name&&<span style={{fontSize:"13px",fontWeight:"600"}}>👤 {row.client_name}</span>}
@@ -3412,7 +3413,7 @@ function EditorTab(){
             {/* Сумма */}
             {row.revenue>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#2E6B5E",marginLeft:"auto"}}>{fmt(row.revenue)} ₸</span>}
             {row.amount>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#2E6B5E",marginLeft:"auto"}}>{fmt(row.amount)} ₸</span>}
-            {row.sum>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#c62828",marginLeft:"auto"}}>{fmt(row.sum)} ₸</span>}
+            {row.amount>0&&!row.revenue&&!row.balance&&<span style={{fontSize:"15px",fontWeight:"700",color:"#c62828",marginLeft:"auto"}}>{fmt(row.amount)} ₸</span>}
           </div>
           <div style={{display:"flex",gap:"6px"}}>
             {!isEdit&&<button onClick={()=>startEdit(row)}
