@@ -2310,6 +2310,7 @@ function SellerPage(){
   const [openForm,setOpenForm]=useState({seller:"",cashOpen:"",date:todayStr()});
   const [openSaved,setOpenSaved]=useState(false);
   const [openSaving,setOpenSaving]=useState(false);
+  const [prevCashEnd,setPrevCashEnd]=useState(null); // остаток кассы с прошлой смены
 
   // Автозагрузка cashOpen из открытой смены при выборе продавца
   const loadShiftCashOpen=async(seller)=>{
@@ -2503,6 +2504,26 @@ function SellerPage(){
         }
       } catch(e){ console.warn("Supabase:", e.message); }
 
+      // 1б. Сохраняем остаток кассы на конец смены → будет cash_open для следующего дня
+      // cashActual - inkasso = реальный остаток в кассе после инкассации
+      try {
+        const cashEnd = parse(shift.cashActual) > 0
+          ? parse(shift.cashActual) - parse(shift.inkasso||0)
+          : parse(shift.cashOpen||0) + parse(shift.rCash||0) - parse(shift.inkasso||0);
+        if(cashEnd >= 0) {
+          // Удаляем старую запись и создаём новую с остатком
+          await sbFetch("open_shifts","DELETE",null,\`?phone=eq.web_\${encodeURIComponent(shift.seller)}\`);
+          await sbFetch("open_shifts","POST",{
+            phone:"web_"+shift.seller,
+            seller:shift.seller,
+            shop:"NANE PARIS",
+            cash_open:Math.round(cashEnd),
+            start_time:new Date().toISOString(),
+            is_second:false
+          });
+        }
+      } catch(e){ console.warn("Сохранение кассы:", e.message); }
+
       // 2. Отправляем отчёт владельцу в Telegram
       try {
         const prepayTotal=Object.values(attachedIncoming).reduce((s,list)=>s+list.reduce((ss,p)=>ss+parse(p.amount||0),0),0);
@@ -2587,7 +2608,25 @@ function SellerPage(){
 
       <div style={{marginBottom:"14px"}}>
         <label style={LS}>Продавец</label>
-        <select style={{...FS}} value={openForm.seller} onChange={e=>setOpenForm(p=>({...p,seller:e.target.value}))}>
+        <select style={{...FS}} value={openForm.seller} onChange={async e=>{
+          const seller=e.target.value;
+          setOpenForm(p=>({...p,seller}));
+          setPrevCashEnd(null);
+          if(!seller) return;
+          try {
+            // Касса общая — берём последний остаток по всему магазину
+            const allShifts=await sbFetch("open_shifts","GET",null,
+              \`?shop=eq.NANE PARIS&order=start_time.desc&limit=10\`);
+            // Ищем запись с cash_open (это остаток предыдущей смены)
+            // Исключаем запись самого продавца если она только что создана
+            const lastShift=allShifts&&allShifts.find(r=>
+              r.cash_open!=null && r.cash_open>0
+            );
+            if(lastShift){
+              setPrevCashEnd(lastShift.cash_open);
+            }
+          } catch(e){ console.warn(e); }
+        }}>
           <option value="">Выбери продавца</option>
           {SELLERS.map(s=><option key={s}>{s}</option>)}
         </select>
@@ -2598,8 +2637,22 @@ function SellerPage(){
         <input type="date" style={{...FS}} value={openForm.date} onChange={e=>setOpenForm(p=>({...p,date:e.target.value}))}/>
       </div>
 
-      <MoneyField label="Наличные в кассе при открытии"
+      {prevCashEnd!==null&&<div style={{background:"rgba(255,200,0,0.1)",border:"1px solid rgba(200,150,0,0.3)",
+        borderRadius:"8px",padding:"10px 14px",marginBottom:"10px",fontSize:"13px"}}>
+        💰 По данным системы на конец вчерашней смены в кассе было: <strong>{fmt(prevCashEnd)} ₸</strong>
+        <div style={{fontSize:"11px",color:"#888",marginTop:"2px"}}>Пересчитай наличные и введи фактическую сумму</div>
+      </div>}
+      <MoneyField label="Наличные в кассе при открытии (пересчитай вручную)"
         value={openForm.cashOpen} onChange={v=>setOpenForm(p=>({...p,cashOpen:v}))}/>
+      {prevCashEnd!==null&&parse(openForm.cashOpen)>0&&Math.abs(parse(openForm.cashOpen)-prevCashEnd)>500&&<div style={{
+        background:"rgba(251,113,113,0.1)",border:"1px solid rgba(251,113,113,0.3)",
+        borderRadius:"8px",padding:"10px 14px",marginBottom:"4px",fontSize:"13px",color:"#c62828",fontWeight:"600"
+      }}>
+        ⚠️ Расхождение с прошлой сменой: {parse(openForm.cashOpen)>prevCashEnd?"+":""}{fmt(parse(openForm.cashOpen)-prevCashEnd)} ₸
+        <div style={{fontSize:"11px",fontWeight:"400",marginTop:"2px",color:"#555"}}>
+          Ожидалось {fmt(prevCashEnd)} ₸ · Факт {fmt(parse(openForm.cashOpen))} ₸
+        </div>
+      </div>}
 
       {openSaved?
         <div style={{background:"rgba(74,222,128,0.1)",border:"1px solid rgba(74,222,128,0.3)",borderRadius:"10px",padding:"16px",textAlign:"center"}}>
