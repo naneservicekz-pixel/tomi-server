@@ -3283,7 +3283,76 @@ function EditorTab(){
 
   const fmt=n=>Math.round(n||0).toLocaleString("ru-RU");
 
+  const [expenseForm,setExpenseForm]=useState({date:todayStr(),category:"",description:"",sum:""});
+  const [addingExpense,setAddingExpense]=useState(false);
+  const [showAddExpense,setShowAddExpense]=useState(false);
+
+  const handleAddExpense=async()=>{
+    if(!expenseForm.sum||!expenseForm.category){alert("Заполни категорию и сумму");return;}
+    setAddingExpense(true);
+    try {
+      await sbFetch("expenses","POST",{
+        date:expenseForm.date,
+        category:expenseForm.category,
+        description:expenseForm.description,
+        sum:parse(expenseForm.sum),
+        month:parseInt(expenseForm.date.split("-")[1]),
+        year:parseInt(expenseForm.date.split("-")[0])
+      });
+      setMsg("✅ Расход добавлен");
+      setExpenseForm({date:todayStr(),category:"",description:"",sum:""});
+      setShowAddExpense(false);
+      if(table==="expenses") loadRows();
+    } catch(e){setMsg("Ошибка: "+e.message);}
+    setAddingExpense(false);
+    setTimeout(()=>setMsg(""),3000);
+  };
+
+  const expenseCategories=["Аренда","Зарплата","Реклама","Упаковка","Курьер","Хозрасходы","Комиссия","Оборудование","Прочее"];
+
   return <div>
+    {/* Быстрое добавление расхода */}
+    <div style={{marginBottom:"16px"}}>
+      <button onClick={()=>setShowAddExpense(v=>!v)}
+        style={{padding:"10px 16px",borderRadius:"8px",border:"1.5px solid #c62828",
+          background:showAddExpense?"#c62828":"transparent",color:showAddExpense?"#fff":"#c62828",
+          fontSize:"13px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit",marginBottom:"10px"}}>
+        {showAddExpense?"✕ Закрыть":"➕ Добавить расход"}
+      </button>
+      {showAddExpense&&<div style={{background:"rgba(198,40,40,0.04)",border:"1px solid rgba(198,40,40,0.2)",borderRadius:"12px",padding:"16px"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+          <div>
+            <label style={LS}>Дата</label>
+            <input type="date" style={{...FS,fontSize:"13px",padding:"8px 10px"}}
+              value={expenseForm.date} onChange={e=>setExpenseForm(p=>({...p,date:e.target.value}))}/>
+          </div>
+          <div>
+            <label style={LS}>Сумма</label>
+            <input style={{...FS,fontSize:"13px",padding:"8px 10px",textAlign:"right"}} inputMode="numeric"
+              placeholder="0 ₸" value={expenseForm.sum} onChange={e=>setExpenseForm(p=>({...p,sum:e.target.value.replace(/[^0-9]/g,"")}))}/>
+          </div>
+        </div>
+        <div style={{marginBottom:"10px"}}>
+          <label style={LS}>Категория</label>
+          <select style={{...FS,fontSize:"13px",padding:"8px 10px"}}
+            value={expenseForm.category} onChange={e=>setExpenseForm(p=>({...p,category:e.target.value}))}>
+            <option value="">Выбери категорию</option>
+            {expenseCategories.map(c=><option key={c}>{c}</option>)}
+          </select>
+        </div>
+        <div style={{marginBottom:"12px"}}>
+          <label style={LS}>Описание</label>
+          <input style={{...FS,fontSize:"13px",padding:"8px 10px"}}
+            placeholder="Что именно оплачено?"
+            value={expenseForm.description} onChange={e=>setExpenseForm(p=>({...p,description:e.target.value}))}/>
+        </div>
+        <button onClick={handleAddExpense} disabled={addingExpense}
+          style={{...BTN,background:"#c62828",opacity:addingExpense?0.5:1}}>
+          {addingExpense?"Сохранение...":"💾 Сохранить расход"}
+        </button>
+      </div>}
+    </div>
+
     {/* Выбор таблицы */}
     <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"12px"}}>
       {tables.map(t=><button key={t.id} onClick={()=>{setTable(t.id);setRows([]);setEditRow(null);}}
@@ -3328,22 +3397,22 @@ function EditorTab(){
 
         {/* Шапка */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
-          <div style={{display:"flex",alignItems:"center",gap:"12px",flexWrap:"wrap"}}>
-            {/* Номер дня или порядковый */}
-            {row.sale_date&&<span style={{background:"#1a1a1a",color:"#FFFFF0",borderRadius:"6px",
-              padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>
-              {row.sale_date.slice(8,10)}.{row.sale_date.slice(5,7)}
-            </span>}
-            {row.prep_date&&<span style={{background:"#e6a817",color:"#fff",borderRadius:"6px",
-              padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>
-              {row.prep_date.slice(8,10)}.{row.prep_date.slice(5,7)}
-            </span>}
-            {(row.seller1||row.seller)&&<span style={{fontSize:"13px",color:"#555"}}>
-              👤 {row.seller1||row.seller}{row.seller2?" + "+row.seller2:""}
-            </span>}
+          <div style={{display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap"}}>
+            {/* Дата */}
+            {row.sale_date&&<span style={{background:"#1a1a1a",color:"#FFFFF0",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{row.sale_date.slice(8,10)}.{row.sale_date.slice(5,7)}.{row.sale_date.slice(0,4)}</span>}
+            {row.prep_date&&<span style={{background:"#e6a817",color:"#fff",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{row.prep_date.slice(8,10)}.{row.prep_date.slice(5,7)}.{row.prep_date.slice(0,4)}</span>}
+            {row.date&&<span style={{background:"#555",color:"#fff",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{String(row.date).slice(8,10)}.{String(row.date).slice(5,7)}.{String(row.date).slice(0,4)}</span>}
+            {/* Продавец */}
+            {(row.seller1||row.seller)&&<span style={{fontSize:"12px",color:"#555"}}>👤 {row.seller1||row.seller}{row.seller2?" + "+row.seller2:""}</span>}
             {row.client_name&&<span style={{fontSize:"13px",fontWeight:"600"}}>👤 {row.client_name}</span>}
+            {/* Категория/описание расхода */}
+            {row.category&&<span style={{fontSize:"12px",background:"rgba(0,0,0,0.06)",borderRadius:"4px",padding:"2px 6px"}}>{row.category}</span>}
+            {row.description&&<span style={{fontSize:"12px",color:"#555"}}>{row.description}</span>}
+            {row.item&&<span style={{fontSize:"12px",color:"#555"}}>👗 {row.item}</span>}
+            {/* Сумма */}
             {row.revenue>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#2E6B5E",marginLeft:"auto"}}>{fmt(row.revenue)} ₸</span>}
             {row.amount>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#2E6B5E",marginLeft:"auto"}}>{fmt(row.amount)} ₸</span>}
+            {row.sum>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#c62828",marginLeft:"auto"}}>{fmt(row.sum)} ₸</span>}
           </div>
           <div style={{display:"flex",gap:"6px"}}>
             {!isEdit&&<button onClick={()=>startEdit(row)}
