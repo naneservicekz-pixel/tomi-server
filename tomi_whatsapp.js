@@ -3241,11 +3241,13 @@ function EditorTab(){
       if(table==="daily_sales"){
         filter=\`?month=eq.\${filterMonth}&year=eq.\${filterYear}&order=sale_date.asc\`;
       } else if(table==="prepayments"){
-        const m=String(filterMonth).padStart(2,"0");
-        filter=\`?prep_date=gte.\${filterYear}-\${m}-01&prep_date=lt.\${filterYear}-\${String(filterMonth===12?1:filterMonth+1).padStart(2,"0")}-01&order=prep_date.asc\`;
+        // Предоплаты показываем все — они могут быть за разные месяцы
+        filter=\`?order=prep_date.desc&limit=100\`;
       } else if(table==="expenses"){
         const m=String(filterMonth).padStart(2,"0");
-        filter=\`?date=gte.\${filterYear}-\${m}-01&date=lt.\${filterYear}-\${String(filterMonth===12?1:filterMonth+1).padStart(2,"0")}-01&order=date.asc\`;
+        const nextMonth=filterMonth===12?1:filterMonth+1;
+        const nextYear=filterMonth===12?filterYear+1:filterYear;
+        filter=\`?date=gte.\${filterYear}-\${m}-01&date=lt.\${nextYear}-\${String(nextMonth).padStart(2,"0")}-01&order=date.asc\`;
       }
       const data=await sbFetch(table,"GET",null,filter);
       setRows(data||[]);
