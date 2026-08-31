@@ -2100,7 +2100,7 @@ const {useState,useEffect,useCallback}=React;
 // ── Конфигурация ─────────────────────────────────────────────────────
 // Supabase запросы идут через Railway — ключи не нужны в HTML
 const API_URL       = "https://tomi-server-production-c6d7.up.railway.app";
-const SELLERS       = ["Зарина","Айнур"];
+const SELLERS       = ["Зарина","Айнур","Далира"];
 const OWNER_PASS    = "nane2026";
 const SELLER_PASS   = "nane1234";
 
