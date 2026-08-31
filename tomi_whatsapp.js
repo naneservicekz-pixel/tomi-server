@@ -3244,10 +3244,8 @@ function EditorTab(){
         // Предоплаты показываем все — они могут быть за разные месяцы
         filter=\`?order=prep_date.desc&limit=100\`;
       } else if(table==="expenses"){
-        const m=String(filterMonth).padStart(2,"0");
-        const nextMonth=filterMonth===12?1:filterMonth+1;
-        const nextYear=filterMonth===12?filterYear+1:filterYear;
-        filter=\`?date=gte.\${filterYear}-\${m}-01&date=lt.\${nextYear}-\${String(nextMonth).padStart(2,"0")}-01&order=date.asc\`;
+        // Расходы показываем все без фильтра по месяцу
+        filter=\`?order=id.desc&limit=100\`;
       }
       const data=await sbFetch(table,"GET",null,filter);
       setRows(data||[]);
