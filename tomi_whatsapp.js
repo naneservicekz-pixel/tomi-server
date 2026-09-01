@@ -2133,12 +2133,17 @@ app.get('/api/clear-shift/:phone', async (req, res) => {
 app.get('/tomi', (req, res) => {
   const path = require('path');
   const fs = require('fs');
-  const htmlPath = path.join(__dirname, 'tomi_web.html');
-  if (fs.existsSync(htmlPath)) {
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.sendFile(htmlPath);
-  } else {
-    res.status(404).send('tomi_web.html not found');
+  const htmlPath = path.resolve(__dirname, 'tomi_web.html');
+  try {
+    if (fs.existsSync(htmlPath)) {
+      const html = fs.readFileSync(htmlPath, 'utf8');
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    } else {
+      res.status(404).send('tomi_web.html not found. __dirname: ' + __dirname);
+    }
+  } catch(e) {
+    res.status(500).send('Error: ' + e.message);
   }
 });
 
