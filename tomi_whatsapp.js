@@ -2251,12 +2251,12 @@ function DiffRow({label,rosta,fact,reason,onReasonChange,incomingPrepays,onLoadP
   const diagBtns=[];
   if(!ok){
     if(diff>500){
-      diagBtns.push({id:"prepay",icon:"💰",text:"Была предоплата — деньги в терминале, в ROSTA не пробито",val:"Предоплата получена через терминал, в ROSTA не отражена"});
-      diagBtns.push({id:"not_rung",icon:"🧾",text:"Продажа прошла через терминал, но не пробита в ROSTA",val:"Транзакция в терминале без чека в ROSTA"});
+      diagBtns.push({id:"prepay",icon:"\\uD83D\\uDCB0",text:"Была предоплата — деньги в терминале, в ROSTA не пробито",val:"Предоплата получена через терминал, в ROSTA не отражена"});
+      diagBtns.push({id:"not_rung",icon:"\\uD83E\\uDDFE",text:"Продажа прошла через терминал, но не пробита в ROSTA",val:"Транзакция в терминале без чека в ROSTA"});
     } else {
       diagBtns.push({id:"prepay_redeemed",icon:"✅",text:"Клиент выкупил товар по предоплате",val:"Выкуп предоплаты: часть суммы получена раньше"});
-      diagBtns.push({id:"personal",icon:"💳",text:"Оплата на личную карту — пробито как наличные",val:"Клиент перевёл на личную карту, в ROSTA как наличные"});
-      diagBtns.push({id:"rosta_err",icon:"🔧",text:"Ошибка в ROSTA — лишний чек",val:"Ошибочный чек в ROSTA — требует разбора"});
+      diagBtns.push({id:"personal",icon:"\\uD83D\\uDCB3",text:"Оплата на личную карту — пробито как наличные",val:"Клиент перевёл на личную карту, в ROSTA как наличные"});
+      diagBtns.push({id:"rosta_err",icon:"\\uD83D\\uDD27",text:"Ошибка в ROSTA — лишний чек",val:"Ошибочный чек в ROSTA — требует разбора"});
     }
   }
 
@@ -2454,8 +2454,8 @@ function SellerPage(){
     const t=tab||prepayListTab||"open";
     try {
       const filter=t==="open"
-        ?"?status=eq.🟡 Открыта&order=prep_date.asc"
-        :"?status=in.(🟢 Выдан,🟢 Закрыта)&order=prep_date.desc&limit=50";
+        ?"?status=eq.\\uD83D\\uDFE1 Открыта&order=prep_date.asc"
+        :"?status=in.(\\uD83D\\uDFE2 Выдан,\\uD83D\\uDFE2 Закрыта)&order=prep_date.desc&limit=50";
       const data=await sbFetch("prepayments","GET",null,filter);
       setOpenPrepays(data||[]);
     } catch(e){console.error(e);}
@@ -2543,7 +2543,7 @@ function SellerPage(){
     t+=\`\\n📊 ИТОГО\\n\`;
     t+=\`  ROSTA: \${fmt(rostaTotal)} ₸\\n\`;
     t+=\`  ФАКТ:  \${fmt(factTotal)} ₸\\n\`;
-    t+=\`  \${isOk?"✅ Сходится":"⚠️ Разница: "+(totalDiff>0?"+":"")+fmt(totalDiff)+" ₸"}\\n\`;
+    t+=\`  \${isOk?"✅ Сходится":"⚠\\uFE0F Разница: "+(totalDiff>0?"+":"")+fmt(totalDiff)+" ₸"}\\n\`;
     if(shift.notes)t+=\`\\n📝 \${shift.notes}\\n\`;
     return t;
   };
@@ -2655,7 +2655,7 @@ function SellerPage(){
   };
 
   // UI
-  const tabs=[{id:"open",label:"📂 Открытие"},{id:"close",label:"📋 Закрытие"},{id:"prepay",label:"💳 Предоплаты"}];
+  const tabs=[{id:"open",label:"\\uD83D\\uDCC2 Открытие"},{id:"close",label:"\\uD83D\\uDCCB Закрытие"},{id:"prepay",label:"\\uD83D\\uDCB3 Предоплаты"}];
 
   return <div style={{maxWidth:"480px",margin:"0 auto",padding:"0 0 60px"}}>
     {/* Шапка */}
@@ -2746,7 +2746,7 @@ function SellerPage(){
 
     {/* ── ЗАКРЫТИЕ ─────────────────────────────────────── */}
     {tab==="close"&&<div>
-      <SecTitle icon="📋">Закрытие смены</SecTitle>
+      <SecTitle icon="\\uD83D\\uDCCB">Закрытие смены</SecTitle>
 
       <div style={{marginBottom:"14px"}}>
         <label style={LS}>Продавец</label>
@@ -2762,12 +2762,12 @@ function SellerPage(){
       </div>
 
       {/* Фото Z-отчёта */}
-      <SecTitle icon="📄">Z-отчёт ROSTA</SecTitle>
+      <SecTitle icon="\\uD83D\\uDCC4">Z-отчёт ROSTA</SecTitle>
       <div style={{marginBottom:"14px"}}>
         <label style={{...LS,marginBottom:"8px"}}>Фото Z-отчёта</label>
         <label style={{display:"block",width:"100%",padding:"14px",borderRadius:"8px",border:"1.5px dashed rgba(0,0,0,0.25)",
           textAlign:"center",cursor:"pointer",fontSize:"13px",color:"#555",background:"rgba(0,0,0,0.02)"}}>
-          {ocrState.zLoading?"⏳ Распознаю...":ocrState.zDone?"✅ Распознан — поля заполнены":"📷 Нажми чтобы загрузить фото"}
+          {ocrState.zLoading?"⏳ Распознаю...":ocrState.zDone?"✅ Распознан — поля заполнены":"\\uD83D\\uDCF7 Нажми чтобы загрузить фото"}
           <input type="file" accept="image/*" capture="environment" style={{display:"none"}}
             onChange={e=>handlePhotoOCR("z",e.target.files[0])}/>
         </label>
@@ -2786,12 +2786,12 @@ function SellerPage(){
       <MoneyField label="Возврат наличными" value={shift.rRetCash} onChange={v=>upd("rRetCash",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
 
       {/* Терминалы */}
-      <SecTitle icon="💳">Терминалы (факт)</SecTitle>
+      <SecTitle icon="\\uD83D\\uDCB3">Терминалы (факт)</SecTitle>
       <div style={{marginBottom:"14px"}}>
         <label style={{...LS,marginBottom:"8px"}}>Фото Kaspi терминала</label>
         <label style={{display:"block",width:"100%",padding:"12px",borderRadius:"8px",border:"1.5px dashed rgba(0,0,0,0.2)",
           textAlign:"center",cursor:"pointer",fontSize:"12px",color:"#555"}}>
-          {ocrState.kaspiLoading?"⏳ Распознаю...":ocrState.kaspiDone?"✅ Kaspi готов":"📷 Фото Kaspi терминала"}
+          {ocrState.kaspiLoading?"⏳ Распознаю...":ocrState.kaspiDone?"✅ Kaspi готов":"\\uD83D\\uDCF7 Фото Kaspi терминала"}
           <input type="file" accept="image/*" capture="environment" style={{display:"none"}}
             onChange={e=>handlePhotoOCR("kaspi",e.target.files[0])}/>
         </label>
@@ -2803,7 +2803,7 @@ function SellerPage(){
         <label style={{...LS,marginBottom:"8px"}}>Фото Halyk терминала</label>
         <label style={{display:"block",width:"100%",padding:"12px",borderRadius:"8px",border:"1.5px dashed rgba(0,0,0,0.2)",
           textAlign:"center",cursor:"pointer",fontSize:"12px",color:"#555"}}>
-          {ocrState.halykLoading?"⏳ Распознаю...":ocrState.halykDone?"✅ Halyk готов":"📷 Фото Halyk терминала"}
+          {ocrState.halykLoading?"⏳ Распознаю...":ocrState.halykDone?"✅ Halyk готов":"\\uD83D\\uDCF7 Фото Halyk терминала"}
           <input type="file" accept="image/*" capture="environment" style={{display:"none"}}
             onChange={e=>handlePhotoOCR("halyk",e.target.files[0])}/>
         </label>
@@ -2814,7 +2814,7 @@ function SellerPage(){
         hint={!shift.tPersonal&&shift.rPersonal?"✅ Берётся из ROSTA: "+fmt(parse(shift.rPersonal))+" ₸":""}/>
 
       {/* Касса */}
-      <SecTitle icon="💵">Касса</SecTitle>
+      <SecTitle icon="\\uD83D\\uDCB5">Касса</SecTitle>
       <MoneyField label="Открытие (начало смены)" value={shift.cashOpen} onChange={v=>upd("cashOpen",v)}
         hint={shift.cashOpen&&parse(shift.cashOpen)>0?"✅ Загружено автоматически из открытия смены":"Загружается автоматически при выборе продавца"}/>
       <MoneyField label="Закрытие (конец смены — пересчитай)" value={shift.cashActual} onChange={v=>upd("cashActual",v)}
@@ -2825,7 +2825,7 @@ function SellerPage(){
         borderRadius:"8px",padding:"10px 12px",marginBottom:"8px",fontSize:"13px",
         color:cashBoxDiff>0?"#22c55e":"#fb7171",fontWeight:"600"
       }}>
-        {cashBoxDiff>0?"💚 Излишек в кассе":"❌ Недостача в кассе"}: {cashBoxDiff>0?"+":""}{fmt(cashBoxDiff)} ₸
+        {cashBoxDiff>0?"\\uD83D\\uDC9A Излишек в кассе":"❌ Недостача в кассе"}: {cashBoxDiff>0?"+":""}{fmt(cashBoxDiff)} ₸
         <div style={{fontSize:"11px",fontWeight:"400",marginTop:"2px",opacity:0.8}}>
           Ожидалось {fmt(cashExpected)} ₸ · Факт {fmt(parse(shift.cashActual))} ₸
         </div>
@@ -2835,7 +2835,7 @@ function SellerPage(){
 
       {/* Сверка */}
       {(parse(shift.rKaspi)||parse(shift.tKaspi)||parse(shift.rHalyk)||parse(shift.rCash))>0&&<>
-        <SecTitle icon="🔍">Сверка</SecTitle>
+        <SecTitle icon="\\uD83D\\uDD0D">Сверка</SecTitle>
         <DiffRow label="Kaspi"
           rosta={parse(shift.rKaspi)+parse(shift.rOnline)-parse(shift.rRetKaspi)}
           fact={parse(shift.tKaspi)-parse(shift.tKaspiRet)}
@@ -2905,14 +2905,14 @@ function SellerPage(){
         </button>
         <button onClick={handleSaveShift} disabled={saving}
           style={{...BTN,opacity:saving?0.5:1}}>
-          {saving?"Сохранение...":saved?"✅ Сохранено":"💾 Сохранить"}
+          {saving?"Сохранение...":saved?"✅ Сохранено":"\\uD83D\\uDCBE Сохранить"}
         </button>
       </div>
     </div>}
 
     {/* ── ПРЕДОПЛАТЫ ────────────────────────────────────── */}
     {tab==="prepay"&&<div>
-      <SecTitle icon="💳">Новая предоплата</SecTitle>
+      <SecTitle icon="\\uD83D\\uDCB3">Новая предоплата</SecTitle>
 
       <div style={{marginBottom:"13px"}}>
         <label style={LS}>Имя клиента</label>
@@ -2973,14 +2973,14 @@ function SellerPage(){
       <button onClick={handleSavePrepay} style={BTN}>💳 Сохранить предоплату</button>
 
       {/* Список предоплат */}
-      <SecTitle icon="📋">Предоплаты</SecTitle>
+      <SecTitle icon="\\uD83D\\uDCCB">Предоплаты</SecTitle>
       <div style={{display:"flex",gap:"8px",marginBottom:"12px"}}>
         <button onClick={()=>{setPrepayListTab("open");loadOpenPrepays("open");}} style={{flex:1,padding:"8px",borderRadius:"8px",border:"1.5px solid #1a1a1a",background:prepayListTab==="open"?"#1a1a1a":"transparent",color:prepayListTab==="open"?"#FFFFF0":"#1a1a1a",fontSize:"12px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>🟡 Открытые</button>
         <button onClick={()=>{setPrepayListTab("closed");loadOpenPrepays("closed");}} style={{flex:1,padding:"8px",borderRadius:"8px",border:"1.5px solid #1a1a1a",background:prepayListTab==="closed"?"#1a1a1a":"transparent",color:prepayListTab==="closed"?"#FFFFF0":"#1a1a1a",fontSize:"12px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>🟢 Выданные</button>
       </div>
       <button onClick={()=>loadOpenPrepays(prepayListTab)} disabled={loadingPrepays}
         style={{...BTN,background:"transparent",border:"1px solid #1a1a1a",color:"#1a1a1a",marginBottom:"14px",opacity:loadingPrepays?0.5:1}}>
-        {loadingPrepays?"⏳ Загрузка...":"🔄 Загрузить список"}
+        {loadingPrepays?"⏳ Загрузка...":"\\uD83D\\uDD04 Загрузить список"}
       </button>
       {openPrepays.map((p,i)=>{
         const isClosed=p.status&&(p.status.includes('Выдан')||p.status.includes('Закрыта'));
@@ -3199,7 +3199,7 @@ function SellerPage(){
         <button onClick={()=>{
           navigator.clipboard&&navigator.clipboard.writeText(buildReport()).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2500)});
         }} style={{...BTN,background:copied?"rgba(74,222,128,0.15)":"#1a1a1a",color:copied?"#22c55e":"#FFFFF0"}}>
-          {copied?"✓ Скопировано!":"📋 Скопировать"}
+          {copied?"✓ Скопировано!":"\\uD83D\\uDCCB Скопировать"}
         </button>
       </div>
     </div>}
@@ -3258,7 +3258,7 @@ function OwnerPage(){
   });
 
   const monthNames=["","Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
-  const tabs=[{id:"dash",label:"📊 Дашборд"},{id:"sales",label:"📅 Продажи"},{id:"prepays",label:"💳 Предоплаты"},{id:"editor",label:"✏️ Редактор"}];
+  const tabs=[{id:"dash",label:"\\uD83D\\uDCCA Дашборд"},{id:"sales",label:"\\uD83D\\uDCC5 Продажи"},{id:"prepays",label:"\\uD83D\\uDCB3 Предоплаты"},{id:"editor",label:"✏\\uFE0F Редактор"}];
   const sellerColors={Зарина:"#5a8e70",Далира:"#7060a8"};
 
   return <div style={{maxWidth:"900px",margin:"0 auto",padding:"0 0 60px"}}>
@@ -3384,7 +3384,7 @@ function OwnerPage(){
     {tab==="prepays"&&<div>
       <button onClick={loadPrepays} disabled={loading}
         style={{...BTN,marginBottom:"16px",opacity:loading?0.5:1,maxWidth:"200px"}}>
-        {loading?"⏳ Загрузка...":"🔄 Обновить"}
+        {loading?"⏳ Загрузка...":"\\uD83D\\uDD04 Обновить"}
       </button>
       {prepays.filter(p=>!p.status.includes("Закрыта")).map((p,i)=>{
         const isOpen=!p.status.includes("Закрыта");
@@ -3430,10 +3430,10 @@ function EditorTab(){
   const [filterYear,setFilterYear]=useState(now.getFullYear());
 
   const tables=[
-    {id:"daily_sales",label:"📅 Продажи по дням"},
-    {id:"prepayments",label:"💳 Предоплаты"},
-    {id:"open_shifts",label:"🔄 Открытые смены"},
-    {id:"expenses",label:"💸 Расходы"},
+    {id:"daily_sales",label:"\\uD83D\\uDCC5 Продажи по дням"},
+    {id:"prepayments",label:"\\uD83D\\uDCB3 Предоплаты"},
+    {id:"open_shifts",label:"\\uD83D\\uDD04 Открытые смены"},
+    {id:"expenses",label:"\\uD83D\\uDCB8 Расходы"},
   ];
 
   const monthNames=["","Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
@@ -3554,7 +3554,7 @@ function EditorTab(){
         </div>
         <button onClick={handleAddExpense} disabled={addingExpense}
           style={{...BTN,background:"#c62828",opacity:addingExpense?0.5:1}}>
-          {addingExpense?"Сохранение...":"💾 Сохранить расход"}
+          {addingExpense?"Сохранение...":"\\uD83D\\uDCBE Сохранить расход"}
         </button>
       </div>}
     </div>
@@ -3583,7 +3583,7 @@ function EditorTab(){
         style={{padding:"8px 16px",borderRadius:"8px",border:"1.5px solid #1a1a1a",
           background:"#1a1a1a",color:"#FFFFF0",fontSize:"13px",fontWeight:"700",
           cursor:"pointer",fontFamily:"inherit",opacity:loading?0.5:1}}>
-        {loading?"⏳":"🔄"} {loading?"Загрузка...":"Загрузить"}
+        {loading?"⏳":"\\uD83D\\uDD04"} {loading?"Загрузка...":"Загрузить"}
       </button>
       {rows.length>0&&<span style={{fontSize:"12px",color:"#888"}}>{rows.length} записей</span>}
     </div>
@@ -3667,7 +3667,7 @@ function EditorTab(){
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
             <button onClick={saveEdit} disabled={saving}
               style={{...BTN,opacity:saving?0.5:1}}>
-              {saving?"Сохранение...":"💾 Сохранить"}
+              {saving?"Сохранение...":"\\uD83D\\uDCBE Сохранить"}
             </button>
             <button onClick={()=>setEditRow(null)}
               style={{...BTN,background:"transparent",border:"1px solid #1a1a1a",color:"#1a1a1a"}}>
