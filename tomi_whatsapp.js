@@ -2361,7 +2361,8 @@ function SellerPage(){
   const [openPrepays,setOpenPrepays]=useState([]);
   const [loadingPrepays,setLoadingPrepays]=useState(false);
   const [prepayListTab,setPrepayListTab]=useState("open");
-  const [prepayForm,setPrepayForm]=useState({client:"",phone:"+7",channel:"Kaspi",amount:"",balance:"",item:"",notes:""});
+  const [prepayForm,setPrepayForm]=useState({client:"",phone:"+7",channel:"Kaspi",amount:"",balance:"",notes:""});
+  const [prepayItems,setPrepayItems]=useState([{name:"",price:"",paid:"",status:"ожидается"}]);
   const [saving,setSaving]=useState(false);
   const [saved,setSaved]=useState(false);
   const [showResult,setShowResult]=useState(false);
@@ -2619,13 +2620,21 @@ function SellerPage(){
       const existing=await sbFetch("prepayments","GET",null,"?order=prep_id.desc&limit=1");
       const lastNum=existing&&existing.length>0?parseInt((existing[0].prep_id||"PREP-0000").replace("PREP-",""))+1:1;
       const newId="PREP-"+String(lastNum).padStart(4,"0");
+      const filteredItems=prepayItems.filter(i=>i.name);
+      const totalPrice=filteredItems.reduce((s,i)=>s+parse(i.price||0),0)||parse(f.amount);
+      const totalPaid=filteredItems.reduce((s,i)=>s+parse(i.paid||i.price||0),0)||totalPrice;
+      const totalDebt=Math.max(0,totalPrice-totalPaid);
+      const itemsJson=JSON.stringify(filteredItems);
       await sbFetch("prepayments","POST",{
         prep_id:newId,prep_date:todayStr(),client_name:f.client,phone:f.phone,
-        item:f.item,channel:f.channel,amount:parse(f.amount),balance:parse(f.balance||f.amount),
-        status:"🟡 Открыта",notes:f.notes,seller_name:shift.seller||"Продавец"
+        item:filteredItems.map(i=>i.name).join(", "),
+        channel:f.channel,amount:totalPaid,balance:totalDebt,
+        status:"🟡 Открыта",notes:(f.notes?f.notes+"
+":"")+itemsJson,seller_name:shift.seller||"Продавец"
       });
       alert("✅ Предоплата сохранена! "+newId);
-      setPrepayForm({client:"",phone:"+7",channel:"Kaspi",amount:"",balance:"",item:"",notes:""});
+      setPrepayForm({client:"",phone:"+7",channel:"Kaspi",amount:"",balance:"",notes:""});
+      setPrepayItems([{name:"",price:"",paid:"",status:"ожидается"}]);
     } catch(e){alert("Ошибка: "+e.message);}
   };
 
@@ -2919,12 +2928,44 @@ function SellerPage(){
           {["Kaspi","Онлайн Kaspi","Halyk","Онлайн Halyk","Наличные","Личная карта"].map(c=><option key={c}>{c}</option>)}
         </select>
       </div>
-      <div style={{marginBottom:"13px"}}>
-        <label style={LS}>Товар</label>
-        <input style={{...FS}} value={prepayForm.item} onChange={e=>setPrepayForm(p=>({...p,item:e.target.value}))} placeholder="Что отложили?"/>
+      {/* Список товаров */}
+      <div style={{marginBottom:"14px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"}}>
+          <label style={LS}>Товары</label>
+          <button onClick={()=>setPrepayItems(p=>[...p,{name:"",price:"",status:"ожидается"}])}
+            style={{padding:"4px 10px",borderRadius:"6px",border:"1px solid #1a1a1a",background:"transparent",
+              fontSize:"11px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>
+            + Добавить
+          </button>
+        </div>
+        {prepayItems.map((item,idx)=><div key={idx} style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:"6px",marginBottom:"6px",alignItems:"center"}}>
+          <input style={{...FS,padding:"8px 10px",fontSize:"13px"}}
+            placeholder={\`Товар \${idx+1}\`}
+            value={item.name}
+            onChange={e=>setPrepayItems(p=>p.map((x,i)=>i===idx?{...x,name:e.target.value}:x))}/>
+          <input style={{...FS,padding:"8px 10px",fontSize:"13px",width:"90px",textAlign:"right"}}
+            placeholder="Цена ₸" inputMode="numeric"
+            value={item.price}
+            onChange={e=>setPrepayItems(p=>p.map((x,i)=>i===idx?{...x,price:e.target.value.replace(/[^0-9]/g,"")}:x))}/>
+          <input style={{...FS,padding:"8px 10px",fontSize:"13px",width:"90px",textAlign:"right"}}
+            placeholder="Оплачено ₸" inputMode="numeric"
+            value={item.paid}
+            onChange={e=>setPrepayItems(p=>p.map((x,i)=>i===idx?{...x,paid:e.target.value.replace(/[^0-9]/g,"")}:x))}/>
+          {prepayItems.length>1&&<button onClick={()=>setPrepayItems(p=>p.filter((_,i)=>i!==idx))}
+            style={{padding:"8px",borderRadius:"6px",border:"none",background:"rgba(220,50,50,0.08)",color:"#c62828",cursor:"pointer",fontFamily:"inherit",fontSize:"13px"}}>
+            ✕
+          </button>}
+        </div>)}
+        {(()=>{
+          const totalPrice=prepayItems.reduce((s,i)=>s+parse(i.price||0),0);
+          const totalPaid=prepayItems.reduce((s,i)=>s+parse(i.paid||i.price||0),0);
+          const totalDebt=prepayItems.reduce((s,i)=>s+Math.max(0,parse(i.price||0)-parse(i.paid||i.price||0)),0);
+          return <div style={{display:"flex",justifyContent:"space-between",marginTop:"6px",fontSize:"12px"}}>
+            <span style={{color:"#2E6B5E",fontWeight:"600"}}>Итого: {totalPrice.toLocaleString("ru-RU")} ₸</span>
+            {totalDebt>0&&<span style={{color:"#c62828",fontWeight:"600"}}>Долг: {totalDebt.toLocaleString("ru-RU")} ₸</span>}
+          </div>;
+        })()}
       </div>
-      <MoneyField label="Сумма предоплаты" value={prepayForm.amount} onChange={v=>setPrepayForm(p=>({...p,amount:v}))}/>
-      <MoneyField label="Остаток к доплате" value={prepayForm.balance} onChange={v=>setPrepayForm(p=>({...p,balance:v}))}/>
       <div style={{marginBottom:"13px"}}>
         <label style={LS}>Примечание</label>
         <input style={{...FS}} value={prepayForm.notes} onChange={e=>setPrepayForm(p=>({...p,notes:e.target.value}))} placeholder=""/>
@@ -2955,22 +2996,69 @@ function SellerPage(){
             {p.balance>0&&!isClosed&&<div style={{fontSize:"12px",color:"#c62828",fontWeight:"700"}}>Долг: {fmt(p.balance)} ₸</div>}
           </div>
         </div>
-        {p.item&&<div style={{fontSize:"12px",color:"#555",marginBottom:"6px"}}>👗 {p.item}</div>}
+        {/* Товары из JSON */}
+        {(()=>{
+          let items=[];
+          try {
+            const notesStr=p.notes||"";
+            const jsonMatch=notesStr.match(/(\\[.*\\])/s);
+            if(jsonMatch) items=JSON.parse(jsonMatch[1]);
+          } catch(e){}
+          if(items.length>0){
+            return <div style={{marginBottom:"8px"}}>
+              {items.map((item,idx)=><div key={idx} style={{display:"flex",justifyContent:"space-between",
+                alignItems:"center",padding:"6px 10px",borderRadius:"6px",marginBottom:"4px",
+                background:item.status==="выдан"?"rgba(74,222,128,0.08)":"rgba(0,0,0,0.03)",
+                border:"1px solid "+(item.status==="выдан"?"rgba(74,222,128,0.2)":"rgba(0,0,0,0.08)")}}>
+                <div>
+                  <span style={{fontSize:"13px",fontWeight:"500"}}>{item.name}</span>
+                <div style={{fontSize:"11px",color:"var(--text-secondary)",marginTop:"1px"}}>
+                  {parse(item.price||0)>0&&\`\${parse(item.price||0).toLocaleString("ru-RU")} ₸\`}
+                  {parse(item.paid||0)>0&&parse(item.paid||0)<parse(item.price||0)&&<span style={{color:"#c62828",marginLeft:"6px"}}>долг {(parse(item.price||0)-parse(item.paid||0)).toLocaleString("ru-RU")} ₸</span>}
+                </div>
+                </div>
+                {!isClosed&&<button onClick={async()=>{
+                  if(!window.confirm(\`Выдать "\${item.name}" клиенту \${p.client_name}?\`)) return;
+                  try {
+                    items[idx].status="выдан";
+                    const allIssued=items.every(i=>i.status==="выдан");
+                    const remaining=items.filter(i=>i.status!=="выдан").reduce((s,i)=>s+parse(i.price||0),0);
+                    const notesBase=(p.notes||"").replace(/(\\[.*\\])/s,"").trim();
+                    await sbFetch("prepayments","PATCH",{
+                      status:allIssued?"🟢 Выдан":"🟡 Открыта",
+                      balance:remaining,
+                      notes:notesBase+"
+"+JSON.stringify(items)
+                    },\`?id=eq.\${p.id}\`);
+                    loadOpenPrepays(prepayListTab);
+                  } catch(e){alert("Ошибка: "+e.message);}
+                }} style={{padding:"4px 10px",borderRadius:"6px",border:"none",
+                  background:item.status==="выдан"?"rgba(74,222,128,0.2)":"#2E6B5E",
+                  color:item.status==="выдан"?"#22c55e":"#fff",
+                  fontSize:"11px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit",
+                  pointerEvents:item.status==="выдан"?"none":"auto"}}>
+                  {item.status==="выдан"?"✓ Выдан":"Выдать"}
+                </button>}
+              </div>)}
+            </div>;
+          }
+          return p.item?<div style={{fontSize:"12px",color:"#555",marginBottom:"6px"}}>👗 {p.item}</div>:null;
+        })()}
         {isClosed
-          ?<div style={{fontSize:"11px",color:"#4caf50",fontWeight:"600"}}>{p.status} · {p.notes||""}</div>
+          ?<div style={{fontSize:"11px",color:"#4caf50",fontWeight:"600"}}>{p.status}</div>
           :<button onClick={async()=>{
-            if(!window.confirm(\`⚠️ ВНИМАНИЕ!\\n\\nВыдать товар клиенту \${p.client_name}?\\n\\nЭто ЗАКРОЕТ предоплату навсегда.\\nНажми ОК только когда клиент ФИЗИЧЕСКИ забирает товар сегодня.\`)) return;
+            if(!window.confirm(\`⚠️ ВНИМАНИЕ!\\n\\nВыдать ВСЕ товары клиенту \${p.client_name}?\\n\\nЭто ЗАКРОЕТ предоплату навсегда.\`)) return;
             try {
               await sbFetch("prepayments","PATCH",
-                {status:"🟢 Выдан",balance:0,notes:"Товар выдан · "+todayStr()},
+                {status:"🟢 Выдан",balance:0,notes:"Все товары выданы · "+todayStr()},
                 \`?id=eq.\${p.id}\`
               );
               loadOpenPrepays(prepayListTab);
             } catch(e){alert("Ошибка: "+e.message);}
-          }} style={{width:"100%",padding:"8px",borderRadius:"8px",border:"none",
-            background:"#2E6B5E",color:"#fff",fontSize:"13px",fontWeight:"700",
+          }} style={{width:"100%",padding:"8px",borderRadius:"8px",border:"1.5px solid #2E6B5E",
+            background:"transparent",color:"#2E6B5E",fontSize:"12px",fontWeight:"700",
             cursor:"pointer",fontFamily:"inherit",marginTop:"4px"}}>
-            🎁 ВЫДАТЬ ТОВАР — нажать только при выдаче!
+            🎁 Выдать все товары
           </button>
         }
       </div>;
