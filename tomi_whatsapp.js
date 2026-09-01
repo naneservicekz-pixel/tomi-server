@@ -2442,7 +2442,7 @@ function SellerPage(){
     if(!remove&&prep.id&&isIssue){
       try {
         await sbFetch("prepayments","PATCH",
-          {status:"🟢 Выдан",balance:0,notes:"Товар выдан · "+todayStr()},
+          {status:"\\uD83D\\uDFE2 Выдан",balance:0,notes:"Товар выдан · "+todayStr()},
           \`?id=eq.\${prep.id}\`
         );
       } catch(e){console.warn("closePrepay:",e.message);}
@@ -2629,7 +2629,7 @@ function SellerPage(){
         prep_id:newId,prep_date:todayStr(),client_name:f.client,phone:f.phone,
         item:filteredItems.map(i=>i.name).join(", "),
         channel:f.channel,amount:totalPaid,balance:totalDebt,
-        status:"🟡 Открыта",notes:(f.notes?f.notes+"
+        status:"\\uD83D\\uDFE1 Открыта",notes:(f.notes?f.notes+"
 ":"")+itemsJson,seller_name:shift.seller||"Продавец"
       });
       alert("✅ Предоплата сохранена! "+newId);
@@ -2677,7 +2677,7 @@ function SellerPage(){
 
     {/* ── ОТКРЫТИЕ ─────────────────────────────────────── */}
     {tab==="open"&&<div>
-      <SecTitle icon="🟢">Открытие смены</SecTitle>
+      <SecTitle icon="\\uD83D\\uDFE2">Открытие смены</SecTitle>
 
       <div style={{marginBottom:"14px"}}>
         <label style={LS}>Продавец</label>
@@ -2739,7 +2739,7 @@ function SellerPage(){
         </div>:
         <button onClick={handleSaveOpen} disabled={openSaving}
           style={{...BTN,opacity:openSaving?0.6:1}}>
-          {openSaving?"Сохранение...":"🟢 Открыть смену"}
+          {openSaving?"Сохранение...":"\\uD83D\\uDFE2 Открыть смену"}
         </button>
       }
     </div>}
@@ -3025,7 +3025,7 @@ function SellerPage(){
                     const remaining=items.filter(i=>i.status!=="выдан").reduce((s,i)=>s+parse(i.price||0),0);
                     const notesBase=(p.notes||"").replace(/(\\[.*\\])/s,"").trim();
                     await sbFetch("prepayments","PATCH",{
-                      status:allIssued?"🟢 Выдан":"🟡 Открыта",
+                      status:allIssued?"\\uD83D\\uDFE2 Выдан":"\\uD83D\\uDFE1 Открыта",
                       balance:remaining,
                       notes:notesBase+"
 "+JSON.stringify(items)
@@ -3050,7 +3050,7 @@ function SellerPage(){
             if(!window.confirm(\`⚠️ ВНИМАНИЕ!\\n\\nВыдать ВСЕ товары клиенту \${p.client_name}?\\n\\nЭто ЗАКРОЕТ предоплату навсегда.\`)) return;
             try {
               await sbFetch("prepayments","PATCH",
-                {status:"🟢 Выдан",balance:0,notes:"Все товары выданы · "+todayStr()},
+                {status:"\\uD83D\\uDFE2 Выдан",balance:0,notes:"Все товары выданы · "+todayStr()},
                 \`?id=eq.\${p.id}\`
               );
               loadOpenPrepays(prepayListTab);
@@ -3641,7 +3641,7 @@ function EditorTab(){
             {keys.map(k=>{
               // Специальный переключатель для поля status
               if(k==="status"){
-                const statuses=["🟡 Открыта","🟢 Выдан","🟢 Закрыта","🔴 Отменена"];
+                const statuses=["\\uD83D\\uDFE1 Открыта","\\uD83D\\uDFE2 Выдан","\\uD83D\\uDFE2 Закрыта","\\uD83D\\uDD34 Отменена"];
                 return <div key={k} style={{gridColumn:"1 / -1"}}>
                   <label style={{...LS,marginBottom:"6px"}}>Статус предоплаты</label>
                   <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
