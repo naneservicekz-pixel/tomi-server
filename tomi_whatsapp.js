@@ -206,11 +206,11 @@ async function calcSalary(month, year) {
   try {
     const sales = await dbGetSales(month, year);
     if (!sales || sales.length === 0) return null;
-    const KE = 14000;
+    const KE_MAP = { 'Зарина': 14000, 'Далира': 10000 };
     const TAX_PCT = 0.03;
     const BONUS_PLAN = 30000;
     const KPI_ONE = 25000;
-    const personalPlans = { 'Асель': 8550000, 'Зарина': 10350000, 'Луиза': 8100000 };
+    const personalPlans = { 'Зарина': 13500000, 'Далира': 13500000 };
     const getPct = (amount) => {
       if (amount >= 1000000) return 0.027;
       if (amount >= 750000)  return 0.022;
@@ -218,7 +218,7 @@ async function calcSalary(month, year) {
       return 0.012;
     };
     const kpiScores = await getKPI(month, year);
-    const sellers = ['Асель', 'Зарина', 'Луиза'];
+    const sellers = ['Зарина', 'Далира'];
     const data = {};
     sellers.forEach(s => { data[s] = { shifts: 0, sales: 0, bonusGoodDay: 0, bonusRecord: 0, pctSum: 0 }; });
     let totalRevenue = 0;
@@ -239,7 +239,7 @@ async function calcSalary(month, year) {
     const result = {};
     sellers.forEach(s => {
       const d = data[s];
-      const ke = d.shifts * KE;
+      const ke = d.shifts * (KE_MAP[s] || 14000);
       const pct = Math.round(d.pctSum || 0);
       const bonusPlan = d.sales >= (personalPlans[s] || 0) ? BONUS_PLAN : 0;
       const kpiScore = kpiScores[s] !== undefined ? kpiScores[s] : 3;
@@ -1839,9 +1839,69 @@ ${s.notes?`<div class="card"><div class="label">Примечания</div><div s
 <div style="font-size:11px;color:#aaa;text-align:center;margin-top:8px">Отправлено из веб-формы · ${d}</div>
 </body></html>`;
 
+    const SELLER_IDS = ['1043646480', '396513117', '823616796']; // Айнур, Зарина, Далира
+
     for (const ownerId of OWNER_IDS) {
+      // Отправляем HTML отчёт
       await sendTelegramDocument(ownerId, `shift_${s.seller||'report'}_${date}.html`, htmlReport, `📋 Закрытие смены — ${s.seller||'?'} · ${d}`);
+
+      // Отправляем фото если есть
+      if (s.photos) {
+        const photoLabels = { z: '📄 Z-отчёт ROSTA', kaspi: '💳 Kaspi терминал', halyk: '💳 Halyk терминал' };
+        for (const [key, label] of Object.entries(photoLabels)) {
+          if (s.photos[key]) {
+            try {
+              const imgBuffer = Buffer.from(s.photos[key], 'base64');
+              const body = JSON.stringify({
+                chat_id: ownerId,
+                caption: label + ` · ${s.seller||'?'} · ${d}`,
+                photo: 'attach://photo.jpg'
+              });
+              await new Promise((resolve) => {
+                const https = require('https');
+                const boundary = '----FormBoundary';
+                const imgData = Buffer.from(s.photos[key], 'base64');
+                const formHeader = `--${boundary}
+Content-Disposition: form-data; name="chat_id"
+
+${ownerId}
+--${boundary}
+Content-Disposition: form-data; name="caption"
+
+${label} · ${s.seller||'?'} · ${d}
+--${boundary}
+Content-Disposition: form-data; name="photo"; filename="photo.jpg"
+Content-Type: image/jpeg
+
+`;
+                const formFooter = `
+--${boundary}--`;
+                const formBody = Buffer.concat([Buffer.from(formHeader), imgData, Buffer.from(formFooter)]);
+                const req = https.request({
+                  hostname: 'api.telegram.org',
+                  path: `/bot${TELEGRAM_TOKEN}/sendPhoto`,
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                    'Content-Length': formBody.length
+                  }
+                }, res => { res.on('data', () => {}); res.on('end', resolve); });
+                req.on('error', resolve);
+                req.write(formBody);
+                req.end();
+              });
+            } catch(e) { console.error('Photo send error:', e.message); }
+          }
+        }
+      }
     }
+    // Отправляем полный HTML отчёт всем продавцам
+    try {
+      for (const sellerId of SELLER_IDS) {
+        await sendTelegramDocument(sellerId, `shift_${s.seller||'report'}_${date}.html`, htmlReport, `📋 Закрытие смены — ${s.seller||'?'} · ${d}`);
+      }
+    } catch(e) { console.error('Seller notify error:', e.message); }
+
     res.json({ ok: true });
   } catch(e) {
     console.error('/api/shift-report error:', e.message);
@@ -2100,7 +2160,7 @@ const {useState,useEffect,useCallback}=React;
 // ── Конфигурация ─────────────────────────────────────────────────────
 // Supabase запросы идут через Railway — ключи не нужны в HTML
 const API_URL       = "https://tomi-server-production-c6d7.up.railway.app";
-const SELLERS       = ["Зарина","Айнур","Далира"];
+const SELLERS       = ["Зарина","Далира"];
 const OWNER_PASS    = "nane2026";
 const SELLER_PASS   = "nane1234";
 
@@ -2296,6 +2356,7 @@ function SellerPage(){
   const upd=(k,v)=>setShift(p=>({...p,[k]:v}));
   const [ocrLocked,setOcrLocked]=useState(false);
   const [ocrState,setOcrState]=useState({});
+  const [photos,setPhotos]=useState({z:null,kaspi:null,halyk:null}); // base64 фото
   const [attachedIncoming,setAttachedIncoming]=useState({kaspi:[],halyk:[],cash:[],personal:[]});
   const [openPrepays,setOpenPrepays]=useState([]);
   const [loadingPrepays,setLoadingPrepays]=useState(false);
@@ -2422,6 +2483,8 @@ function SellerPage(){
         const json=await res.json();
         const text=(json.text||"").replace(/\`\`\`json|\`\`\`/g,"").trim();
         const parsed=JSON.parse(text);
+        // Сохраняем фото для отправки в Telegram
+        setPhotos(prev=>({...prev,[type]:base64}));
         if(type==="z"){
           setShift(prev=>({...prev,
             rKaspi:     parsed.kaspi_qr     >0?String(parsed.kaspi_qr)    :prev.rKaspi,
@@ -2536,7 +2599,8 @@ function SellerPage(){
             cashSalesFact,prepayTotal,
             prepayClients:Object.values(attachedIncoming).flat().map(p=>({
               name:p.client_name,phone:p.phone,amount:p.amount,item:p.item,channel:p.channel,id:p.prep_id
-            }))
+            })),
+            photos:{z:photos.z||null,kaspi:photos.kaspi||null,halyk:photos.halyk||null}
           })
         });
       } catch(e){ console.warn("Telegram notify:", e.message); }
@@ -2895,7 +2959,7 @@ function SellerPage(){
         {isClosed
           ?<div style={{fontSize:"11px",color:"#4caf50",fontWeight:"600"}}>{p.status} · {p.notes||""}</div>
           :<button onClick={async()=>{
-            if(!window.confirm(\`Подтвердить выдачу товара клиенту \${p.client_name}?\`)) return;
+            if(!window.confirm(\`⚠️ ВНИМАНИЕ!\\n\\nВыдать товар клиенту \${p.client_name}?\\n\\nЭто ЗАКРОЕТ предоплату навсегда.\\nНажми ОК только когда клиент ФИЗИЧЕСКИ забирает товар сегодня.\`)) return;
             try {
               await sbFetch("prepayments","PATCH",
                 {status:"🟢 Выдан",balance:0,notes:"Товар выдан · "+todayStr()},
@@ -2906,7 +2970,7 @@ function SellerPage(){
           }} style={{width:"100%",padding:"8px",borderRadius:"8px",border:"none",
             background:"#2E6B5E",color:"#fff",fontSize:"13px",fontWeight:"700",
             cursor:"pointer",fontFamily:"inherit",marginTop:"4px"}}>
-            ✅ Выдать товар клиенту
+            🎁 ВЫДАТЬ ТОВАР — нажать только при выдаче!
           </button>
         }
       </div>;
@@ -3095,18 +3159,19 @@ function OwnerPage(){
   const dailyNeed=daysLeft>0?Math.round(remaining/daysLeft):0;
 
   // Суммы по продавцам
-  const sellerTotals={Асель:0,Зарина:0,Луиза:0};
-  const personalPlans={Асель:8550000,Зарина:10350000,Луиза:8100000};
+  const sellerTotals={Зарина:0,Далира:0};
+  const personalPlans={Зарина:13500000,Далира:13500000};
   sales.forEach(s=>{
     const rev=Number(s.revenue||0);
     const sellers=[s.seller1,s.seller2].filter(x=>x&&sellerTotals[x]!==undefined);
-    const n=sellers.length||1;
+    if(sellers.length===0) return;
+    const n=sellers.length;
     sellers.forEach(name=>{sellerTotals[name]+=rev/n;});
   });
 
   const monthNames=["","Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
   const tabs=[{id:"dash",label:"📊 Дашборд"},{id:"sales",label:"📅 Продажи"},{id:"prepays",label:"💳 Предоплаты"},{id:"editor",label:"✏️ Редактор"}];
-  const sellerColors={Асель:"#c87060",Зарина:"#5a8e70",Луиза:"#7060a8"};
+  const sellerColors={Зарина:"#5a8e70",Далира:"#7060a8"};
 
   return <div style={{maxWidth:"900px",margin:"0 auto",padding:"0 0 60px"}}>
     {/* Шапка */}
@@ -3485,13 +3550,31 @@ function EditorTab(){
         {/* Редактирование */}
         {isEdit&&<div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"10px"}}>
-            {keys.map(k=><div key={k}>
-              <label style={{...LS,marginBottom:"3px"}}>{k}</label>
-              <input style={{...FS,padding:"8px 10px",fontSize:"13px"}}
-                value={editData[k]||""}
-                onChange={e=>setEditData(p=>({...p,[k]:e.target.value}))}
-              />
-            </div>)}
+            {keys.map(k=>{
+              // Специальный переключатель для поля status
+              if(k==="status"){
+                const statuses=["🟡 Открыта","🟢 Выдан","🟢 Закрыта","🔴 Отменена"];
+                return <div key={k} style={{gridColumn:"1 / -1"}}>
+                  <label style={{...LS,marginBottom:"6px"}}>Статус предоплаты</label>
+                  <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+                    {statuses.map(s=><button key={s} onClick={()=>setEditData(p=>({...p,status:s}))}
+                      style={{padding:"7px 12px",borderRadius:"8px",border:"1.5px solid "+(editData.status===s?"#1a1a1a":"rgba(0,0,0,0.15)"),
+                        background:editData.status===s?"#1a1a1a":"transparent",
+                        color:editData.status===s?"#FFFFF0":"#1a1a1a",
+                        fontSize:"12px",fontWeight:"500",cursor:"pointer",fontFamily:"inherit"}}>
+                      {s}
+                    </button>)}
+                  </div>
+                </div>;
+              }
+              return <div key={k}>
+                <label style={{...LS,marginBottom:"3px"}}>{k}</label>
+                <input style={{...FS,padding:"8px 10px",fontSize:"13px"}}
+                  value={editData[k]||""}
+                  onChange={e=>setEditData(p=>({...p,[k]:e.target.value}))}
+                />
+              </div>;
+            })}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
             <button onClick={saveEdit} disabled={saving}
