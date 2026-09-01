@@ -1,0 +1,1601 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>NANE PARIS — Томи</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=Cormorant+Garamond:ital,wght@1,400;1,600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#FFFFF0;font-family:'DM Sans',sans-serif;color:#1a1a1a;min-height:100vh}
+input,select,textarea{font-family:inherit}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:rgba(0,0,0,0.15);border-radius:2px}
+input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.3)}
+@media print{.no-print{display:none!important}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const {useState,useEffect,useCallback}=React;
+
+// ── Конфигурация ─────────────────────────────────────────────────────
+// Supabase запросы идут через Railway — ключи не нужны в HTML
+const API_URL       = "https://tomi-server-production-c6d7.up.railway.app";
+const SELLERS       = ["Зарина","Далира"];
+const OWNER_PASS    = "nane2026";
+const SELLER_PASS   = "nane1234";
+
+// ── Helpers ──────────────────────────────────────────────────────────
+const fmt  = n => Math.round(n||0).toLocaleString("ru-RU");
+const parse = v => { const n=parseFloat(String(v||"").replace(/\s/g,"").replace(",",".")); return isNaN(n)?0:n; };
+const todayStr = () => {
+  const now=new Date(), a=new Date(now.getTime()+5*60*60*1000);
+  return a.getUTCFullYear()+"-"+String(a.getUTCMonth()+1).padStart(2,"0")+"-"+String(a.getUTCDate()).padStart(2,"0");
+};
+const fmtDate = s => { if(!s)return""; const[y,m,d]=s.split("-"); return`${d}.${m}.${y}`; };
+
+// ── Запросы через Railway proxy (без Supabase ключа в HTML) ─────────
+async function sbFetch(table, method="GET", body=null, filter="") {
+  const url = `${API_URL}/api/db/${table}${filter}`;
+  const res = await fetch(url, {
+    method: method==="PATCH" ? "PATCH" : method==="POST" ? "POST" : "GET",
+    headers: {"Content-Type": "application/json"},
+    body: body ? JSON.stringify(body) : null
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.status === 204 ? null : res.json();
+}
+
+// ── Стили ─────────────────────────────────────────────────────────────
+const FS = {width:"100%",background:"rgba(0,0,0,0.03)",border:"1.5px solid #1a1a1a",borderRadius:"6px",
+  color:"#1a1a1a",fontSize:"15px",padding:"11px 13px",outline:"none",fontFamily:"inherit"};
+const LS = {fontSize:"11px",letterSpacing:"0.12em",color:"#555",textTransform:"uppercase",
+  marginBottom:"5px",display:"block",fontWeight:"600"};
+const BTN = {width:"100%",padding:"15px",borderRadius:"10px",border:"none",background:"#1a1a1a",
+  color:"#FFFFF0",fontSize:"14px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit",letterSpacing:"0.05em"};
+
+// ── Компонент: поле с форматированием суммы ──────────────────────────
+function MoneyField({label,value,onChange,locked,onUnlock,hint}){
+  const [focused,setFocused]=useState(false);
+  const display = focused ? value : (value===""?"":parse(value).toLocaleString("ru-RU")+" ₸");
+  return <div style={{marginBottom:"13px"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px"}}>
+      <label style={LS}>{label}</label>
+      {locked&&<button onClick={onUnlock} style={{fontSize:"10px",padding:"2px 8px",borderRadius:"4px",
+        border:"1px solid rgba(180,130,0,0.4)",background:"rgba(255,200,0,0.1)",color:"#6b4f00",cursor:"pointer",fontFamily:"inherit"}}>
+        🔒 Изменить
+      </button>}
+    </div>
+    <input style={{...FS,background:locked?"rgba(0,0,0,0.04)":focused?"#fff":"rgba(0,0,0,0.03)",
+      color:locked?"#888":"#1a1a1a",cursor:locked?"not-allowed":"text",textAlign:"right",fontWeight:"600"}}
+      value={display}
+      onChange={e=>{if(!locked)onChange(e.target.value.replace(/[^0-9.,]/g,""));}}
+      onFocus={()=>{if(!locked)setFocused(true);}}
+      onBlur={()=>setFocused(false)}
+      readOnly={locked}
+      placeholder="0 ₸"
+      inputMode="numeric"
+    />
+    {hint&&<div style={{fontSize:"11px",color:"#555",marginTop:"3px"}}>{hint}</div>}
+  </div>;
+}
+
+function SecTitle({children,icon}){
+  return <div style={{display:"flex",alignItems:"center",gap:"10px",borderBottom:"1px solid rgba(0,0,0,0.1)",
+    paddingBottom:"10px",marginBottom:"18px",marginTop:"28px"}}>
+    <span style={{fontSize:"18px"}}>{icon}</span>
+    <span style={{fontSize:"11px",letterSpacing:"0.18em",textTransform:"uppercase",fontWeight:"700"}}>{children}</span>
+  </div>;
+}
+
+// ── DiffRow — сверка по каналу ────────────────────────────────────────
+function DiffRow({label,rosta,fact,reason,onReasonChange,incomingPrepays,onLoadPrepays,loadingPrepays,attachedPrepays,onAttachPrepay}){
+  // День 1 (излишек): используем amount (сколько получили предоплату)
+  // День 2 (недостача): используем balance (сколько должен клиент)
+  const attachedSum=(attachedPrepays||[]).reduce((s,p)=>{
+    const bal=parse(p.balance||0);
+    const amt=parse(p.amount||0);
+    // Если есть долг (balance) и факт < ROSTA (недостача) — используем balance
+    // Если факт > ROSTA (излишек) — используем amount
+    return s+(rawDiff<0&&bal>0?bal:amt);
+  },0);
+  // Предоплата объясняет расхождение с любой стороны:
+  // Если факт < ROSTA (недостача) — предоплата была раньше, прибавляем к факту
+  // Если факт > ROSTA (излишек) — деньги получены по предоплате, прибавляем к ROSTA
+  const rawDiff = fact - rosta;
+  const diff = rawDiff < 0
+    ? rawDiff + attachedSum   // недостача: предоплата закрывает разрыв
+    : rawDiff - attachedSum;  // излишек: предоплата объясняет лишние деньги
+  const ok=Math.abs(diff)<500;
+  const [showList,setShowList]=useState(false);
+
+  const diagBtns=[];
+  if(!ok){
+    if(diff>500){
+      diagBtns.push({id:"prepay",icon:"💰",text:"Была предоплата — деньги в терминале, в ROSTA не пробито",val:"Предоплата получена через терминал, в ROSTA не отражена"});
+      diagBtns.push({id:"not_rung",icon:"🧾",text:"Продажа прошла через терминал, но не пробита в ROSTA",val:"Транзакция в терминале без чека в ROSTA"});
+    } else {
+      diagBtns.push({id:"prepay_redeemed",icon:"✅",text:"Клиент выкупил товар по предоплате",val:"Выкуп предоплаты: часть суммы получена раньше"});
+      diagBtns.push({id:"personal",icon:"💳",text:"Оплата на личную карту — пробито как наличные",val:"Клиент перевёл на личную карту, в ROSTA как наличные"});
+      diagBtns.push({id:"rosta_err",icon:"🔧",text:"Ошибка в ROSTA — лишний чек",val:"Ошибочный чек в ROSTA — требует разбора"});
+    }
+  }
+
+  return <div style={{background:ok?"rgba(74,222,128,0.06)":"rgba(251,113,113,0.08)",
+    border:"1px solid "+(ok?"rgba(74,222,128,0.2)":"rgba(251,113,113,0.25)"),
+    borderRadius:"10px",padding:"14px",marginBottom:"10px"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:ok?0:"10px"}}>
+      <span style={{fontSize:"13px",fontWeight:"500"}}>{label}</span>
+      <div style={{textAlign:"right"}}>
+        <div style={{fontSize:"11px",color:"#555"}}>ROSTA: {fmt(rosta)} ₸ → Факт: {fmt(fact)} ₸</div>
+        {attachedSum>0&&<div style={{fontSize:"11px",color:"#2E6B5E",marginTop:"2px"}}>Предоплата: +{fmt(attachedSum)} ₸</div>}
+        <div style={{fontSize:"15px",fontWeight:"700",color:ok?"#4ade80":"#fb7171",marginTop:"2px"}}>
+          {ok?"✓ Сходится":`${diff>0?"+":""}${fmt(diff)} ₸`}
+        </div>
+      </div>
+    </div>
+    {/* Прикреплённые предоплаты */}
+    {(attachedPrepays||[]).map((p,i)=>{
+      const bal=parse(p.balance||0);
+      const amt=parse(p.amount||0);
+      const showAmt=rawDiff<0&&bal>0?bal:amt;
+      const label=rawDiff<0&&bal>0?"долг":"предоплата";
+      return <div key={i} style={{display:"flex",justifyContent:"space-between",
+        padding:"6px 10px",background:"rgba(46,107,94,0.08)",borderRadius:"6px",marginBottom:"4px",fontSize:"12px"}}>
+        <span style={{color:"#2E6B5E"}}><strong>{p.client_name}</strong> · {label} {fmt(showAmt)} ₸</span>
+        <button onClick={()=>onAttachPrepay(p,true)} style={{background:"none",border:"none",color:"#b71c1c",cursor:"pointer"}}>✕</button>
+      </div>;
+    })}
+    {/* Кнопка подтянуть предоплату */}
+    {!ok&&<button onClick={()=>{setShowList(v=>!v);if(!showList&&onLoadPrepays)onLoadPrepays();}}
+      style={{width:"100%",padding:"8px 12px",borderRadius:"6px",border:"1.5px dashed #2E6B5E",
+        background:"rgba(46,107,94,0.05)",color:"#2E6B5E",fontSize:"12px",fontWeight:"600",
+        cursor:"pointer",fontFamily:"inherit",marginBottom:"8px"}}>
+      📎 Подтянуть предоплату {(incomingPrepays||[]).length>0?"("+incomingPrepays.length+")":"→ загрузить"}
+    </button>}
+    {showList&&<div style={{border:"1.5px solid #2E6B5E",borderRadius:"8px",marginBottom:"8px",overflow:"hidden"}}>
+      {loadingPrepays&&<div style={{padding:"10px",textAlign:"center",fontSize:"12px"}}>⏳ Загрузка...</div>}
+      {!loadingPrepays&&(incomingPrepays||[]).length===0&&<div style={{padding:"10px",textAlign:"center",fontSize:"12px",color:"#555"}}>Нет открытых предоплат</div>}
+      {(incomingPrepays||[]).filter(p=>!(attachedPrepays||[]).some(a=>a.id===p.id)).map((p,i)=>{
+        return <div key={i} onClick={()=>{onAttachPrepay(p,false);setShowList(false);}}
+          style={{padding:"10px 12px",borderBottom:"1px solid rgba(0,0,0,0.08)",cursor:"pointer",
+            background:"#fff",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:"13px",fontWeight:"700"}}>{p.client_name}</div>
+            <div style={{fontSize:"11px",color:"#555"}}>{p.channel} · {p.prep_id}</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:"14px",fontWeight:"700",color:"#2E6B5E"}}>{fmt(p.amount)} ₸</div>
+            <div style={{fontSize:"10px",color:"#aaa"}}>выбрать</div>
+          </div>
+        </div>;
+      })}
+    </div>}
+    {/* Умные кнопки причин */}
+    {!ok&&diagBtns.length>0&&<div>
+      <div style={{fontSize:"10px",fontWeight:"700",color:"#b35c00",letterSpacing:"0.06em",textTransform:"uppercase",marginBottom:"6px"}}>🔍 Причина расхождения:</div>
+      <div style={{display:"flex",flexDirection:"column",gap:"5px"}}>
+        {diagBtns.map(btn=>{
+          const sel=reason===btn.val;
+          return <button key={btn.id} onClick={()=>onReasonChange(sel?"":btn.val)}
+            style={{display:"flex",alignItems:"center",gap:"10px",padding:"9px 12px",borderRadius:"8px",
+              border:"1.5px solid "+(sel?"#2E6B5E":"rgba(0,0,0,0.12)"),
+              background:sel?"rgba(46,107,94,0.1)":"rgba(255,255,255,0.7)",
+              cursor:"pointer",fontFamily:"inherit",textAlign:"left"}}>
+            <span style={{fontSize:"16px"}}>{btn.icon}</span>
+            <span style={{fontSize:"12px",color:sel?"#2E6B5E":"#1a1a1a",fontWeight:sel?"700":"400"}}>{btn.text}</span>
+            {sel&&<span style={{marginLeft:"auto",color:"#2E6B5E"}}>✓</span>}
+          </button>;
+        })}
+      </div>
+    </div>}
+    {/* Своя причина */}
+    {!ok&&!diagBtns.some(b=>b.val===reason)&&<textarea
+      style={{...FS,fontSize:"12px",padding:"8px 12px",marginTop:"8px",minHeight:"52px",resize:"vertical"}}
+      placeholder="Опиши причину своими словами..."
+      value={reason||""}
+      onChange={e=>onReasonChange(e.target.value)}
+    />}
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// СТРАНИЦА ПРОДАВЦА
+// ══════════════════════════════════════════════════════════════════════
+const EMPTY_SHIFT = {
+  date:todayStr(), seller:"",
+  rKaspi:"",rOnline:"",rHalyk:"",rHalykOnline:"",rCash:"",rPersonal:"",rBonus:"",
+  rRetKaspi:"",rRetHalyk:"",rRetCash:"",
+  tKaspi:"",tKaspiRet:"",tHalyk:"",tHalykRet:"",tPersonal:"",
+  cashOpen:"",cashActual:"",cashPayouts:"",inkasso:"",
+  shiftStatus:"",notes:""
+};
+
+function SellerPage(){
+  const [tab,setTab]=useState("open"); // open | close | prepay
+  const [shift,setShift]=useState(EMPTY_SHIFT);
+  const upd=(k,v)=>setShift(p=>({...p,[k]:v}));
+  const [ocrLocked,setOcrLocked]=useState(false);
+  const [ocrState,setOcrState]=useState({});
+  const [photos,setPhotos]=useState({z:null,kaspi:null,halyk:null}); // base64 фото
+  const [attachedIncoming,setAttachedIncoming]=useState({kaspi:[],halyk:[],cash:[],personal:[]});
+  const [openPrepays,setOpenPrepays]=useState([]);
+  const [loadingPrepays,setLoadingPrepays]=useState(false);
+  const [prepayListTab,setPrepayListTab]=useState("open");
+  const [prepayForm,setPrepayForm]=useState({client:"",phone:"+7",channel:"Kaspi",amount:"",balance:"",notes:""});
+  const [prepayItems,setPrepayItems]=useState([{name:"",price:"",paid:"",status:"ожидается"}]);
+  const [saving,setSaving]=useState(false);
+  const [saved,setSaved]=useState(false);
+  const [showResult,setShowResult]=useState(false);
+  const [copied,setCopied]=useState(false);
+
+  // Открытие смены
+  const [openForm,setOpenForm]=useState({seller:"",cashOpen:"",date:todayStr()});
+  const [openSaved,setOpenSaved]=useState(false);
+  const [openSaving,setOpenSaving]=useState(false);
+  const [prevCashEnd,setPrevCashEnd]=useState(null); // остаток кассы с прошлой смены
+
+  // Автозагрузка cashOpen из открытой смены при выборе продавца
+  const loadShiftCashOpen=async(seller)=>{
+    if(!seller) return;
+    try {
+      const encoded=encodeURIComponent(seller);
+      // Ищем за последние 20 часов в UTC (покрывает сегодняшний день Астана UTC+5)
+      const since=new Date(Date.now()-20*60*60*1000).toISOString();
+      // 1. По имени продавца за последние 20 часов
+      const data=await sbFetch("open_shifts","GET",null,
+        `?seller=eq.${encoded}&start_time=gte.${since}&order=start_time.desc&limit=5`);
+      if(data&&data.length>0){
+        // Берём запись с наибольшим cash_open который введён сегодня
+        const todayStr2=todayStr(); // Астана дата
+        const todayRecord=data.find(r=>r.cash_open!=null&&r.start_time&&
+          (new Date(r.start_time).toLocaleDateString('ru-RU',{timeZone:'Asia/Almaty'}).split('.').reverse().join('-')===todayStr2||
+           r.start_time.slice(0,10)===todayStr2));
+        if(todayRecord){upd("cashOpen",String(todayRecord.cash_open));return;}
+        // Берём первый с cash_open
+        const anyRecord=data.find(r=>r.cash_open!=null);
+        if(anyRecord){upd("cashOpen",String(anyRecord.cash_open));return;}
+      }
+      // 2. Все смены за последние 20 часов — ищем по имени
+      const all=await sbFetch("open_shifts","GET",null,
+        `?start_time=gte.${since}&order=start_time.desc&limit=50`);
+      const match=all&&all.find(r=>String(r.seller||"").trim()===String(seller).trim()&&r.cash_open!=null);
+      if(match){upd("cashOpen",String(match.cash_open));}
+      // Если ничего не нашли — поле остаётся пустым, продавец вводит сам
+    } catch(e){console.warn("loadShiftCashOpen:",e.message);}
+  };
+
+  // Расчёты
+  const p=shift;
+  const cashActualFilled=parse(p.cashActual)>0||p.cashActual!=="";
+  // cashSalesFact: используем rCash из ROSTA как источник истины для продаж
+  // cashActual нужен только для сверки физической кассы
+  const cashSalesFact = parse(p.rCash) > 0
+    ? parse(p.rCash) - parse(p.rRetCash)  // ROSTA наличные (источник истины)
+    : Math.max(0, cashActualFilled        // если в ROSTA 0 — берём из факта
+        ? parse(p.cashActual)-parse(p.cashOpen)+parse(p.cashPayouts)+parse(p.inkasso)
+        : 0);
+  // Сверка кассы: ожидалось vs факт (отдельно от продаж)
+  const cashExpected = parse(p.cashOpen) + parse(p.rCash) - parse(p.rRetCash) - parse(p.inkasso);
+  const cashBoxDiff = cashActualFilled ? parse(p.cashActual) - cashExpected : 0;
+  const totalReturns=parse(p.rRetKaspi)+parse(p.rRetHalyk)+parse(p.rRetCash);
+  const rostaTotal=parse(p.rKaspi)+parse(p.rOnline)+parse(p.rHalyk)+parse(p.rHalykOnline)+parse(p.rCash)+parse(p.rPersonal)+parse(p.rBonus)-totalReturns;
+  // Личная карта: если факт не введён — берём из ROSTA
+  const personalFact = parse(p.tPersonal)>0 ? parse(p.tPersonal) : parse(p.rPersonal);
+  const factTotal=(parse(p.tKaspi)-parse(p.tKaspiRet))+(parse(p.tHalyk)-parse(p.tHalykRet))+cashSalesFact+personalFact+parse(p.rBonus);
+  const totalDiff=factTotal-rostaTotal;
+  const isOk=Math.abs(totalDiff)<500;
+
+  const diffKaspi=(parse(p.tKaspi)-parse(p.tKaspiRet))-((parse(p.rKaspi)+parse(p.rOnline))-parse(p.rRetKaspi));
+  const diffHalyk=(parse(p.tHalyk)-parse(p.tHalykRet))-((parse(p.rHalyk)+parse(p.rHalykOnline))-parse(p.rRetHalyk));
+  const diffCash=cashSalesFact-parse(p.rCash);
+
+  const attachPrepay=async(channel,prep,remove,isIssue)=>{
+    setAttachedIncoming(prev=>{
+      const list=prev[channel]||[];
+      const updated=remove?list.filter(x=>x.id!==prep.id):[...list,prep];
+      return {...prev,[channel]:updated};
+    });
+    // Статус меняется ТОЛЬКО при явной выдаче товара (isIssue=true)
+    // При простом подтягивании для объяснения расхождения — статус не меняется
+    // Это позволяет: День 1 подтянуть, статус остаётся Открыта
+    //               День 2 (кнопка Выдать) → статус Выдан, balance=0
+    if(!remove&&prep.id&&isIssue){
+      try {
+        await sbFetch("prepayments","PATCH",
+          {status:"🟢 Выдан",balance:0,notes:"Товар выдан · "+todayStr()},
+          `?id=eq.${prep.id}`
+        );
+      } catch(e){console.warn("closePrepay:",e.message);}
+    }
+  };
+
+  const loadOpenPrepays=async(tab)=>{
+    setLoadingPrepays(true);
+    const t=tab||prepayListTab||"open";
+    try {
+      const filter=t==="open"
+        ?"?status=eq.🟡 Открыта&order=prep_date.asc"
+        :"?status=in.(🟢 Выдан,🟢 Закрыта)&order=prep_date.desc&limit=50";
+      const data=await sbFetch("prepayments","GET",null,filter);
+      setOpenPrepays(data||[]);
+    } catch(e){console.error(e);}
+    setLoadingPrepays(false);
+  };
+
+  // OCR через Railway сервер
+  const handlePhotoOCR=async(type,file)=>{
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=async(e)=>{
+      const base64=e.target.result.split(",")[1];
+      const mimeType=file.type||"image/jpeg";
+      setOcrState(prev=>({...prev,[type+"Loading"]:true,[type+"Error"]:""}));
+      try {
+        const prompts={
+          z: "Это Z-отчёт ROSTA. Верни ТОЛЬКО JSON:\n{\"kaspi_qr\":0,\"online_kaspi\":0,\"halyk_qr\":0,\"online_halyk\":0,\"cash\":0,\"personal\":0,\"bonus\":0,\"ret_kaspi_qr\":0,\"ret_online_kaspi\":0,\"ret_halyk\":0,\"ret_cash\":0}\nВАЖНО: все возвраты положительные числа. Ищи строки с 'Возврат'.",
+          kaspi: "Это отчёт Kaspi терминала. Верни ТОЛЬКО JSON: {\"gross\":0,\"returns\":0,\"net\":0}",
+          halyk: "Это отчёт Halyk терминала. Верни ТОЛЬКО JSON: {\"gross\":0,\"returns\":0,\"net\":0}"
+        };
+        const res=await fetch(`${API_URL}/api/ocr`,{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({base64,mimeType,prompt:prompts[type]})
+        });
+        const json=await res.json();
+        const text=(json.text||"").replace(/```json|```/g,"").trim();
+        const parsed=JSON.parse(text);
+        // Сохраняем фото для отправки в Telegram
+        setPhotos(prev=>({...prev,[type]:base64}));
+        if(type==="z"){
+          setShift(prev=>({...prev,
+            rKaspi:     parsed.kaspi_qr     >0?String(parsed.kaspi_qr)    :prev.rKaspi,
+            rOnline:    parsed.online_kaspi  >0?String(parsed.online_kaspi) :prev.rOnline,
+            rHalyk:     parsed.halyk_qr     >0?String(parsed.halyk_qr)    :prev.rHalyk,
+            rHalykOnline:parsed.online_halyk>0?String(parsed.online_halyk) :prev.rHalykOnline,
+            rCash:      parsed.cash         >0?String(parsed.cash)         :prev.rCash,
+            rBonus:     parsed.bonus        >0?String(parsed.bonus)        :prev.rBonus,
+            rPersonal:  parsed.personal     >0?String(parsed.personal)     :prev.rPersonal,
+            rRetKaspi:  (parsed.ret_kaspi_qr||0)+(parsed.ret_online_kaspi||0)>0?String((parsed.ret_kaspi_qr||0)+(parsed.ret_online_kaspi||0)):prev.rRetKaspi,
+            rRetHalyk:  parsed.ret_halyk    >0?String(parsed.ret_halyk)    :prev.rRetHalyk,
+            rRetCash:   parsed.ret_cash     >0?String(parsed.ret_cash)     :prev.rRetCash,
+          }));
+          setOcrLocked(true);
+        } else if(type==="kaspi"){
+          setShift(prev=>({...prev,
+            tKaspi:    parsed.gross>0?String(parsed.gross):prev.tKaspi,
+            tKaspiRet: parsed.returns>0?String(parsed.returns):prev.tKaspiRet,
+          }));
+        } else if(type==="halyk"){
+          setShift(prev=>({...prev,
+            tHalyk:    parsed.gross>0?String(parsed.gross):prev.tHalyk,
+            tHalykRet: parsed.returns>0?String(parsed.returns):prev.tHalykRet,
+          }));
+        }
+        setOcrState(prev=>({...prev,[type+"Loading"]:false,[type+"Done"]:true}));
+      } catch(err){
+        setOcrState(prev=>({...prev,[type+"Loading"]:false,[type+"Error"]:"Ошибка: "+err.message}));
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const buildReport=()=>{
+    const d=fmtDate(shift.date);
+    let t=`📋 NANE PARIS — Закрытие смены\n📅 ${d} | 👤 ${shift.seller}\n${"─".repeat(32)}\n`;
+    t+=`\n📊 ROSTA ИТОГО: ${fmt(rostaTotal)} ₸\n`;
+    if(parse(shift.rKaspi)>0)t+=`  Kaspi QR: ${fmt(parse(shift.rKaspi))} ₸\n`;
+    if(parse(shift.rOnline)>0)t+=`  Онлайн Kaspi: ${fmt(parse(shift.rOnline))} ₸\n`;
+    if(parse(shift.rHalyk)>0)t+=`  Halyk QR: ${fmt(parse(shift.rHalyk))} ₸\n`;
+    if(parse(shift.rHalykOnline)>0)t+=`  Онлайн Halyk: ${fmt(parse(shift.rHalykOnline))} ₸\n`;
+    if(parse(shift.rCash)>0)t+=`  Наличные: ${fmt(parse(shift.rCash))} ₸\n`;
+    if(parse(shift.rPersonal)>0)t+=`  Личная карта: ${fmt(parse(shift.rPersonal))} ₸\n`;
+    if(parse(shift.rBonus)>0)t+=`  Бонусы: ${fmt(parse(shift.rBonus))} ₸\n`;
+    if(parse(shift.rRetKaspi)>0)t+=`  Возврат Kaspi: -${fmt(parse(shift.rRetKaspi))} ₸\n`;
+    if(parse(shift.rRetHalyk)>0)t+=`  Возврат Halyk: -${fmt(parse(shift.rRetHalyk))} ₸\n`;
+    t+=`\n💳 ТЕРМИНАЛЫ\n`;
+    t+=`  Kaspi: ${fmt(parse(shift.tKaspi))} ₸${parse(shift.tKaspiRet)>0?" (возврат -"+fmt(parse(shift.tKaspiRet))+" ₸)":""}\n`;
+    t+=`  Halyk: ${fmt(parse(shift.tHalyk))} ₸${parse(shift.tHalykRet)>0?" (возврат -"+fmt(parse(shift.tHalykRet))+" ₸)":""}\n`;
+    if(parse(shift.tPersonal)>0)t+=`  Личная карта: ${fmt(parse(shift.tPersonal))} ₸\n`;
+    t+=`\n💵 КАССА\n`;
+    t+=`  Открытие: ${fmt(parse(shift.cashOpen))} ₸\n`;
+    t+=`  Закрытие: ${fmt(parse(shift.cashActual))} ₸\n`;
+    if(parse(shift.inkasso)>0)t+=`  Инкассация: ${fmt(parse(shift.inkasso))} ₸\n`;
+    t+=`\n📊 ИТОГО\n`;
+    t+=`  ROSTA: ${fmt(rostaTotal)} ₸\n`;
+    t+=`  ФАКТ:  ${fmt(factTotal)} ₸\n`;
+    t+=`  ${isOk?"✅ Сходится":"⚠️ Разница: "+(totalDiff>0?"+":"")+fmt(totalDiff)+" ₸"}\n`;
+    if(shift.notes)t+=`\n📝 ${shift.notes}\n`;
+    return t;
+  };
+
+  const handleSaveShift=async()=>{
+    if(!shift.seller||!shift.date){alert("Заполни продавца и дату");return;}
+    setSaving(true);
+    try {
+      const d=shift.date;
+      const revenue=rostaTotal;
+
+      // 1. Сохраняем в Supabase
+      try {
+        const existing=await sbFetch("daily_sales","GET",null,`?sale_date=eq.${d}`);
+        if(existing&&existing.length>0){
+          await sbFetch("daily_sales","PATCH",{revenue,seller1:shift.seller},`?sale_date=eq.${d}`);
+        } else {
+          await sbFetch("daily_sales","POST",{
+            sale_date:d,revenue,seller1:shift.seller,seller2:"",
+            month:parseInt(d.split("-")[1]),year:parseInt(d.split("-")[0])
+          });
+        }
+      } catch(e){ console.warn("Supabase:", e.message); }
+
+      // 1б. Сохраняем остаток кассы на конец смены → будет cash_open для следующего дня
+      // cashActual - inkasso = реальный остаток в кассе после инкассации
+      try {
+        const cashEnd = parse(shift.cashActual) > 0
+          ? parse(shift.cashActual) - parse(shift.inkasso||0)
+          : parse(shift.cashOpen||0) + parse(shift.rCash||0) - parse(shift.inkasso||0);
+        if(cashEnd >= 0) {
+          // Удаляем старую запись и создаём новую с остатком
+          await sbFetch("open_shifts","DELETE",null,`?phone=eq.web_${encodeURIComponent(shift.seller)}`);
+          await sbFetch("open_shifts","POST",{
+            phone:"web_"+shift.seller,
+            seller:shift.seller,
+            shop:"NANE PARIS",
+            cash_open:Math.round(cashEnd),
+            start_time:new Date().toISOString(),
+            is_second:false
+          });
+        }
+      } catch(e){ console.warn("Сохранение кассы:", e.message); }
+
+      // 2. Отправляем отчёт владельцу в Telegram
+      try {
+        const prepayTotal=Object.values(attachedIncoming).reduce((s,list)=>s+list.reduce((ss,p)=>ss+parse(p.amount||0),0),0);
+          await fetch(API_URL+"/api/shift-report",{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({
+            ...shift,
+            rostaTotal,factTotal,totalDiff,isOk,
+            cashSalesFact,prepayTotal,
+            prepayClients:Object.values(attachedIncoming).flat().map(p=>({
+              name:p.client_name,phone:p.phone,amount:p.amount,item:p.item,channel:p.channel,id:p.prep_id
+            })),
+            photos:{z:photos.z||null,kaspi:photos.kaspi||null,halyk:photos.halyk||null}
+          })
+        });
+      } catch(e){ console.warn("Telegram notify:", e.message); }
+
+      setSaved(true);
+      setShowResult(true);
+    } catch(e){alert("Ошибка: "+e.message);}
+    setSaving(false);
+  };
+
+  const handleSavePrepay=async()=>{
+    const f=prepayForm;
+    if(!f.client||!f.amount){alert("Заполни клиента и сумму");return;}
+    try {
+      // Получаем следующий ID
+      const existing=await sbFetch("prepayments","GET",null,"?order=prep_id.desc&limit=1");
+      const lastNum=existing&&existing.length>0?parseInt((existing[0].prep_id||"PREP-0000").replace("PREP-",""))+1:1;
+      const newId="PREP-"+String(lastNum).padStart(4,"0");
+      const filteredItems=prepayItems.filter(i=>i.name);
+      const totalPrice=filteredItems.reduce((s,i)=>s+parse(i.price||0),0)||parse(f.amount);
+      const totalPaid=filteredItems.reduce((s,i)=>s+parse(i.paid||i.price||0),0)||totalPrice;
+      const totalDebt=Math.max(0,totalPrice-totalPaid);
+      const itemsJson=JSON.stringify(filteredItems);
+      await sbFetch("prepayments","POST",{
+        prep_id:newId,prep_date:todayStr(),client_name:f.client,phone:f.phone,
+        item:filteredItems.map(i=>i.name).join(", "),
+        channel:f.channel,amount:totalPaid,balance:totalDebt,
+        status:"🟡 Открыта",notes:(f.notes?f.notes+"
+":"")+itemsJson,seller_name:shift.seller||"Продавец"
+      });
+      alert("✅ Предоплата сохранена! "+newId);
+      setPrepayForm({client:"",phone:"+7",channel:"Kaspi",amount:"",balance:"",notes:""});
+      setPrepayItems([{name:"",price:"",paid:"",status:"ожидается"}]);
+    } catch(e){alert("Ошибка: "+e.message);}
+  };
+
+  const handleSaveOpen=async()=>{
+    if(!openForm.seller||!openForm.cashOpen){alert("Заполни продавца и кассу");return;}
+    setOpenSaving(true);
+    try {
+      // Сначала удаляем старую запись этого продавца
+      await sbFetch("open_shifts","DELETE",null,`?phone=eq.web_${encodeURIComponent(openForm.seller)}`);
+      // Создаём новую с актуальной кассой
+      await sbFetch("open_shifts","POST",{
+        phone:"web_"+openForm.seller,seller:openForm.seller,shop:"NANE PARIS",
+        cash_open:parse(openForm.cashOpen),start_time:new Date().toISOString(),is_second:false
+      });
+      setOpenSaved(true);
+    } catch(e){alert("Ошибка: "+e.message);}
+    setOpenSaving(false);
+  };
+
+  // UI
+  const tabs=[{id:"open",label:"📂 Открытие"},{id:"close",label:"📋 Закрытие"},{id:"prepay",label:"💳 Предоплаты"}];
+
+  return <div style={{maxWidth:"480px",margin:"0 auto",padding:"0 0 60px"}}>
+    {/* Шапка */}
+    <div style={{background:"#1a1a1a",padding:"18px 20px",position:"sticky",top:0,zIndex:10}}>
+      <div style={{fontFamily:"'Cormorant Garamond',serif",fontStyle:"italic",fontSize:"22px",color:"#FFFFF0",letterSpacing:"0.04em"}}>NANÉ PARIS</div>
+      <div style={{fontSize:"10px",color:"rgba(255,255,255,0.4)",letterSpacing:"0.15em",textTransform:"uppercase",marginTop:"1px"}}>Томи — Продавец</div>
+    </div>
+
+    {/* Табы */}
+    <div style={{display:"flex",background:"rgba(0,0,0,0.06)",borderBottom:"1px solid rgba(0,0,0,0.1)"}}>
+      {tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)}
+        style={{flex:1,padding:"12px 6px",border:"none",background:"none",borderBottom:"2px solid "+(tab===t.id?"#1a1a1a":"transparent"),
+          fontSize:"11px",fontWeight:"700",color:tab===t.id?"#1a1a1a":"#888",cursor:"pointer",fontFamily:"inherit",letterSpacing:"0.03em"}}>
+        {t.label}
+      </button>)}
+    </div>
+
+    <div style={{padding:"20px 16px"}}>
+
+    {/* ── ОТКРЫТИЕ ─────────────────────────────────────── */}
+    {tab==="open"&&<div>
+      <SecTitle icon="🟢">Открытие смены</SecTitle>
+
+      <div style={{marginBottom:"14px"}}>
+        <label style={LS}>Продавец</label>
+        <select style={{...FS}} value={openForm.seller} onChange={async e=>{
+          const seller=e.target.value;
+          setOpenForm(p=>({...p,seller}));
+          setPrevCashEnd(null);
+          if(!seller) return;
+          try {
+            // Касса общая — берём последний остаток по всему магазину
+            const allShifts=await sbFetch("open_shifts","GET",null,
+              `?shop=eq.NANE PARIS&order=start_time.desc&limit=10`);
+            // Ищем запись с cash_open (это остаток предыдущей смены)
+            // Исключаем запись самого продавца если она только что создана
+            const lastShift=allShifts&&allShifts.find(r=>
+              r.cash_open!=null && r.cash_open>0
+            );
+            if(lastShift){
+              setPrevCashEnd(lastShift.cash_open);
+            }
+          } catch(e){ console.warn(e); }
+        }}>
+          <option value="">Выбери продавца</option>
+          {SELLERS.map(s=><option key={s}>{s}</option>)}
+        </select>
+      </div>
+
+      <div style={{marginBottom:"14px"}}>
+        <label style={LS}>Дата</label>
+        <input type="date" style={{...FS}} value={openForm.date} onChange={e=>setOpenForm(p=>({...p,date:e.target.value}))}/>
+      </div>
+
+      {prevCashEnd!==null&&<div style={{background:"rgba(255,200,0,0.1)",border:"1px solid rgba(200,150,0,0.3)",
+        borderRadius:"8px",padding:"10px 14px",marginBottom:"10px",fontSize:"13px"}}>
+        💰 По данным системы на конец вчерашней смены в кассе было: <strong>{fmt(prevCashEnd)} ₸</strong>
+        <div style={{fontSize:"11px",color:"#888",marginTop:"2px"}}>Пересчитай наличные и введи фактическую сумму</div>
+      </div>}
+      <MoneyField label="Наличные в кассе при открытии (пересчитай вручную)"
+        value={openForm.cashOpen} onChange={v=>setOpenForm(p=>({...p,cashOpen:v}))}/>
+      {prevCashEnd!==null&&parse(openForm.cashOpen)>0&&Math.abs(parse(openForm.cashOpen)-prevCashEnd)>500&&<div style={{
+        background:"rgba(251,113,113,0.1)",border:"1px solid rgba(251,113,113,0.3)",
+        borderRadius:"8px",padding:"10px 14px",marginBottom:"4px",fontSize:"13px",color:"#c62828",fontWeight:"600"
+      }}>
+        ⚠️ Расхождение с прошлой сменой: {parse(openForm.cashOpen)>prevCashEnd?"+":""}{fmt(parse(openForm.cashOpen)-prevCashEnd)} ₸
+        <div style={{fontSize:"11px",fontWeight:"400",marginTop:"2px",color:"#555"}}>
+          Ожидалось {fmt(prevCashEnd)} ₸ · Факт {fmt(parse(openForm.cashOpen))} ₸
+        </div>
+      </div>}
+
+      {openSaved?
+        <div style={{background:"rgba(74,222,128,0.1)",border:"1px solid rgba(74,222,128,0.3)",borderRadius:"10px",padding:"16px",textAlign:"center"}}>
+          <div style={{fontSize:"20px",marginBottom:"6px"}}>✅</div>
+          <div style={{fontWeight:"700",marginBottom:"4px"}}>Смена открыта!</div>
+          <div style={{fontSize:"12px",color:"#555"}}>{openForm.seller} · {fmtDate(openForm.date)} · {fmt(parse(openForm.cashOpen))} ₸</div>
+          <button onClick={()=>{setOpenSaved(false);setOpenForm({seller:"",cashOpen:"",date:todayStr()});}}
+            style={{...BTN,marginTop:"14px",background:"transparent",color:"#1a1a1a",border:"1px solid #1a1a1a"}}>
+            Новое открытие
+          </button>
+        </div>:
+        <button onClick={handleSaveOpen} disabled={openSaving}
+          style={{...BTN,opacity:openSaving?0.6:1}}>
+          {openSaving?"Сохранение...":"🟢 Открыть смену"}
+        </button>
+      }
+    </div>}
+
+    {/* ── ЗАКРЫТИЕ ─────────────────────────────────────── */}
+    {tab==="close"&&<div>
+      <SecTitle icon="📋">Закрытие смены</SecTitle>
+
+      <div style={{marginBottom:"14px"}}>
+        <label style={LS}>Продавец</label>
+        <select style={{...FS}} value={shift.seller} onChange={e=>{upd("seller",e.target.value);upd("cashOpen","");loadShiftCashOpen(e.target.value);}}>
+          <option value="">Выбери продавца</option>
+          {SELLERS.map(s=><option key={s}>{s}</option>)}
+        </select>
+      </div>
+
+      <div style={{marginBottom:"18px"}}>
+        <label style={LS}>Дата смены</label>
+        <input type="date" style={{...FS}} value={shift.date} onChange={e=>upd("date",e.target.value)}/>
+      </div>
+
+      {/* Фото Z-отчёта */}
+      <SecTitle icon="📄">Z-отчёт ROSTA</SecTitle>
+      <div style={{marginBottom:"14px"}}>
+        <label style={{...LS,marginBottom:"8px"}}>Фото Z-отчёта</label>
+        <label style={{display:"block",width:"100%",padding:"14px",borderRadius:"8px",border:"1.5px dashed rgba(0,0,0,0.25)",
+          textAlign:"center",cursor:"pointer",fontSize:"13px",color:"#555",background:"rgba(0,0,0,0.02)"}}>
+          {ocrState.zLoading?"⏳ Распознаю...":ocrState.zDone?"✅ Распознан — поля заполнены":"📷 Нажми чтобы загрузить фото"}
+          <input type="file" accept="image/*" capture="environment" style={{display:"none"}}
+            onChange={e=>handlePhotoOCR("z",e.target.files[0])}/>
+        </label>
+        {ocrState.zError&&<div style={{color:"#fb7171",fontSize:"12px",marginTop:"4px"}}>{ocrState.zError}</div>}
+      </div>
+
+      <MoneyField label="Kaspi QR" value={shift.rKaspi} onChange={v=>upd("rKaspi",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Онлайн Kaspi" value={shift.rOnline} onChange={v=>upd("rOnline",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Halyk QR" value={shift.rHalyk} onChange={v=>upd("rHalyk",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Онлайн Halyk" value={shift.rHalykOnline} onChange={v=>upd("rHalykOnline",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Наличные" value={shift.rCash} onChange={v=>upd("rCash",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Личная карта" value={shift.rPersonal} onChange={v=>upd("rPersonal",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Бонусы" value={shift.rBonus} onChange={v=>upd("rBonus",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Возврат Kaspi" value={shift.rRetKaspi} onChange={v=>upd("rRetKaspi",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Возврат Halyk" value={shift.rRetHalyk} onChange={v=>upd("rRetHalyk",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+      <MoneyField label="Возврат наличными" value={shift.rRetCash} onChange={v=>upd("rRetCash",v)} locked={ocrLocked} onUnlock={()=>setOcrLocked(false)}/>
+
+      {/* Терминалы */}
+      <SecTitle icon="💳">Терминалы (факт)</SecTitle>
+      <div style={{marginBottom:"14px"}}>
+        <label style={{...LS,marginBottom:"8px"}}>Фото Kaspi терминала</label>
+        <label style={{display:"block",width:"100%",padding:"12px",borderRadius:"8px",border:"1.5px dashed rgba(0,0,0,0.2)",
+          textAlign:"center",cursor:"pointer",fontSize:"12px",color:"#555"}}>
+          {ocrState.kaspiLoading?"⏳ Распознаю...":ocrState.kaspiDone?"✅ Kaspi готов":"📷 Фото Kaspi терминала"}
+          <input type="file" accept="image/*" capture="environment" style={{display:"none"}}
+            onChange={e=>handlePhotoOCR("kaspi",e.target.files[0])}/>
+        </label>
+      </div>
+      <MoneyField label="Kaspi — продажи (терминал)" value={shift.tKaspi} onChange={v=>upd("tKaspi",v)}/>
+      <MoneyField label="Kaspi — возврат (терминал)" value={shift.tKaspiRet} onChange={v=>upd("tKaspiRet",v)}/>
+
+      <div style={{marginBottom:"14px"}}>
+        <label style={{...LS,marginBottom:"8px"}}>Фото Halyk терминала</label>
+        <label style={{display:"block",width:"100%",padding:"12px",borderRadius:"8px",border:"1.5px dashed rgba(0,0,0,0.2)",
+          textAlign:"center",cursor:"pointer",fontSize:"12px",color:"#555"}}>
+          {ocrState.halykLoading?"⏳ Распознаю...":ocrState.halykDone?"✅ Halyk готов":"📷 Фото Halyk терминала"}
+          <input type="file" accept="image/*" capture="environment" style={{display:"none"}}
+            onChange={e=>handlePhotoOCR("halyk",e.target.files[0])}/>
+        </label>
+      </div>
+      <MoneyField label="Halyk — продажи (терминал)" value={shift.tHalyk} onChange={v=>upd("tHalyk",v)}/>
+      <MoneyField label="Halyk — возврат (терминал)" value={shift.tHalykRet} onChange={v=>upd("tHalykRet",v)}/>
+      <MoneyField label="Личная карта (факт)" value={shift.tPersonal||shift.rPersonal} onChange={v=>upd("tPersonal",v)}
+        hint={!shift.tPersonal&&shift.rPersonal?"✅ Берётся из ROSTA: "+fmt(parse(shift.rPersonal))+" ₸":""}/>
+
+      {/* Касса */}
+      <SecTitle icon="💵">Касса</SecTitle>
+      <MoneyField label="Открытие (начало смены)" value={shift.cashOpen} onChange={v=>upd("cashOpen",v)}
+        hint={shift.cashOpen&&parse(shift.cashOpen)>0?"✅ Загружено автоматически из открытия смены":"Загружается автоматически при выборе продавца"}/>
+      <MoneyField label="Закрытие (конец смены — пересчитай)" value={shift.cashActual} onChange={v=>upd("cashActual",v)}
+        hint={"Ожидалось в кассе: "+fmt(parse(shift.cashOpen)+Math.max(0,parse(shift.rCash))-parse(shift.inkasso))+" ₸"}/>
+      {cashActualFilled&&Math.abs(cashBoxDiff)>500&&<div style={{
+        background:cashBoxDiff>0?"rgba(74,222,128,0.08)":"rgba(251,113,113,0.08)",
+        border:"1px solid "+(cashBoxDiff>0?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),
+        borderRadius:"8px",padding:"10px 12px",marginBottom:"8px",fontSize:"13px",
+        color:cashBoxDiff>0?"#22c55e":"#fb7171",fontWeight:"600"
+      }}>
+        {cashBoxDiff>0?"💚 Излишек в кассе":"❌ Недостача в кассе"}: {cashBoxDiff>0?"+":""}{fmt(cashBoxDiff)} ₸
+        <div style={{fontSize:"11px",fontWeight:"400",marginTop:"2px",opacity:0.8}}>
+          Ожидалось {fmt(cashExpected)} ₸ · Факт {fmt(parse(shift.cashActual))} ₸
+        </div>
+      </div>}
+      <MoneyField label="Инкассация" value={shift.inkasso} onChange={v=>upd("inkasso",v)}/>
+      <MoneyField label="Выплаты из кассы" value={shift.cashPayouts} onChange={v=>upd("cashPayouts",v)}/>
+
+      {/* Сверка */}
+      {(parse(shift.rKaspi)||parse(shift.tKaspi)||parse(shift.rHalyk)||parse(shift.rCash))>0&&<>
+        <SecTitle icon="🔍">Сверка</SecTitle>
+        <DiffRow label="Kaspi"
+          rosta={parse(shift.rKaspi)+parse(shift.rOnline)-parse(shift.rRetKaspi)}
+          fact={parse(shift.tKaspi)-parse(shift.tKaspiRet)}
+          reason={shift.reasonKaspi}
+          onReasonChange={v=>upd("reasonKaspi",v)}
+          incomingPrepays={openPrepays}
+          onLoadPrepays={loadOpenPrepays}
+          loadingPrepays={loadingPrepays}
+          attachedPrepays={attachedIncoming.kaspi}
+          onAttachPrepay={(p,r)=>attachPrepay("kaspi",p,r)}
+        />
+        <DiffRow label="Halyk"
+          rosta={parse(shift.rHalyk)+parse(shift.rHalykOnline)-parse(shift.rRetHalyk)}
+          fact={parse(shift.tHalyk)-parse(shift.tHalykRet)}
+          reason={shift.reasonHalyk}
+          onReasonChange={v=>upd("reasonHalyk",v)}
+          incomingPrepays={openPrepays}
+          onLoadPrepays={loadOpenPrepays}
+          loadingPrepays={loadingPrepays}
+          attachedPrepays={attachedIncoming.halyk}
+          onAttachPrepay={(p,r)=>attachPrepay("halyk",p,r)}
+        />
+        <DiffRow label="Наличные"
+          rosta={parse(shift.rCash)}
+          fact={cashSalesFact}
+          reason={shift.reasonCash}
+          onReasonChange={v=>upd("reasonCash",v)}
+          incomingPrepays={openPrepays}
+          onLoadPrepays={loadOpenPrepays}
+          loadingPrepays={loadingPrepays}
+          attachedPrepays={attachedIncoming.cash}
+          onAttachPrepay={(p,r)=>attachPrepay("cash",p,r)}
+        />
+
+        {/* Итог сверки — учитываем все прикреплённые предоплаты */}
+        {(()=>{
+          const totalPrepayAdj=Object.values(attachedIncoming).reduce((s,list)=>s+list.reduce((ss,p)=>ss+parse(p.amount),0),0);
+          const adjDiff=totalDiff<0?totalDiff+totalPrepayAdj:totalDiff-totalPrepayAdj;
+          const adjOk=Math.abs(adjDiff)<500;
+          const prepayExplained=totalPrepayAdj>0&&adjOk&&!isOk;
+          return <div style={{background:adjOk?"rgba(74,222,128,0.1)":"rgba(251,113,113,0.08)",
+            border:"1px solid "+(adjOk?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),
+            borderRadius:"12px",padding:"16px",marginBottom:"16px",textAlign:"center"}}>
+            <div style={{fontSize:"12px",color:"#555",marginBottom:"4px"}}>ROSTA: {fmt(rostaTotal)} ₸ · ФАКТ: {fmt(factTotal)} ₸</div>
+            {totalPrepayAdj>0&&<div style={{fontSize:"12px",color:"#2E6B5E",marginBottom:"4px"}}>Предоплата: +{fmt(totalPrepayAdj)} ₸</div>}
+            <div style={{fontSize:"22px",fontWeight:"700",color:adjOk?"#22c55e":"#fb7171"}}>
+              {adjOk?"✅ Всё сходится":`${adjDiff>0?"+":""}${fmt(adjDiff)} ₸`}
+            </div>
+            {prepayExplained&&<div style={{fontSize:"12px",color:"#2E6B5E",marginTop:"4px",fontWeight:"600"}}>💡 Расхождение объяснено предоплатой</div>}
+            {!adjOk&&<div style={{fontSize:"12px",color:"#fb7171",marginTop:"4px"}}>Объясни расхождение выше</div>}
+          </div>;
+        })()}
+      </>}
+
+      {/* Примечания */}
+      <div style={{marginBottom:"16px"}}>
+        <label style={LS}>Примечания</label>
+        <textarea style={{...FS,minHeight:"60px",resize:"vertical"}} placeholder="Особые события смены..."
+          value={shift.notes} onChange={e=>upd("notes",e.target.value)}/>
+      </div>
+
+      {/* Кнопки */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"12px"}}>
+        <button onClick={()=>{setShowResult(true);}} disabled={!shift.seller}
+          style={{...BTN,background:"transparent",border:"1px solid #1a1a1a",color:"#1a1a1a",opacity:shift.seller?1:0.4}}>
+          📋 Отчёт
+        </button>
+        <button onClick={handleSaveShift} disabled={saving}
+          style={{...BTN,opacity:saving?0.5:1}}>
+          {saving?"Сохранение...":saved?"✅ Сохранено":"💾 Сохранить"}
+        </button>
+      </div>
+    </div>}
+
+    {/* ── ПРЕДОПЛАТЫ ────────────────────────────────────── */}
+    {tab==="prepay"&&<div>
+      <SecTitle icon="💳">Новая предоплата</SecTitle>
+
+      <div style={{marginBottom:"13px"}}>
+        <label style={LS}>Имя клиента</label>
+        <input style={{...FS}} value={prepayForm.client} onChange={e=>setPrepayForm(p=>({...p,client:e.target.value}))} placeholder="Имя и фамилия"/>
+      </div>
+      <div style={{marginBottom:"13px"}}>
+        <label style={LS}>Телефон</label>
+        <input style={{...FS}} value={prepayForm.phone} onChange={e=>setPrepayForm(p=>({...p,phone:e.target.value}))} placeholder="+7"/>
+      </div>
+      <div style={{marginBottom:"13px"}}>
+        <label style={LS}>Канал</label>
+        <select style={{...FS}} value={prepayForm.channel} onChange={e=>setPrepayForm(p=>({...p,channel:e.target.value}))}>
+          {["Kaspi","Онлайн Kaspi","Halyk","Онлайн Halyk","Наличные","Личная карта"].map(c=><option key={c}>{c}</option>)}
+        </select>
+      </div>
+      {/* Список товаров */}
+      <div style={{marginBottom:"14px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"8px"}}>
+          <label style={LS}>Товары</label>
+          <button onClick={()=>setPrepayItems(p=>[...p,{name:"",price:"",status:"ожидается"}])}
+            style={{padding:"4px 10px",borderRadius:"6px",border:"1px solid #1a1a1a",background:"transparent",
+              fontSize:"11px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>
+            + Добавить
+          </button>
+        </div>
+        {prepayItems.map((item,idx)=><div key={idx} style={{display:"grid",gridTemplateColumns:"1fr auto auto",gap:"6px",marginBottom:"6px",alignItems:"center"}}>
+          <input style={{...FS,padding:"8px 10px",fontSize:"13px"}}
+            placeholder={`Товар ${idx+1}`}
+            value={item.name}
+            onChange={e=>setPrepayItems(p=>p.map((x,i)=>i===idx?{...x,name:e.target.value}:x))}/>
+          <input style={{...FS,padding:"8px 10px",fontSize:"13px",width:"90px",textAlign:"right"}}
+            placeholder="Цена ₸" inputMode="numeric"
+            value={item.price}
+            onChange={e=>setPrepayItems(p=>p.map((x,i)=>i===idx?{...x,price:e.target.value.replace(/[^0-9]/g,"")}:x))}/>
+          <input style={{...FS,padding:"8px 10px",fontSize:"13px",width:"90px",textAlign:"right"}}
+            placeholder="Оплачено ₸" inputMode="numeric"
+            value={item.paid}
+            onChange={e=>setPrepayItems(p=>p.map((x,i)=>i===idx?{...x,paid:e.target.value.replace(/[^0-9]/g,"")}:x))}/>
+          {prepayItems.length>1&&<button onClick={()=>setPrepayItems(p=>p.filter((_,i)=>i!==idx))}
+            style={{padding:"8px",borderRadius:"6px",border:"none",background:"rgba(220,50,50,0.08)",color:"#c62828",cursor:"pointer",fontFamily:"inherit",fontSize:"13px"}}>
+            ✕
+          </button>}
+        </div>)}
+        {(()=>{
+          const totalPrice=prepayItems.reduce((s,i)=>s+parse(i.price||0),0);
+          const totalPaid=prepayItems.reduce((s,i)=>s+parse(i.paid||i.price||0),0);
+          const totalDebt=prepayItems.reduce((s,i)=>s+Math.max(0,parse(i.price||0)-parse(i.paid||i.price||0)),0);
+          return <div style={{display:"flex",justifyContent:"space-between",marginTop:"6px",fontSize:"12px"}}>
+            <span style={{color:"#2E6B5E",fontWeight:"600"}}>Итого: {totalPrice.toLocaleString("ru-RU")} ₸</span>
+            {totalDebt>0&&<span style={{color:"#c62828",fontWeight:"600"}}>Долг: {totalDebt.toLocaleString("ru-RU")} ₸</span>}
+          </div>;
+        })()}
+      </div>
+      <div style={{marginBottom:"13px"}}>
+        <label style={LS}>Примечание</label>
+        <input style={{...FS}} value={prepayForm.notes} onChange={e=>setPrepayForm(p=>({...p,notes:e.target.value}))} placeholder=""/>
+      </div>
+      <button onClick={handleSavePrepay} style={BTN}>💳 Сохранить предоплату</button>
+
+      {/* Список предоплат */}
+      <SecTitle icon="📋">Предоплаты</SecTitle>
+      <div style={{display:"flex",gap:"8px",marginBottom:"12px"}}>
+        <button onClick={()=>{setPrepayListTab("open");loadOpenPrepays("open");}} style={{flex:1,padding:"8px",borderRadius:"8px",border:"1.5px solid #1a1a1a",background:prepayListTab==="open"?"#1a1a1a":"transparent",color:prepayListTab==="open"?"#FFFFF0":"#1a1a1a",fontSize:"12px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>🟡 Открытые</button>
+        <button onClick={()=>{setPrepayListTab("closed");loadOpenPrepays("closed");}} style={{flex:1,padding:"8px",borderRadius:"8px",border:"1.5px solid #1a1a1a",background:prepayListTab==="closed"?"#1a1a1a":"transparent",color:prepayListTab==="closed"?"#FFFFF0":"#1a1a1a",fontSize:"12px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>🟢 Выданные</button>
+      </div>
+      <button onClick={()=>loadOpenPrepays(prepayListTab)} disabled={loadingPrepays}
+        style={{...BTN,background:"transparent",border:"1px solid #1a1a1a",color:"#1a1a1a",marginBottom:"14px",opacity:loadingPrepays?0.5:1}}>
+        {loadingPrepays?"⏳ Загрузка...":"🔄 Загрузить список"}
+      </button>
+      {openPrepays.map((p,i)=>{
+        const isClosed=p.status&&(p.status.includes('Выдан')||p.status.includes('Закрыта'));
+        return <div key={i} style={{border:`1.5px solid ${isClosed?'#4caf50':'#e6a817'}`,borderRadius:"8px",padding:"12px",marginBottom:"10px",background:isClosed?"rgba(232,245,233,0.6)":"rgba(255,248,220,0.6)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:"6px"}}>
+          <div style={{flex:1}}>
+            <div style={{fontWeight:"700",fontSize:"14px"}}>{p.client_name}</div>
+            <div style={{fontSize:"11px",color:"#555"}}>{p.prep_id} · {p.channel}</div>
+            {p.phone&&<div style={{fontSize:"11px",color:"#888"}}>📱 {p.phone}</div>}
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:"16px",fontWeight:"700",color:"#2E6B5E"}}>{fmt(p.amount)} ₸</div>
+            {p.balance>0&&!isClosed&&<div style={{fontSize:"12px",color:"#c62828",fontWeight:"700"}}>Долг: {fmt(p.balance)} ₸</div>}
+          </div>
+        </div>
+        {/* Товары из JSON */}
+        {(()=>{
+          let items=[];
+          try {
+            const notesStr=p.notes||"";
+            const jsonMatch=notesStr.match(/(\[.*\])/s);
+            if(jsonMatch) items=JSON.parse(jsonMatch[1]);
+          } catch(e){}
+          if(items.length>0){
+            return <div style={{marginBottom:"8px"}}>
+              {items.map((item,idx)=><div key={idx} style={{display:"flex",justifyContent:"space-between",
+                alignItems:"center",padding:"6px 10px",borderRadius:"6px",marginBottom:"4px",
+                background:item.status==="выдан"?"rgba(74,222,128,0.08)":"rgba(0,0,0,0.03)",
+                border:"1px solid "+(item.status==="выдан"?"rgba(74,222,128,0.2)":"rgba(0,0,0,0.08)")}}>
+                <div>
+                  <span style={{fontSize:"13px",fontWeight:"500"}}>{item.name}</span>
+                <div style={{fontSize:"11px",color:"var(--text-secondary)",marginTop:"1px"}}>
+                  {parse(item.price||0)>0&&`${parse(item.price||0).toLocaleString("ru-RU")} ₸`}
+                  {parse(item.paid||0)>0&&parse(item.paid||0)<parse(item.price||0)&&<span style={{color:"#c62828",marginLeft:"6px"}}>долг {(parse(item.price||0)-parse(item.paid||0)).toLocaleString("ru-RU")} ₸</span>}
+                </div>
+                </div>
+                {!isClosed&&<button onClick={async()=>{
+                  if(!window.confirm(`Выдать "${item.name}" клиенту ${p.client_name}?`)) return;
+                  try {
+                    items[idx].status="выдан";
+                    const allIssued=items.every(i=>i.status==="выдан");
+                    const remaining=items.filter(i=>i.status!=="выдан").reduce((s,i)=>s+parse(i.price||0),0);
+                    const notesBase=(p.notes||"").replace(/(\[.*\])/s,"").trim();
+                    await sbFetch("prepayments","PATCH",{
+                      status:allIssued?"🟢 Выдан":"🟡 Открыта",
+                      balance:remaining,
+                      notes:notesBase+"
+"+JSON.stringify(items)
+                    },`?id=eq.${p.id}`);
+                    loadOpenPrepays(prepayListTab);
+                  } catch(e){alert("Ошибка: "+e.message);}
+                }} style={{padding:"4px 10px",borderRadius:"6px",border:"none",
+                  background:item.status==="выдан"?"rgba(74,222,128,0.2)":"#2E6B5E",
+                  color:item.status==="выдан"?"#22c55e":"#fff",
+                  fontSize:"11px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit",
+                  pointerEvents:item.status==="выдан"?"none":"auto"}}>
+                  {item.status==="выдан"?"✓ Выдан":"Выдать"}
+                </button>}
+              </div>)}
+            </div>;
+          }
+          return p.item?<div style={{fontSize:"12px",color:"#555",marginBottom:"6px"}}>👗 {p.item}</div>:null;
+        })()}
+        {isClosed
+          ?<div style={{fontSize:"11px",color:"#4caf50",fontWeight:"600"}}>{p.status}</div>
+          :<button onClick={async()=>{
+            if(!window.confirm(`⚠️ ВНИМАНИЕ!\n\nВыдать ВСЕ товары клиенту ${p.client_name}?\n\nЭто ЗАКРОЕТ предоплату навсегда.`)) return;
+            try {
+              await sbFetch("prepayments","PATCH",
+                {status:"🟢 Выдан",balance:0,notes:"Все товары выданы · "+todayStr()},
+                `?id=eq.${p.id}`
+              );
+              loadOpenPrepays(prepayListTab);
+            } catch(e){alert("Ошибка: "+e.message);}
+          }} style={{width:"100%",padding:"8px",borderRadius:"8px",border:"1.5px solid #2E6B5E",
+            background:"transparent",color:"#2E6B5E",fontSize:"12px",fontWeight:"700",
+            cursor:"pointer",fontFamily:"inherit",marginTop:"4px"}}>
+            🎁 Выдать все товары
+          </button>
+        }
+      </div>;
+      })}
+    </div>}
+
+    </div>
+
+    {/* Модалка отчёт */}
+    {showResult&&<div onClick={e=>{if(e.target===e.currentTarget)setShowResult(false)}}
+      style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"flex-end",zIndex:100,backdropFilter:"blur(4px)"}}>
+      <div style={{background:"#F5F5E8",borderRadius:"20px 20px 0 0",padding:"24px 20px 50px",width:"100%",maxWidth:"480px",margin:"0 auto",maxHeight:"90vh",overflowY:"auto"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"20px"}}>
+          <span style={{fontFamily:"'Cormorant Garamond',serif",fontStyle:"italic",fontSize:"22px",color:"#6B4F2E"}}>Отчёт смены</span>
+          <button onClick={()=>setShowResult(false)} style={{background:"none",border:"none",fontSize:"22px",cursor:"pointer",color:"#888"}}>×</button>
+        </div>
+
+        {/* Шапка */}
+        <div style={{background:"#1a1a1a",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",color:"#FFFFF0"}}>
+          <div style={{fontSize:"11px",opacity:0.5,letterSpacing:"0.12em",textTransform:"uppercase",marginBottom:"4px"}}>NANE PARIS · Отчёт смены</div>
+          <div style={{fontSize:"17px",fontWeight:"700"}}>{shift.seller}</div>
+          <div style={{fontSize:"13px",opacity:0.6,marginTop:"2px"}}>{fmtDate(shift.date)}</div>
+        </div>
+
+        {/* ROSTA */}
+        <div style={{background:"#fff",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",border:"1px solid rgba(0,0,0,0.08)"}}>
+          <div style={{fontSize:"10px",letterSpacing:"0.12em",textTransform:"uppercase",color:"#888",marginBottom:"10px"}}>ROSTA</div>
+          <div style={{fontSize:"22px",fontWeight:"700",marginBottom:"12px",color:"#1a1a1a"}}>{fmt(rostaTotal)} ₸</div>
+          <div style={{display:"flex",flexDirection:"column",gap:"6px"}}>
+            {[
+              ["Kaspi QR", shift.rKaspi],
+              ["Онлайн Kaspi", shift.rOnline],
+              ["Halyk QR", shift.rHalyk],
+              ["Онлайн Halyk", shift.rHalykOnline],
+              ["Наличные", shift.rCash],
+              ["Личная карта", shift.rPersonal],
+              ["Бонусы", shift.rBonus],
+            ].filter(([,v])=>parse(v)>0).map(([label,val])=><div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:"13px"}}>
+              <span style={{color:"#555"}}>{label}</span>
+              <span style={{fontWeight:"600"}}>{fmt(parse(val))} ₸</span>
+            </div>)}
+            {parse(shift.rRetKaspi)>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:"13px",color:"#c62828"}}>
+              <span>Возврат Kaspi</span><span>−{fmt(parse(shift.rRetKaspi))} ₸</span>
+            </div>}
+            {parse(shift.rRetHalyk)>0&&<div style={{display:"flex",justifyContent:"space-between",fontSize:"13px",color:"#c62828"}}>
+              <span>Возврат Halyk</span><span>−{fmt(parse(shift.rRetHalyk))} ₸</span>
+            </div>}
+          </div>
+        </div>
+
+        {/* Терминалы */}
+        <div style={{background:"#fff",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",border:"1px solid rgba(0,0,0,0.08)"}}>
+          <div style={{fontSize:"10px",letterSpacing:"0.12em",textTransform:"uppercase",color:"#888",marginBottom:"10px"}}>Терминалы (факт)</div>
+          {[
+            ["Kaspi", (parse(shift.tKaspi)-parse(shift.tKaspiRet)), parse(shift.tKaspiRet)],
+            ["Halyk", (parse(shift.tHalyk)-parse(shift.tHalykRet)), parse(shift.tHalykRet)],
+            ["Личная карта", parse(shift.tPersonal), 0],
+          ].filter(([,v])=>v>0).map(([label,net,ret])=><div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:"13px",marginBottom:"6px"}}>
+            <span style={{color:"#555"}}>{label}</span>
+            <div style={{textAlign:"right"}}>
+              <span style={{fontWeight:"600"}}>{fmt(net)} ₸</span>
+              {ret>0&&<span style={{fontSize:"11px",color:"#c62828",marginLeft:"6px"}}>−{fmt(ret)} возврат</span>}
+            </div>
+          </div>)}
+        </div>
+
+        {/* Касса */}
+        <div style={{background:"#fff",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",border:"1px solid rgba(0,0,0,0.08)"}}>
+          <div style={{fontSize:"10px",letterSpacing:"0.12em",textTransform:"uppercase",color:"#888",marginBottom:"10px"}}>Касса</div>
+          {[
+            ["Открытие", shift.cashOpen],
+            ["Закрытие", shift.cashActual],
+            ["Инкассация", shift.inkasso],
+          ].filter(([,v])=>parse(v)>0).map(([label,val])=><div key={label} style={{display:"flex",justifyContent:"space-between",fontSize:"13px",marginBottom:"6px"}}>
+            <span style={{color:"#555"}}>{label}</span>
+            <span style={{fontWeight:"600"}}>{fmt(parse(val))} ₸</span>
+          </div>)}
+        </div>
+
+        {/* Итог с учётом предоплат */}
+        {(()=>{
+          const totalPrepayAdj=Object.values(attachedIncoming).reduce((s,list)=>s+list.reduce((ss,p)=>ss+parse(p.amount),0),0);
+          const adjDiff=totalDiff<0?totalDiff+totalPrepayAdj:totalDiff-totalPrepayAdj;
+          const adjOk=Math.abs(adjDiff)<500;
+          const prepayExplained=totalPrepayAdj>0&&adjOk&&!isOk;
+          return <div style={{background:adjOk?"rgba(74,222,128,0.1)":"rgba(251,113,113,0.08)",
+            border:"1px solid "+(adjOk?"rgba(74,222,128,0.3)":"rgba(251,113,113,0.3)"),
+            borderRadius:"12px",padding:"16px 18px",marginBottom:"16px"}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"3px"}}>ROSTA</div>
+                <div style={{fontSize:"16px",fontWeight:"700"}}>{fmt(rostaTotal)} ₸</div>
+              </div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:"3px"}}>Факт</div>
+                <div style={{fontSize:"16px",fontWeight:"700"}}>{fmt(factTotal)} ₸</div>
+              </div>
+            </div>
+            {totalPrepayAdj>0&&<div style={{textAlign:"center",fontSize:"13px",color:"#2E6B5E",fontWeight:"600",marginBottom:"8px"}}>
+              💳 Предоплата: +{fmt(totalPrepayAdj)} ₸
+            </div>}
+            <div style={{textAlign:"center",fontSize:"16px",fontWeight:"700",color:adjOk?"#22c55e":"#fb7171"}}>
+              {adjOk?"✅ Всё сходится":prepayExplained?"✅ Объяснено предоплатой":`⚠️ Разница: ${adjDiff>0?"+":""}${fmt(adjDiff)} ₸`}
+            </div>
+            {prepayExplained&&<div style={{textAlign:"center",fontSize:"12px",color:"#2E6B5E",marginTop:"4px"}}>
+              Расхождение {fmt(Math.abs(totalDiff))} ₸ закрыто предоплатой клиента
+            </div>}
+          </div>;
+        })()}
+
+        {/* Предоплаты клиентов */}
+        {Object.values(attachedIncoming).flat().length>0&&<div style={{background:"#fff",borderRadius:"12px",padding:"16px 18px",marginBottom:"12px",border:"1px solid rgba(0,0,0,0.08)"}}>
+          <div style={{fontSize:"10px",letterSpacing:"0.12em",textTransform:"uppercase",color:"#888",marginBottom:"12px"}}>Предоплаты клиентов</div>
+          {Object.entries(attachedIncoming).map(([channel,list])=>list.map((p,i)=><div key={channel+i} style={{borderLeft:"3px solid #2E6B5E",paddingLeft:"12px",marginBottom:"12px"}}>
+            <div style={{fontWeight:"700",fontSize:"14px",color:"#1a1a1a",marginBottom:"2px"}}>{p.client_name||"Клиент"}</div>
+            {p.phone&&<div style={{fontSize:"12px",color:"#888",marginBottom:"4px"}}>📱 {p.phone}</div>}
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px",marginTop:"6px"}}>
+              <div style={{background:"rgba(0,0,0,0.03)",borderRadius:"6px",padding:"6px 8px"}}>
+                <div style={{fontSize:"9px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em"}}>Предоплата</div>
+                <div style={{fontSize:"14px",fontWeight:"700",color:"#2E6B5E",marginTop:"1px"}}>{fmt(parse(p.amount))} ₸</div>
+              </div>
+              {parse(p.balance||0)>0&&<div style={{background:"rgba(198,40,40,0.05)",borderRadius:"6px",padding:"6px 8px"}}>
+                <div style={{fontSize:"9px",color:"#888",textTransform:"uppercase",letterSpacing:"0.08em"}}>Остаток</div>
+                <div style={{fontSize:"14px",fontWeight:"700",color:"#c62828",marginTop:"1px"}}>{fmt(parse(p.balance))} ₸</div>
+              </div>}
+            </div>
+            {p.item&&<div style={{fontSize:"12px",color:"#555",marginTop:"6px"}}>👗 {p.item}</div>}
+            {p.channel&&<div style={{fontSize:"11px",color:"#888",marginTop:"2px"}}>💳 {p.channel}</div>}
+            {p.prep_date&&<div style={{fontSize:"11px",color:"#888",marginTop:"2px"}}>📅 Внесено: {p.prep_date}</div>}
+            {p.prep_id&&<div style={{fontSize:"11px",color:"#bbb",marginTop:"2px"}}>{p.prep_id}</div>}
+          </div>))}
+        </div>}
+
+        {shift.notes&&<div style={{background:"rgba(0,0,0,0.04)",borderRadius:"10px",padding:"12px 14px",marginBottom:"14px",fontSize:"13px",color:"#555"}}>
+          📝 {shift.notes}
+        </div>}
+
+        <button onClick={()=>{
+          navigator.clipboard&&navigator.clipboard.writeText(buildReport()).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2500)});
+        }} style={{...BTN,background:copied?"rgba(74,222,128,0.15)":"#1a1a1a",color:copied?"#22c55e":"#FFFFF0"}}>
+          {copied?"✓ Скопировано!":"📋 Скопировать"}
+        </button>
+      </div>
+    </div>}
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// СТРАНИЦА ВЛАДЕЛЬЦА
+// ══════════════════════════════════════════════════════════════════════
+function OwnerPage(){
+  const [tab,setTab]=useState("dash");
+  const [sales,setSales]=useState([]);
+  const [prepays,setPrepays]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const now=new Date();
+  const [month,setMonth]=useState(now.getMonth()+1);
+  const [year,setYear]=useState(now.getFullYear());
+
+  const loadSales=async()=>{
+    setLoading(true);
+    try {
+      const data=await sbFetch("daily_sales","GET",null,`?month=eq.${month}&year=eq.${year}&order=sale_date.asc`);
+      setSales(data||[]);
+    } catch(e){console.error(e);}
+    setLoading(false);
+  };
+
+  const loadPrepays=async()=>{
+    setLoading(true);
+    try {
+      const data=await sbFetch("prepayments","GET",null,"?order=prep_date.asc");
+      setPrepays(data||[]);
+    } catch(e){console.error(e);}
+    setLoading(false);
+  };
+
+  useEffect(()=>{ if(tab==="dash"||tab==="sales")loadSales(); if(tab==="prepays")loadPrepays(); },[tab,month,year]);
+
+  // Расчёты
+  const totalRev=sales.reduce((s,x)=>s+Number(x.revenue||0),0);
+  const plan=27000000;
+  const pct=Math.round(totalRev/plan*100);
+  const daysLeft=new Date(year,month,0).getDate()-now.getDate();
+  const remaining=Math.max(0,plan-totalRev);
+  const dailyNeed=daysLeft>0?Math.round(remaining/daysLeft):0;
+
+  // Суммы по продавцам
+  const sellerTotals={Зарина:0,Далира:0};
+  const personalPlans={Зарина:13500000,Далира:13500000};
+  sales.forEach(s=>{
+    const rev=Number(s.revenue||0);
+    const sellers=[s.seller1,s.seller2].filter(x=>x&&sellerTotals[x]!==undefined);
+    if(sellers.length===0) return;
+    const n=sellers.length;
+    sellers.forEach(name=>{sellerTotals[name]+=rev/n;});
+  });
+
+  const monthNames=["","Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+  const tabs=[{id:"dash",label:"📊 Дашборд"},{id:"sales",label:"📅 Продажи"},{id:"prepays",label:"💳 Предоплаты"},{id:"editor",label:"✏️ Редактор"}];
+  const sellerColors={Зарина:"#5a8e70",Далира:"#7060a8"};
+
+  return <div style={{maxWidth:"900px",margin:"0 auto",padding:"0 0 60px"}}>
+    {/* Шапка */}
+    <div style={{background:"#1a1a1a",padding:"18px 24px",display:"flex",justifyContent:"space-between",alignItems:"center",position:"sticky",top:0,zIndex:10}}>
+      <div>
+        <div style={{fontFamily:"'Cormorant Garamond',serif",fontStyle:"italic",fontSize:"22px",color:"#FFFFF0"}}>NANÉ PARIS</div>
+        <div style={{fontSize:"10px",color:"rgba(255,255,255,0.4)",letterSpacing:"0.15em",textTransform:"uppercase",marginTop:"1px"}}>Томи — Управление</div>
+      </div>
+      <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+        <select style={{background:"rgba(255,255,255,0.1)",border:"none",color:"#FFFFF0",borderRadius:"6px",padding:"6px 10px",fontSize:"12px",fontFamily:"inherit",cursor:"pointer"}}
+          value={month} onChange={e=>setMonth(Number(e.target.value))}>
+          {[1,2,3,4,5,6,7,8,9,10,11,12].map(m=><option key={m} value={m}>{monthNames[m]}</option>)}
+        </select>
+        <select style={{background:"rgba(255,255,255,0.1)",border:"none",color:"#FFFFF0",borderRadius:"6px",padding:"6px 10px",fontSize:"12px",fontFamily:"inherit",cursor:"pointer"}}
+          value={year} onChange={e=>setYear(Number(e.target.value))}>
+          {[2025,2026,2027].map(y=><option key={y}>{y}</option>)}
+        </select>
+      </div>
+    </div>
+
+    {/* Табы */}
+    <div style={{display:"flex",background:"rgba(0,0,0,0.06)",borderBottom:"1px solid rgba(0,0,0,0.1)"}}>
+      {tabs.map(t=><button key={t.id} onClick={()=>setTab(t.id)}
+        style={{padding:"13px 20px",border:"none",background:"none",borderBottom:"2px solid "+(tab===t.id?"#1a1a1a":"transparent"),
+          fontSize:"12px",fontWeight:"700",color:tab===t.id?"#1a1a1a":"#888",cursor:"pointer",fontFamily:"inherit",letterSpacing:"0.03em"}}>
+        {t.label}
+      </button>)}
+    </div>
+
+    <div style={{padding:"24px 20px"}}>
+
+    {/* ── ДАШБОРД ───────────────────────────────────────── */}
+    {tab==="dash"&&<div>
+      {loading?<div style={{textAlign:"center",padding:"40px",color:"#888"}}>Загрузка...</div>:<>
+
+      {/* Прогресс магазина */}
+      <div style={{background:"#1a1a1a",borderRadius:"14px",padding:"22px",marginBottom:"20px",color:"#FFFFF0"}}>
+        <div style={{fontSize:"11px",letterSpacing:"0.15em",textTransform:"uppercase",color:"rgba(255,255,255,0.4)",marginBottom:"6px"}}>{monthNames[month]} {year}</div>
+        <div style={{fontSize:"36px",fontWeight:"700",letterSpacing:"-0.02em"}}>{fmt(totalRev)} ₸</div>
+        <div style={{fontSize:"13px",color:"rgba(255,255,255,0.5)",marginTop:"2px"}}>из {fmt(plan)} ₸ плана</div>
+        <div style={{background:"rgba(255,255,255,0.1)",borderRadius:"6px",height:"8px",margin:"14px 0 10px",overflow:"hidden"}}>
+          <div style={{height:"100%",borderRadius:"6px",background:"#FFFFF0",width:Math.min(pct,100)+"%",transition:"width 0.4s"}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",fontSize:"12px",color:"rgba(255,255,255,0.5)"}}>
+          <span>{pct}% выполнено</span>
+          <span>нужно {fmt(dailyNeed)} ₸/день · {daysLeft} дней</span>
+        </div>
+      </div>
+
+      {/* Продавцы */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:"12px",marginBottom:"20px"}}>
+        {Object.entries(sellerTotals).filter(([,v])=>v>0).map(([name,val])=>{
+          const pl=personalPlans[name]||0;
+          const p=pl>0?Math.round(val/pl*100):0;
+          const c=sellerColors[name]||"#888";
+          return <div key={name} style={{background:"#fff",border:"1px solid rgba(0,0,0,0.08)",borderRadius:"12px",overflow:"hidden"}}>
+            <div style={{background:c,padding:"12px 16px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontWeight:"700",color:"#fff",fontSize:"14px"}}>{name}</span>
+              <span style={{fontWeight:"700",color:"#fff",fontSize:"18px"}}>{p}%</span>
+            </div>
+            <div style={{padding:"12px 16px"}}>
+              <div style={{fontSize:"18px",fontWeight:"700"}}>{fmt(val)} ₸</div>
+              <div style={{fontSize:"12px",color:"#888",marginTop:"2px"}}>из {fmt(pl)} ₸</div>
+              <div style={{background:"#f0f0ec",borderRadius:"4px",height:"5px",margin:"10px 0 6px",overflow:"hidden"}}>
+                <div style={{height:"100%",borderRadius:"4px",background:c,width:Math.min(p,100)+"%"}}/>
+              </div>
+              <div style={{fontSize:"11px",color:"#888"}}>осталось {fmt(Math.max(0,pl-val))} ₸</div>
+            </div>
+          </div>;
+        })}
+      </div>
+
+      {/* Быстрая статистика */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:"10px"}}>
+        {[
+          {label:"Дней продаж",val:sales.length},
+          {label:"Средний день",val:sales.length>0?fmt(Math.round(totalRev/sales.length))+" ₸":"—"},
+          {label:"Лучший день",val:sales.length>0?fmt(Math.max(...sales.map(s=>Number(s.revenue||0))))+" ₸":"—"},
+        ].map(({label,val})=><div key={label} style={{background:"rgba(0,0,0,0.04)",borderRadius:"10px",padding:"14px",textAlign:"center"}}>
+          <div style={{fontSize:"10px",color:"#888",textTransform:"uppercase",letterSpacing:"0.1em",marginBottom:"4px"}}>{label}</div>
+          <div style={{fontSize:"18px",fontWeight:"700"}}>{val}</div>
+        </div>)}
+      </div>
+      </>}
+    </div>}
+
+    {/* ── ПРОДАЖИ ───────────────────────────────────────── */}
+    {tab==="sales"&&<div>
+      {loading?<div style={{textAlign:"center",padding:"40px",color:"#888"}}>Загрузка...</div>:
+      sales.length===0?<div style={{textAlign:"center",padding:"40px",color:"#888"}}>Нет данных за {monthNames[month]} {year}</div>:
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:"13px"}}>
+          <thead>
+            <tr style={{background:"#1a1a1a",color:"#FFFFF0"}}>
+              {["Дата","Выручка","Продавец 1","Продавец 2"].map(h=><th key={h} style={{padding:"10px 12px",textAlign:"left",fontSize:"10px",textTransform:"uppercase",letterSpacing:"0.08em",fontWeight:"700",whiteSpace:"nowrap"}}>{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {sales.map((s,i)=>{
+              const rev=Number(s.revenue||0);
+              const d=s.sale_date?s.sale_date.slice(8,10)+"."+s.sale_date.slice(5,7):"?";
+              return <tr key={i} style={{background:i%2===0?"#fff":"rgba(0,0,0,0.02)",borderBottom:"1px solid rgba(0,0,0,0.06)"}}>
+                <td style={{padding:"10px 12px",color:"#555"}}>{d}</td>
+                <td style={{padding:"10px 12px",fontWeight:"700"}}>{fmt(rev)} ₸</td>
+                <td style={{padding:"10px 12px"}}><span style={{background:sellerColors[s.seller1]||"#ddd",color:"#fff",padding:"2px 8px",borderRadius:"20px",fontSize:"11px",fontWeight:"700"}}>{s.seller1||"—"}</span></td>
+                <td style={{padding:"10px 12px"}}>{s.seller2?<span style={{background:sellerColors[s.seller2]||"#ddd",color:"#fff",padding:"2px 8px",borderRadius:"20px",fontSize:"11px",fontWeight:"700"}}>{s.seller2}</span>:"—"}</td>
+              </tr>;
+            })}
+          </tbody>
+          <tfoot>
+            <tr style={{background:"#1a1a1a",color:"#FFFFF0",fontWeight:"700"}}>
+              <td style={{padding:"10px 12px",fontSize:"11px",textTransform:"uppercase",letterSpacing:"0.05em"}}>Итого</td>
+              <td style={{padding:"10px 12px"}}>{fmt(totalRev)} ₸</td>
+              <td colSpan={2} style={{padding:"10px 12px",fontSize:"11px",color:"rgba(255,255,255,0.5)"}}>{sales.length} смен</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>}
+    </div>}
+
+    {/* ── ПРЕДОПЛАТЫ ────────────────────────────────────── */}
+    {tab==="prepays"&&<div>
+      <button onClick={loadPrepays} disabled={loading}
+        style={{...BTN,marginBottom:"16px",opacity:loading?0.5:1,maxWidth:"200px"}}>
+        {loading?"⏳ Загрузка...":"🔄 Обновить"}
+      </button>
+      {prepays.filter(p=>!p.status.includes("Закрыта")).map((p,i)=>{
+        const isOpen=!p.status.includes("Закрыта");
+        return <div key={i} style={{border:"1.5px solid "+(isOpen?"#e6a817":"#4caf50"),borderRadius:"10px",
+          padding:"14px",marginBottom:"10px",background:isOpen?"rgba(255,248,220,0.6)":"rgba(232,245,233,0.6)"}}>
+          <div style={{display:"flex",justifyContent:"space-between",marginBottom:"6px"}}>
+            <div>
+              <div style={{fontWeight:"700",fontSize:"14px"}}>{p.client_name}</div>
+              <div style={{fontSize:"11px",color:"#555"}}>{p.prep_id} · {p.channel} · {p.prep_date}</div>
+            </div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:"18px",fontWeight:"700",color:"#2E6B5E"}}>{fmt(p.amount)} ₸</div>
+              {p.balance>0&&<div style={{fontSize:"12px",color:"#c62828"}}>Долг: {fmt(p.balance)} ₸</div>}
+            </div>
+          </div>
+          {p.item&&<div style={{fontSize:"12px",color:"#555"}}>👗 {p.item}</div>}
+        </div>;
+      })}
+      {prepays.filter(p=>!p.status.includes("Закрыта")).length===0&&!loading&&
+        <div style={{textAlign:"center",padding:"40px",color:"#888"}}>Нет открытых предоплат</div>}
+    </div>}
+
+    {/* ── РЕДАКТОР ──────────────────────────────────────── */}
+    {tab==="editor"&&<EditorTab/>}
+
+    </div>
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// РЕДАКТОР ЗАПИСЕЙ
+// ══════════════════════════════════════════════════════════════════════
+function EditorTab(){
+  const [table,setTable]=useState("daily_sales");
+  const [rows,setRows]=useState([]);
+  const [loading,setLoading]=useState(false);
+  const [editRow,setEditRow]=useState(null);
+  const [editData,setEditData]=useState({});
+  const [saving,setSaving]=useState(false);
+  const [msg,setMsg]=useState("");
+  const now=new Date();
+  const [filterMonth,setFilterMonth]=useState(now.getMonth()+1);
+  const [filterYear,setFilterYear]=useState(now.getFullYear());
+
+  const tables=[
+    {id:"daily_sales",label:"📅 Продажи по дням"},
+    {id:"prepayments",label:"💳 Предоплаты"},
+    {id:"open_shifts",label:"🔄 Открытые смены"},
+    {id:"expenses",label:"💸 Расходы"},
+  ];
+
+  const monthNames=["","Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+
+  const loadRows=async()=>{
+    setLoading(true);
+    setRows([]);
+    setEditRow(null);
+    try {
+      let filter="?order=id.desc&limit=100";
+      if(table==="daily_sales"){
+        filter=`?month=eq.${filterMonth}&year=eq.${filterYear}&order=sale_date.asc`;
+      } else if(table==="prepayments"){
+        // Предоплаты показываем все — они могут быть за разные месяцы
+        filter=`?order=prep_date.desc&limit=100`;
+      } else if(table==="expenses"){
+        // Расходы показываем все без фильтра по месяцу
+        filter=`?order=expense_date.desc&limit=100`;
+      }
+      const data=await sbFetch(table,"GET",null,filter);
+      setRows(data||[]);
+    } catch(e){setMsg("Ошибка: "+e.message);}
+    setLoading(false);
+  };
+
+  const startEdit=(row)=>{
+    setEditRow(row.id);
+    setEditData({...row});
+  };
+
+  const saveEdit=async()=>{
+    setSaving(true);
+    try {
+      await sbFetch(table,"PATCH",editData,"?id=eq."+editRow);
+      setMsg("✅ Сохранено");
+      setEditRow(null);
+      loadRows();
+    } catch(e){setMsg("Ошибка: "+e.message);}
+    setSaving(false);
+    setTimeout(()=>setMsg(""),3000);
+  };
+
+  const deleteRow=async(id)=>{
+    if(!window.confirm("Удалить эту запись?")) return;
+    try {
+      const url=`${API_URL}/api/db/${table}?id=eq.${id}`;
+      await fetch(url,{method:"DELETE",headers:{"Content-Type":"application/json"}});
+      setMsg("✅ Удалено");
+      loadRows();
+    } catch(e){setMsg("Ошибка: "+e.message);}
+    setTimeout(()=>setMsg(""),3000);
+  };
+
+  const fmt=n=>Math.round(n||0).toLocaleString("ru-RU");
+
+  const [expenseForm,setExpenseForm]=useState({date:todayStr(),category:"",description:"",sum:""});
+  const [addingExpense,setAddingExpense]=useState(false);
+  const [showAddExpense,setShowAddExpense]=useState(false);
+
+  const handleAddExpense=async()=>{
+    if(!expenseForm.sum||!expenseForm.category){alert("Заполни категорию и сумму");return;}
+    setAddingExpense(true);
+    try {
+      await sbFetch("expenses","POST",{
+        expense_date:expenseForm.date,
+        category:expenseForm.category,
+        description:expenseForm.description,
+        amount:parse(expenseForm.sum),
+        month:parseInt(expenseForm.date.split("-")[1]),
+        year:parseInt(expenseForm.date.split("-")[0])
+      });
+      setMsg("✅ Расход добавлен");
+      setExpenseForm({date:todayStr(),category:"",description:"",sum:""});
+      setShowAddExpense(false);
+      if(table==="expenses") loadRows();
+    } catch(e){setMsg("Ошибка: "+e.message);}
+    setAddingExpense(false);
+    setTimeout(()=>setMsg(""),3000);
+  };
+
+  const expenseCategories=["Аренда","Зарплата","Реклама","Упаковка","Курьер","Хозрасходы","Комиссия","Оборудование","Прочее"];
+
+  return <div>
+    {/* Быстрое добавление расхода */}
+    <div style={{marginBottom:"16px"}}>
+      <button onClick={()=>setShowAddExpense(v=>!v)}
+        style={{padding:"10px 16px",borderRadius:"8px",border:"1.5px solid #c62828",
+          background:showAddExpense?"#c62828":"transparent",color:showAddExpense?"#fff":"#c62828",
+          fontSize:"13px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit",marginBottom:"10px"}}>
+        {showAddExpense?"✕ Закрыть":"➕ Добавить расход"}
+      </button>
+      {showAddExpense&&<div style={{background:"rgba(198,40,40,0.04)",border:"1px solid rgba(198,40,40,0.2)",borderRadius:"12px",padding:"16px"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"10px",marginBottom:"10px"}}>
+          <div>
+            <label style={LS}>Дата</label>
+            <input type="date" style={{...FS,fontSize:"13px",padding:"8px 10px"}}
+              value={expenseForm.date} onChange={e=>setExpenseForm(p=>({...p,date:e.target.value}))}/>
+          </div>
+          <div>
+            <label style={LS}>Сумма</label>
+            <input style={{...FS,fontSize:"13px",padding:"8px 10px",textAlign:"right"}} inputMode="numeric"
+              placeholder="0 ₸" value={expenseForm.sum} onChange={e=>setExpenseForm(p=>({...p,sum:e.target.value.replace(/[^0-9]/g,"")}))}/>
+          </div>
+        </div>
+        <div style={{marginBottom:"10px"}}>
+          <label style={LS}>Категория</label>
+          <select style={{...FS,fontSize:"13px",padding:"8px 10px"}}
+            value={expenseForm.category} onChange={e=>setExpenseForm(p=>({...p,category:e.target.value}))}>
+            <option value="">Выбери категорию</option>
+            {expenseCategories.map(c=><option key={c}>{c}</option>)}
+          </select>
+        </div>
+        <div style={{marginBottom:"12px"}}>
+          <label style={LS}>Описание</label>
+          <input style={{...FS,fontSize:"13px",padding:"8px 10px"}}
+            placeholder="Что именно оплачено?"
+            value={expenseForm.description} onChange={e=>setExpenseForm(p=>({...p,description:e.target.value}))}/>
+        </div>
+        <button onClick={handleAddExpense} disabled={addingExpense}
+          style={{...BTN,background:"#c62828",opacity:addingExpense?0.5:1}}>
+          {addingExpense?"Сохранение...":"💾 Сохранить расход"}
+        </button>
+      </div>}
+    </div>
+
+    {/* Выбор таблицы */}
+    <div style={{display:"flex",gap:"8px",flexWrap:"wrap",marginBottom:"12px"}}>
+      {tables.map(t=><button key={t.id} onClick={()=>{setTable(t.id);setRows([]);setEditRow(null);}}
+        style={{padding:"8px 14px",borderRadius:"8px",border:"1.5px solid "+(table===t.id?"#1a1a1a":"rgba(0,0,0,0.15)"),
+          background:table===t.id?"#1a1a1a":"transparent",color:table===t.id?"#FFFFF0":"#1a1a1a",
+          fontSize:"12px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>
+        {t.label}
+      </button>)}
+    </div>
+
+    {/* Фильтр по месяцу */}
+    <div style={{display:"flex",gap:"8px",alignItems:"center",marginBottom:"12px",flexWrap:"wrap"}}>
+      <select style={{...FS,width:"auto",padding:"8px 12px",fontSize:"13px"}}
+        value={filterMonth} onChange={e=>setFilterMonth(Number(e.target.value))}>
+        {[1,2,3,4,5,6,7,8,9,10,11,12].map(m=><option key={m} value={m}>{monthNames[m]}</option>)}
+      </select>
+      <select style={{...FS,width:"auto",padding:"8px 12px",fontSize:"13px"}}
+        value={filterYear} onChange={e=>setFilterYear(Number(e.target.value))}>
+        {[2025,2026,2027].map(y=><option key={y}>{y}</option>)}
+      </select>
+      <button onClick={loadRows} disabled={loading}
+        style={{padding:"8px 16px",borderRadius:"8px",border:"1.5px solid #1a1a1a",
+          background:"#1a1a1a",color:"#FFFFF0",fontSize:"13px",fontWeight:"700",
+          cursor:"pointer",fontFamily:"inherit",opacity:loading?0.5:1}}>
+        {loading?"⏳":"🔄"} {loading?"Загрузка...":"Загрузить"}
+      </button>
+      {rows.length>0&&<span style={{fontSize:"12px",color:"#888"}}>{rows.length} записей</span>}
+    </div>
+
+    {msg&&<div style={{padding:"10px 14px",borderRadius:"8px",background:"rgba(74,222,128,0.1)",
+      border:"1px solid rgba(74,222,128,0.3)",marginBottom:"14px",fontSize:"13px",fontWeight:"600"}}>
+      {msg}
+    </div>}
+
+    {/* Список записей */}
+    {rows.map((row,i)=>{
+      const isEdit=editRow===row.id;
+      const keys=Object.keys(row).filter(k=>k!=="id"&&k!=="created_at"&&k!=="updated_at");
+
+      return <div key={i} style={{border:"1px solid rgba(0,0,0,0.1)",borderRadius:"10px",
+        padding:"14px",marginBottom:"10px",background:isEdit?"rgba(255,248,220,0.6)":"#fff"}}>
+
+        {/* Шапка */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"10px"}}>
+          <div style={{display:"flex",alignItems:"center",gap:"10px",flexWrap:"wrap"}}>
+            {/* Дата */}
+            {row.sale_date&&<span style={{background:"#1a1a1a",color:"#FFFFF0",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{row.sale_date.slice(8,10)}.{row.sale_date.slice(5,7)}.{row.sale_date.slice(0,4)}</span>}
+            {row.prep_date&&<span style={{background:"#e6a817",color:"#fff",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{row.prep_date.slice(8,10)}.{row.prep_date.slice(5,7)}.{row.prep_date.slice(0,4)}</span>}
+            {row.date&&<span style={{background:"#555",color:"#fff",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{String(row.date).slice(8,10)}.{String(row.date).slice(5,7)}.{String(row.date).slice(0,4)}</span>}
+            {row.expense_date&&<span style={{background:"#555",color:"#fff",borderRadius:"6px",padding:"2px 8px",fontSize:"12px",fontWeight:"700",whiteSpace:"nowrap"}}>{String(row.expense_date).slice(8,10)}.{String(row.expense_date).slice(5,7)}.{String(row.expense_date).slice(0,4)}</span>}
+            {/* Продавец */}
+            {(row.seller1||row.seller)&&<span style={{fontSize:"12px",color:"#555"}}>👤 {row.seller1||row.seller}{row.seller2?" + "+row.seller2:""}</span>}
+            {row.client_name&&<span style={{fontSize:"13px",fontWeight:"600"}}>👤 {row.client_name}</span>}
+            {/* Категория/описание расхода */}
+            {row.category&&<span style={{fontSize:"12px",background:"rgba(0,0,0,0.06)",borderRadius:"4px",padding:"2px 6px"}}>{row.category}</span>}
+            {row.description&&<span style={{fontSize:"12px",color:"#555"}}>{row.description}</span>}
+            {row.item&&<span style={{fontSize:"12px",color:"#555"}}>👗 {row.item}</span>}
+            {/* Сумма */}
+            {row.revenue>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#2E6B5E",marginLeft:"auto"}}>{fmt(row.revenue)} ₸</span>}
+            {row.amount>0&&<span style={{fontSize:"15px",fontWeight:"700",color:"#2E6B5E",marginLeft:"auto"}}>{fmt(row.amount)} ₸</span>}
+            {row.amount>0&&!row.revenue&&!row.balance&&<span style={{fontSize:"15px",fontWeight:"700",color:"#c62828",marginLeft:"auto"}}>{fmt(row.amount)} ₸</span>}
+          </div>
+          <div style={{display:"flex",gap:"6px"}}>
+            {!isEdit&&<button onClick={()=>startEdit(row)}
+              style={{padding:"5px 12px",borderRadius:"6px",border:"1px solid #1a1a1a",
+                background:"transparent",fontSize:"11px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>
+              ✏️ Изменить
+            </button>}
+            <button onClick={()=>deleteRow(row.id)}
+              style={{padding:"5px 12px",borderRadius:"6px",border:"1px solid rgba(220,50,50,0.4)",
+                background:"rgba(220,50,50,0.06)",color:"#c62828",fontSize:"11px",fontWeight:"700",cursor:"pointer",fontFamily:"inherit"}}>
+              🗑 Удалить
+            </button>
+          </div>
+        </div>
+
+        {/* Редактирование */}
+        {isEdit&&<div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px",marginBottom:"10px"}}>
+            {keys.map(k=>{
+              // Специальный переключатель для поля status
+              if(k==="status"){
+                const statuses=["🟡 Открыта","🟢 Выдан","🟢 Закрыта","🔴 Отменена"];
+                return <div key={k} style={{gridColumn:"1 / -1"}}>
+                  <label style={{...LS,marginBottom:"6px"}}>Статус предоплаты</label>
+                  <div style={{display:"flex",gap:"6px",flexWrap:"wrap"}}>
+                    {statuses.map(s=><button key={s} onClick={()=>setEditData(p=>({...p,status:s}))}
+                      style={{padding:"7px 12px",borderRadius:"8px",border:"1.5px solid "+(editData.status===s?"#1a1a1a":"rgba(0,0,0,0.15)"),
+                        background:editData.status===s?"#1a1a1a":"transparent",
+                        color:editData.status===s?"#FFFFF0":"#1a1a1a",
+                        fontSize:"12px",fontWeight:"500",cursor:"pointer",fontFamily:"inherit"}}>
+                      {s}
+                    </button>)}
+                  </div>
+                </div>;
+              }
+              return <div key={k}>
+                <label style={{...LS,marginBottom:"3px"}}>{k}</label>
+                <input style={{...FS,padding:"8px 10px",fontSize:"13px"}}
+                  value={editData[k]||""}
+                  onChange={e=>setEditData(p=>({...p,[k]:e.target.value}))}
+                />
+              </div>;
+            })}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px"}}>
+            <button onClick={saveEdit} disabled={saving}
+              style={{...BTN,opacity:saving?0.5:1}}>
+              {saving?"Сохранение...":"💾 Сохранить"}
+            </button>
+            <button onClick={()=>setEditRow(null)}
+              style={{...BTN,background:"transparent",border:"1px solid #1a1a1a",color:"#1a1a1a"}}>
+              Отмена
+            </button>
+          </div>
+        </div>}
+      </div>;
+    })}
+
+    {rows.length===0&&!loading&&<div style={{textAlign:"center",padding:"40px",color:"#888"}}>
+      Нажми "Загрузить" чтобы увидеть записи
+    </div>}
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ВХОД
+// ══════════════════════════════════════════════════════════════════════
+function LoginPage({onLogin}){
+  const [pass,setPass]=useState("");
+  const [error,setError]=useState("");
+  const check=()=>{
+    if(pass===OWNER_PASS){onLogin("owner");return;}
+    if(pass===SELLER_PASS){onLogin("seller");return;}
+    setError("Неверный пароль");setTimeout(()=>setError(""),2000);
+  };
+  return <div style={{maxWidth:"360px",margin:"0 auto",padding:"60px 24px",textAlign:"center"}}>
+    <div style={{fontFamily:"'Cormorant Garamond',serif",fontStyle:"italic",fontSize:"40px",color:"#1a1a1a",marginBottom:"4px"}}>NANÉ</div>
+    <div style={{fontSize:"11px",letterSpacing:"0.2em",textTransform:"uppercase",color:"#888",marginBottom:"50px"}}>PARIS · АСТАНА</div>
+    <input type="password" style={{...FS,textAlign:"center",marginBottom:"12px",letterSpacing:"0.08em"}}
+      placeholder="Пароль" value={pass} onChange={e=>setPass(e.target.value)}
+      onKeyDown={e=>e.key==="Enter"&&check()}
+    />
+    {error&&<div style={{color:"#fb7171",fontSize:"12px",marginBottom:"10px"}}>{error}</div>}
+    <button onClick={check} style={BTN}>Войти</button>
+    <div style={{marginTop:"20px",fontSize:"11px",color:"#bbb",lineHeight:"1.8"}}>
+      Продавцы: пароль нанекасса<br/>Руководитель: отдельный пароль
+    </div>
+  </div>;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ROOT
+// ══════════════════════════════════════════════════════════════════════
+function App(){
+  const [role,setRole]=useState(null); // null | seller | owner
+
+  if(!role)return <LoginPage onLogin={setRole}/>;
+
+  return <div>
+    {role==="seller"&&<SellerPage/>}
+    {role==="owner"&&<OwnerPage/>}
+    <div style={{position:"fixed",bottom:0,left:0,right:0,padding:"6px",textAlign:"center",background:"rgba(255,255,255,0.9)",backdropFilter:"blur(10px)",borderTop:"1px solid rgba(0,0,0,0.06)"}}>
+      <button onClick={()=>setRole(null)} style={{background:"none",border:"none",fontSize:"11px",color:"#aaa",cursor:"pointer",fontFamily:"inherit"}}>
+        Выйти ({role==="seller"?"Продавец":"Руководитель"})
+      </button>
+    </div>
+  </div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
