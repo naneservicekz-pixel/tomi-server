@@ -1859,30 +1859,28 @@ ${s.notes?`<div class="card"><div class="label">Примечания</div><div s
               });
               await new Promise((resolve) => {
                 const https = require('https');
-                const boundary = '----FormBoundary';
+                const boundary = '----FormBoundary7MA4YWxkTrZu0gW';
                 const imgData = Buffer.from(s.photos[key], 'base64');
-                const formHeader = `--${boundary}
-Content-Disposition: form-data; name="chat_id"
-
-${ownerId}
---${boundary}
-Content-Disposition: form-data; name="caption"
-
-${label} · ${s.seller||'?'} · ${d}
---${boundary}
-Content-Disposition: form-data; name="photo"; filename="photo.jpg"
-Content-Type: image/jpeg
-
-`;
-                const formFooter = `
---${boundary}--`;
-                const formBody = Buffer.concat([Buffer.from(formHeader), imgData, Buffer.from(formFooter)]);
+                const CRLF = '\r\n';
+                const formHeader = Buffer.from(
+                  '--' + boundary + CRLF +
+                  'Content-Disposition: form-data; name="chat_id"' + CRLF + CRLF +
+                  String(ownerId) + CRLF +
+                  '--' + boundary + CRLF +
+                  'Content-Disposition: form-data; name="caption"' + CRLF + CRLF +
+                  (label + ' · ' + (s.seller||'?') + ' · ' + d) + CRLF +
+                  '--' + boundary + CRLF +
+                  'Content-Disposition: form-data; name="photo"; filename="photo.jpg"' + CRLF +
+                  'Content-Type: image/jpeg' + CRLF + CRLF
+                );
+                const formFooter = Buffer.from(CRLF + '--' + boundary + '--' + CRLF);
+                const formBody = Buffer.concat([formHeader, imgData, formFooter]);
                 const req = https.request({
                   hostname: 'api.telegram.org',
-                  path: `/bot${TELEGRAM_TOKEN}/sendPhoto`,
+                  path: '/bot' + TELEGRAM_TOKEN + '/sendPhoto',
                   method: 'POST',
                   headers: {
-                    'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                    'Content-Type': 'multipart/form-data; boundary=' + boundary,
                     'Content-Length': formBody.length
                   }
                 }, res => { res.on('data', () => {}); res.on('end', resolve); });
